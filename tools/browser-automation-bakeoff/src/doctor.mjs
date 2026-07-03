@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDirs, loadLocalEnv, rootDir, runProcess } from "./common.mjs";
+import { loadBakeoffKeys } from "./key-pool.mjs";
 
 ensureDirs();
 loadLocalEnv();
@@ -12,8 +13,9 @@ function add(name, ok, detail = "") {
 
 add("root exists", fs.existsSync(rootDir), rootDir);
 add(".env.local ignored", (await runProcess("git", ["check-ignore", "-q", "--", "tools/browser-automation-bakeoff/.env.local"], { cwd: path.resolve(rootDir, "..", "..") })).code === 0);
-add("GOOGLE_API_KEY or GEMINI_API_KEY present", Boolean(process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY), "value not printed");
-add("GOOGLE_GENERATIVE_AI_API_KEY present for Stagehand", Boolean(process.env.GOOGLE_GENERATIVE_AI_API_KEY), "value not printed");
+const bakeoffKeys = loadBakeoffKeys();
+add("BAKEOFF_GEMINI_API_KEY_* loaded", bakeoffKeys.length > 0, `${bakeoffKeys.length} key(s), values not printed`);
+add("main Gemini/Jarvis key ignored by harness", true, "runners use only BAKEOFF_GEMINI_API_KEY_*");
 
 for (const [cmd, args, name] of [
   ["node", ["--version"], "node"],
@@ -37,4 +39,3 @@ const failed = checks.filter((check) => !check.ok);
 if (failed.length) {
   process.exitCode = 1;
 }
-

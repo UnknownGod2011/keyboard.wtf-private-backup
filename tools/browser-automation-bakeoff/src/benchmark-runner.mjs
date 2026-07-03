@@ -10,6 +10,7 @@ const tasks = selectTasks(args);
 const allResults = [];
 
 const backendCommands = {
+  "browser-use": (task) => [path.join(rootDir, ".venv", "Scripts", "python.exe"), ["python/backends/browser_use_runner.py", "--task", task.id]],
   "stagehand": (task) => ["node", ["src/backends/stagehand-runner.mjs", "--task", task.id]],
   "playwright-mcp": (task) => ["node", ["src/backends/playwright-mcp-runner.mjs", "--task", task.id]]
 };
@@ -40,4 +41,3 @@ for (const backend of requestedBackends) {
 }
 
 writeJson(path.join(resultsDir, "benchmark-runner-summary.json"), allResults);
-

@@ -1,5 +1,23 @@
 [
   {
+    "id": "google-crishirt-devpost-first-result",
+    "taskText": "Search Google for Crishirt Devpost and open the first relevant result.",
+    "targetSite": "google.com",
+    "startUrl": "https://www.google.com",
+    "allowedActionLevel": "navigation",
+    "maxRuntimeMs": 120000,
+    "screenshotRequired": true,
+    "realChromeRequired": false,
+    "controlledBrowserAllowed": true,
+    "cloudBackendAllowed": false,
+    "successCriteria": [
+      "A real Google search is performed for Crishirt Devpost",
+      "The first relevant Devpost result is opened",
+      "The final page is a real Devpost page or a clear blocker is reported",
+      "The backend stops after success or blocker"
+    ]
+  },
+  {
     "id": "youtube-dude-perfect-oldest",
     "taskText": "Play the oldest Dude Perfect video on YouTube.",
     "targetSite": "youtube.com",

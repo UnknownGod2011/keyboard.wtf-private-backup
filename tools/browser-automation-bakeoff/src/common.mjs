@@ -21,16 +21,6 @@ export function ensureDirs() {
 export function loadLocalEnv() {
   dotenv.config({ path: path.join(rootDir, ".env.local"), quiet: true });
   dotenv.config({ path: path.join(rootDir, ".env"), quiet: true });
-  // For this bake-off, prefer GEMINI_API_KEY when present. The user's local
-  // file may contain multiple aliases, and some aliases may point to disabled
-  // keys. Do not print or persist values.
-  if (process.env.GEMINI_API_KEY) {
-    process.env.GOOGLE_API_KEY = process.env.GEMINI_API_KEY;
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GEMINI_API_KEY;
-  } else if (process.env.GOOGLE_API_KEY) {
-    process.env.GEMINI_API_KEY = process.env.GOOGLE_API_KEY;
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GOOGLE_API_KEY;
-  }
 }
 
 export function loadTasks() {
@@ -61,6 +51,7 @@ export function redactError(error) {
   const text = error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ""}` : String(error ?? "");
   return text
     .replace(/AQ\.Ab8[0-9A-Za-z._-]+/g, "[REDACTED_API_KEY]")
+    .replace(/AIza[0-9A-Za-z._—-]+/g, "[REDACTED_API_KEY]")
     .replace(/(GEMINI|GOOGLE|BROWSERBASE|OPENAI|ANTHROPIC)(_GENERATIVE_AI)?_API_KEY=\\S+/gi, "$1_API_KEY=[REDACTED]");
 }
 
@@ -79,10 +70,17 @@ export function makeBaseResult(backendName, task) {
     actionCount: 0,
     llmCallCount: null,
     confirmationCount: task.cartMutationPreconfirmed ? 1 : 0,
+    maskedKeyId: null,
+    modelProvider: null,
+    keyPoolLoaded: null,
+    keyPoolExhausted: null,
     browserProfileUsed: null,
+    browserUsed: null,
     realChromeUsed: false,
     controlledBrowserUsed: false,
     wrongBrowserOpened: false,
+    looped: null,
+    manualBlocker: null,
     stoppedAfterSuccess: null,
     failureReason: null,
     logsPath: null,

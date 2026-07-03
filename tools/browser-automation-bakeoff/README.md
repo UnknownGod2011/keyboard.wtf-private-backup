@@ -16,6 +16,15 @@ Backends:
 2. `Stagehand` through `@browserbasehq/stagehand`.
 3. `Playwright MCP` through the real `@playwright/mcp` server and an MCP client loop.
 
+Gemini keys are bake-off-only. Put them in ignored `.env.local` as:
+
+```env
+BAKEOFF_GEMINI_API_KEY_01=...
+BAKEOFF_GEMINI_API_KEY_02=...
+```
+
+The runners rotate only `BAKEOFF_GEMINI_API_KEY_*` and do not read or modify keyboard.wtf/Jarvis API-key settings.
+
 Generated output is ignored by Git:
 
 - `.env.local`
@@ -53,3 +62,9 @@ npm run run -- --backend stagehand --backend playwright-mcp
 npm run report
 ```
 
+Or run all three through the unified runner:
+
+```powershell
+npm run run -- --backend browser-use --backend stagehand --backend playwright-mcp
+npm run report
+```
