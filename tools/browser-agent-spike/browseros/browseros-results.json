@@ -1,0 +1,7 @@
+﻿{
+    "backend":  "BrowserOS external",
+    "task":  "health",
+    "status":  "failed",
+    "durationMs":  0,
+    "note":  "BrowserOS is not installed/running/configured. Open BrowserOS Settings \u003e BrowserOS MCP and provide the server URL."
+}

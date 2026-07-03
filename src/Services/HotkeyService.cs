@@ -6,7 +6,8 @@ using System.Windows.Forms;
 public sealed class HotkeyService : IMessageFilter, IDisposable
 {
     private const int WmHotkey = 0x0312;
-    public const string JarvisFallback = "Ctrl+Alt+J";
+    public const string JarvisDefault = "Ctrl+Alt+J";
+    public const string JarvisFallback = "Ctrl+Shift+J";
     public const string CancelFallback = "Ctrl+Alt+Escape";
 
     private readonly Dictionary<int, (string Name, string Hotkey, Action Handler)> _handlers = new();

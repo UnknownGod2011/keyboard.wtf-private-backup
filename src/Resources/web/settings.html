@@ -456,6 +456,7 @@
       <a href="#voice-capture">Voice Capture</a>
       <a href="#hotkeys">Hotkeys</a>
       <a href="#assistant">Assistant</a>
+      <a href="#task-agent">Task Agent</a>
       <a href="#set-api-key">Set API Key</a>
       <a href="#speech-models">Speech Models</a>
       <a href="#tts">Text-to-Speech</a>
@@ -596,7 +597,7 @@
 
       <div class="field">
         <label for="hotkeyJarvis">Jarvis mode</label>
-        <input id="hotkeyJarvis" type="text" onchange="hotkeysChanged()" placeholder="Ctrl+Alt+Q">
+        <input id="hotkeyJarvis" type="text" onchange="hotkeysChanged()" placeholder="Ctrl+Alt+J">
         <div class="hint">Chat, open allowed apps, prepare Gmail drafts, prepare WhatsApp messages, and use safe actions.</div>
       </div>
 
@@ -749,8 +750,20 @@
       <div class="field">
         <label>Intent memory <span class="label-hint" id="memoryCount"></span></label>
         <div class="btn-row" style="margin-bottom:12px">
-          <input id="memoryKey" type="text" maxlength="64" placeholder="Label" style="flex:0 1 180px">
-          <input id="memoryValue" type="text" maxlength="280" placeholder="Memory" style="flex:1;min-width:240px">
+          <select id="memoryType" style="flex:0 1 165px">
+            <option value="Preference">Preference</option>
+            <option value="Correction">Correction</option>
+            <option value="AppAlias">App alias</option>
+            <option value="FileAlias">File alias</option>
+            <option value="FolderAlias">Folder alias</option>
+            <option value="BrowserPreference">Browser preference</option>
+            <option value="Workflow">Workflow</option>
+            <option value="Routine">Routine</option>
+            <option value="TaskPattern">Task pattern</option>
+            <option value="FailedAttemptFix">Failed-attempt fix</option>
+          </select>
+          <input id="memoryKey" type="text" maxlength="120" placeholder="Trigger phrase" style="flex:0 1 180px">
+          <input id="memoryValue" type="text" maxlength="1000" placeholder="Structured memory summary" style="flex:1;min-width:240px">
           <button class="ghost" onclick="addIntentMemory()">Add</button>
         </div>
         <div class="memory-list" id="intentMemoryList">
@@ -759,7 +772,7 @@
         <div class="btn-row" style="margin-top:12px">
           <button class="ghost" onclick="clearIntentMemory()">Clear memory</button>
         </div>
-        <div class="hint">Jarvis saves memory only when you explicitly ask it to remember something. Limit: 20 short entries.</div>
+        <div class="hint">Local structured memory with deterministic conflict handling. Jarvis saves corrections only after you approve them. Limit: 200 bounded entries.</div>
       </div>
 
       <div class="field">
@@ -782,6 +795,165 @@
           <button class="ghost" onclick="clearJarvisHistory()">Clear history</button>
         </div>
         <div class="hint">Stored locally and capped at 50 entries.</div>
+      </div>
+    </section>
+
+    <!-- Task Agent -->
+    <section id="task-agent">
+      <h2>Task Agent / Browser Agent</h2>
+      <p class="section-hint">Experimental multi-step browser control with visible progress, clarification, confirmation, and receipts.</p>
+
+      <div class="field">
+        <label>Browser Agent</label>
+        <label style="display:flex;align-items:center;gap:10px;font-weight:normal;cursor:pointer">
+          <input type="checkbox" id="browserAgentEnabled" onchange="taskAgentChanged()" style="width:18px;height:18px;cursor:pointer">
+          Enable experimental controlled-browser tasks
+        </label>
+        <div class="hint" id="browserAgentStatus">Uses the connected Browser Companion Extension first. Dedicated automation profiles are disabled unless explicitly allowed below.</div>
+      </div>
+
+      <div class="field">
+        <label for="smartBrowserBackend">Smart browser backend</label>
+        <select id="smartBrowserBackend" onchange="taskAgentChanged()">
+          <option value="Auto">Auto: Browser Companion first</option>
+          <option value="BrowserCompanionExtension">Browser Companion Extension</option>
+          <option value="BrowserUseGemini">browser-use + Gemini</option>
+          <option value="DirectPlaywright">Direct Playwright</option>
+          <option value="BrowserOSExternal">BrowserOS external</option>
+          <option value="StagehandExperimental">Stagehand experimental (spike only)</option>
+        </select>
+        <div class="hint">The Browser Companion Extension is the main fast graph executor. browser-use remains an experimental repair/fallback path only.</div>
+      </div>
+
+      <div class="field">
+        <label>Browser Companion Extension</label>
+        <label style="display:flex;align-items:center;gap:10px;font-weight:normal;cursor:pointer">
+          <input type="checkbox" id="browserCompanionEnabled" onchange="taskAgentChanged()" style="width:18px;height:18px;cursor:pointer">
+          Use Browser Companion Extension when connected
+        </label>
+        <div class="hint">Install from extensions/browser-companion as an unpacked Chrome/Edge extension. The extension contains no API keys.</div>
+        <div class="setup-grid" style="margin-top:12px">
+          <div class="setup-item"><div class="setup-label">Connection</div><div class="setup-value" id="browserCompanionConnectionState">checking...</div></div>
+          <div class="setup-item"><div class="setup-label">Extension</div><div class="setup-value" id="browserCompanionVersion">-</div></div>
+          <div class="setup-item"><div class="setup-label">Content script</div><div class="setup-value" id="browserCompanionContentVersion">-</div></div>
+          <div class="setup-item"><div class="setup-label">Browser</div><div class="setup-value" id="browserCompanionBrowserName">-</div></div>
+          <div class="setup-item"><div class="setup-label">Session</div><div class="setup-value mono" id="browserCompanionSessionId">-</div></div>
+          <div class="setup-item"><div class="setup-label">Active tab</div><div class="setup-value mono" id="browserCompanionActiveTab">-</div></div>
+          <div class="setup-item"><div class="setup-label">Last heartbeat</div><div class="setup-value" id="browserCompanionHeartbeat">-</div></div>
+          <div class="setup-item"><div class="setup-label">Last graph</div><div class="setup-value" id="browserCompanionLastGraph">-</div></div>
+          <div class="setup-item"><div class="setup-label">Last command</div><div class="setup-value" id="browserCompanionLastCommand">-</div></div>
+          <div class="setup-item"><div class="setup-label">Last result</div><div class="setup-value" id="browserCompanionLastResult">-</div></div>
+          <div class="setup-item"><div class="setup-label">Bridge</div><div class="setup-value mono" id="browserCompanionBridge">-</div></div>
+          <div class="setup-item"><div class="setup-label">Fallbacks</div><div class="setup-value" id="browserCompanionFallbacks">-</div></div>
+        </div>
+        <div class="btn-row" style="margin-top:12px">
+          <button class="ghost" id="browserCompanionTestBtn" onclick="testBrowserCompanionConnection()">Test Browser Companion connection</button>
+        </div>
+        <div class="hint" id="browserCompanionTestResult">Open a real website tab, then run this test. It does not use Gemini, browser-use, Playwright, Edge, or an automation profile.</div>
+        <div class="memory-list" id="browserCompanionTopControls" style="margin-top:10px">
+          <div class="memory-empty">No graph controls captured yet.</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>browser-use + Gemini</label>
+        <label style="display:flex;align-items:center;gap:10px;font-weight:normal;cursor:pointer">
+          <input type="checkbox" id="browserUseEnabled" onchange="taskAgentChanged()" style="width:18px;height:18px;cursor:pointer">
+          Enable browser-use experimental fallback
+        </label>
+        <div class="hint">Not the main browser path. Uses local ignored Gemini env configuration for the isolated Python sidecar.</div>
+      </div>
+
+      <div class="field">
+        <label>Automation profile fallback</label>
+        <label style="display:flex;align-items:center;gap:10px;font-weight:normal;cursor:pointer">
+          <input type="checkbox" id="allowAutomationProfileFallback" onchange="taskAgentChanged()" style="width:18px;height:18px;cursor:pointer">
+          Allow dedicated logged-out automation browser fallback
+        </label>
+        <div class="hint">Default OFF. Turn this on only when you want keyboard.wtf to launch a separate controlled Chrome/Edge profile if the Browser Companion is unavailable.</div>
+      </div>
+
+      <div class="field">
+        <label>BrowserOS external backend</label>
+        <label style="display:flex;align-items:center;gap:10px;font-weight:normal;cursor:pointer">
+          <input type="checkbox" id="browserOsEnabled" onchange="taskAgentChanged()" style="width:18px;height:18px;cursor:pointer">
+          Use BrowserOS if installed and configured
+        </label>
+        <div class="hint">AGPL-3.0 external candidate only. keyboard.wtf does not vendor BrowserOS code.</div>
+      </div>
+
+      <div class="field">
+        <label>Workflow learning</label>
+        <label style="display:flex;align-items:center;gap:10px;font-weight:normal;cursor:pointer">
+          <input type="checkbox" id="learnBrowserWorkflows" onchange="taskAgentChanged()" style="width:18px;height:18px;cursor:pointer">
+          Learn successful safe browser workflow patterns locally
+        </label>
+        <div class="hint">Stores bounded local workflow metadata only: no passwords, cookies, payment info, screenshots, or raw page dumps.</div>
+      </div>
+
+      <div class="field">
+        <label for="maxBrowserTaskSeconds">Max browser task time</label>
+        <input type="number" id="maxBrowserTaskSeconds" min="30" max="900" step="15" onchange="taskAgentChanged()">
+        <div class="hint">Slow smart backends should time out cleanly and fall back when safe.</div>
+      </div>
+
+      <div class="field">
+        <label>Task popup</label>
+        <label style="display:flex;align-items:center;gap:10px;font-weight:normal;cursor:pointer">
+          <input type="checkbox" id="showTaskPopup" onchange="taskAgentChanged()" style="width:18px;height:18px;cursor:pointer">
+          Show the on-screen task panel for proper multi-step tasks
+        </label>
+        <div class="hint">Simple actions such as opening Excel or switching tabs do not create task tabs.</div>
+      </div>
+
+      <div class="field">
+        <label>Low-confidence clarification</label>
+        <label style="display:flex;align-items:center;gap:10px;font-weight:normal;cursor:pointer">
+          <input type="checkbox" id="askForClarificationWhenLowConfidence" onchange="taskAgentChanged()" style="width:18px;height:18px;cursor:pointer">
+          Ask when the target or next step is not reliable
+        </label>
+      </div>
+
+      <div class="field">
+        <label for="taskClarificationMode">Task clarification mode</label>
+        <select id="taskClarificationMode" onchange="taskAgentChanged()">
+          <option value="SmartClarify">Smart Clarify (recommended)</option>
+          <option value="AlwaysAskAmbiguous">Always ask for ambiguous steps</option>
+          <option value="LetAiDecide">Let AI decide</option>
+        </select>
+        <div class="hint">Risky or irreversible actions still require confirmation regardless of this setting.</div>
+      </div>
+
+      <div class="field">
+        <label>Developer diagnostics</label>
+        <label style="display:flex;align-items:center;gap:10px;font-weight:normal;cursor:pointer">
+          <input type="checkbox" id="browserAgentDeveloperDiagnostics" onchange="taskAgentChanged()" style="width:18px;height:18px;cursor:pointer">
+          Keep developer diagnostics/logs visible outside the main task popup
+        </label>
+        <div class="hint">Off by default. The task popup stays clean and never shows raw sidecar logs or localhost debug output.</div>
+      </div>
+
+
+      <div class="field">
+        <label>Current limits</label>
+        <div class="setup-grid">
+          <div class="setup-item"><div class="setup-label">Parallel tasks</div><div class="setup-value">Maximum 4</div></div>
+          <div class="setup-item"><div class="setup-label">Task timeout</div><div class="setup-value">15 minutes</div></div>
+          <div class="setup-item"><div class="setup-label">Action limit</div><div class="setup-value">30 per task</div></div>
+        </div>
+        <div class="hint">Payment, checkout, banking, passwords, OTP, CAPTCHA, and protected final submissions always stop for manual completion.</div>
+      </div>
+
+      <div class="field">
+        <label>Safe local diagnostics</label>
+        <div class="btn-row">
+          <button class="ghost" onclick="runBrowserAgentDemo('form')">Test mock form preview</button>
+          <button class="ghost" onclick="runBrowserAgentDemo('clarification')">Test clarification state</button>
+          <button class="ghost" onclick="runBrowserAgentDemo('confirmation')">Test confirmation gate</button>
+          <button class="ghost" onclick="runBrowserAgentDemo('manual-safety')">Test checkout safety stop</button>
+          <button class="ghost" onclick="runBrowserAgentDemo('context')">Test selected-text context</button>
+        </div>
+        <div class="hint">Runs only against keyboard.wtf's localhost mock page. No data is submitted or sent to a third party.</div>
       </div>
     </section>
 
@@ -828,7 +1000,7 @@
         <div class="shortcut-list">
           <div class="shortcut-row"><span class="keycap">Ctrl + Alt + D</span><span class="shortcut-copy">Dictate exactly what you say.</span></div>
           <div class="shortcut-row"><span class="keycap">Ctrl + Alt + K</span><span class="shortcut-copy">Turn rough speech into polished writing.</span></div>
-          <div class="shortcut-row"><span class="keycap">Ctrl + Alt + Q</span><span class="shortcut-copy">Talk to Jarvis and run supported actions.</span></div>
+          <div class="shortcut-row"><span class="keycap">Ctrl + Alt + J</span><span class="shortcut-copy">Talk to Jarvis and run supported actions.</span></div>
           <div class="shortcut-row"><span class="keycap">Ctrl + Alt + X</span><span class="shortcut-copy">Stop any recording, action, or conversation.</span></div>
           <div class="shortcut-row"><span class="keycap">Ctrl + Alt + ,</span><span class="shortcut-copy">Open these settings from anywhere.</span></div>
         </div>
@@ -1183,7 +1355,7 @@ async function loadSettings() {
     renderActiveHotkeys(hotkeys, settings.activeHotkeys || {});
     document.getElementById('hotkeyPushToTalk').value = hotkeys.PushToTalk || hotkeys.pushToTalk || 'Ctrl+Alt+K';
     document.getElementById('hotkeyDictation').value = hotkeys.Dictation || hotkeys.dictation || 'Ctrl+Alt+D';
-    document.getElementById('hotkeyJarvis').value = hotkeys.Jarvis || hotkeys.jarvis || hotkeys.QuickSend || hotkeys.quickSend || 'Ctrl+Alt+Q';
+    document.getElementById('hotkeyJarvis').value = hotkeys.Jarvis || hotkeys.jarvis || hotkeys.QuickSend || hotkeys.quickSend || 'Ctrl+Alt+J';
     document.getElementById('hotkeyCancel').value = hotkeys.Cancel || hotkeys.cancel || 'Ctrl+Alt+X';
     document.getElementById('hotkeyOpenSettings').value = hotkeys.OpenSettings || hotkeys.openSettings || 'Ctrl+Alt+,';
     document.getElementById('defaultDestination').value = settings.defaultDestination || 'Clipboard';
@@ -1194,6 +1366,24 @@ async function loadSettings() {
     document.getElementById('startWithWindows').checked = settings.startWithWindows !== false;
     document.getElementById('jarvisPermissionMode').value = settings.jarvisPermissionMode || 'AlwaysAsk';
     document.getElementById('preferredBrowser').value = settings.preferredBrowser || '';
+    document.getElementById('showTaskPopup').checked = settings.showTaskPopup !== false;
+    document.getElementById('askForClarificationWhenLowConfidence').checked =
+      settings.askForClarificationWhenLowConfidence !== false;
+    document.getElementById('taskClarificationMode').value =
+      settings.taskClarificationMode || 'SmartClarify';
+    document.getElementById('browserAgentEnabled').checked = settings.browserAgentEnabled !== false;
+    document.getElementById('smartBrowserBackend').value =
+      settings.smartBrowserBackend || 'Auto';
+    document.getElementById('browserCompanionEnabled').checked = settings.browserCompanionEnabled !== false;
+    document.getElementById('browserUseEnabled').checked = settings.browserUseEnabled !== false;
+    document.getElementById('allowAutomationProfileFallback').checked =
+      settings.allowAutomationProfileFallback === true;
+    document.getElementById('browserOsEnabled').checked = settings.browserOsEnabled === true;
+    document.getElementById('learnBrowserWorkflows').checked = settings.learnBrowserWorkflows !== false;
+    document.getElementById('maxBrowserTaskSeconds').value = settings.maxBrowserTaskSeconds || 180;
+    document.getElementById('browserAgentDeveloperDiagnostics').checked =
+      settings.browserAgentDeveloperDiagnostics === true;
+    renderBrowserAgentStatus(settings.browserAgentStatus || {}, settings.featureStatus || {}, settings.browserCompanionStatus || {});
     renderStartupStatus(settings);
     renderSetupStatus(settings);
     renderFeatureStatus(settings.featureStatus || {});
@@ -1376,20 +1566,37 @@ function renderIntentMemory(memory) {
     const text = document.createElement('div');
     const key = document.createElement('div');
     key.className = 'memory-key';
-    key.textContent = entry.key || entry.Key || 'memory';
+    const type = entry.type || entry.Type || 'Preference';
+    const trigger = entry.triggerPhrase || entry.TriggerPhrase || entry.key || entry.Key || 'memory';
+    key.textContent = `${trigger} · ${type}`;
     const value = document.createElement('div');
     value.className = 'memory-value';
-    value.textContent = entry.value || entry.Value || '';
+    const actionData = entry.actionData || entry.ActionData || {};
+    const target = actionData.target || actionData.Target || '';
+    const usage = entry.usageCount ?? entry.UsageCount ?? 0;
+    value.textContent = [
+      entry.summary || entry.Summary || entry.value || entry.Value || '',
+      target ? `Target: ${target}` : '',
+      usage ? `Used ${usage} time(s)` : ''
+    ].filter(Boolean).join(' | ');
     text.appendChild(key);
     text.appendChild(value);
 
+    const buttons = document.createElement('div');
+    buttons.className = 'btn-row';
+    const edit = document.createElement('button');
+    edit.className = 'ghost';
+    edit.textContent = 'Edit';
+    edit.onclick = () => editIntentMemory(entry);
     const btn = document.createElement('button');
     btn.className = 'ghost';
     btn.textContent = 'Delete';
     btn.onclick = () => deleteIntentMemory(entry.id || entry.Id);
+    buttons.appendChild(edit);
+    buttons.appendChild(btn);
 
     row.appendChild(text);
-    row.appendChild(btn);
+    row.appendChild(buttons);
     list.appendChild(row);
   });
 }
@@ -1448,6 +1655,88 @@ function renderFeatureStatus(status) {
     status.routineMemory || 'Unavailable';
 }
 
+function renderBrowserAgentStatus(status, featureStatus, companionStatus) {
+  const text = document.getElementById('browserAgentStatus');
+  if (!text) return;
+  const initialized = status.initialized ?? status.Initialized ?? false;
+  const channel = status.browserChannel || status.BrowserChannel || '';
+  const error = status.lastError || status.LastError || '';
+  const companionReady = (companionStatus?.available ?? companionStatus?.Available) === true;
+  const companionChannel = companionStatus?.browserChannel || companionStatus?.BrowserChannel || 'Browser Companion Extension';
+  renderBrowserCompanionStatusCard(companionStatus || {});
+  if (companionReady) {
+    text.textContent = `Ready: ${companionChannel}. Page Control Graph execution is the main browser path.`;
+    return;
+  }
+  if (error) {
+    text.textContent = channel && channel.toLowerCase().includes('fallback')
+      ? `${channel}. Companion disconnected or smart fallback unavailable: ${error}`
+      : `Unavailable: ${error}`;
+  } else if (initialized) {
+    text.textContent = `${channel || 'Controlled browser'} available. Install/connect Browser Companion for fast active-tab automation.`;
+  } else {
+    text.textContent = featureStatus.browserAgent ||
+      'Experimental. Install/connect Browser Companion for fast active-tab automation.';
+  }
+}
+
+function renderBrowserCompanionStatusCard(status) {
+  const get = (camel, pascal, fallback = '') => status?.[camel] ?? status?.[pascal] ?? fallback;
+  const available = get('available', 'Available', false) === true;
+  const state = get('connectionState', 'ConnectionState', available ? 'Connected' : 'Waiting for extension');
+  const lastHeartbeat = get('lastHeartbeatAt', 'LastHeartbeatAt', '');
+  const lastGraph = get('lastGraphReceivedAt', 'LastGraphReceivedAt', '');
+  const lastCommandSent = get('lastCommandSentAt', 'LastCommandSentAt', '');
+  const lastCommandType = get('lastCommandType', 'LastCommandType', '');
+  const lastCommandResult = get('lastCommandResult', 'LastCommandResult', '');
+  const lastError = get('lastError', 'LastError', '');
+  const controls = get('topVisibleControls', 'TopVisibleControls', []) || [];
+  const set = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value || '-';
+  };
+
+  set('browserCompanionConnectionState', state + (available ? '' : (lastError ? ` - ${lastError}` : '')));
+  set('browserCompanionVersion', get('extensionVersion', 'ExtensionVersion', '') || get('browserChannel', 'BrowserChannel', ''));
+  set('browserCompanionContentVersion', get('contentScriptVersion', 'ContentScriptVersion', ''));
+  set('browserCompanionBrowserName', get('browserName', 'BrowserName', 'Unknown'));
+  set('browserCompanionSessionId', get('sessionId', 'SessionId', ''));
+  set('browserCompanionActiveTab', get('activeTabUrl', 'ActiveTabUrl', ''));
+  set('browserCompanionHeartbeat', formatDateTime(lastHeartbeat));
+  set('browserCompanionLastGraph', `${formatDateTime(lastGraph)}${get('lastControlCount', 'LastControlCount', 0) ? ` / ${get('lastControlCount', 'LastControlCount', 0)} controls` : ''}`);
+  set('browserCompanionLastCommand', [formatDateTime(lastCommandSent), lastCommandType].filter(Boolean).join(' / '));
+  set('browserCompanionLastResult', lastCommandResult || lastError || '-');
+  set('browserCompanionBridge', get('bridgeUrl', 'BridgeUrl', ''));
+  set('browserCompanionFallbacks',
+    `browser-use ${get('browserUseFallbackEnabled', 'BrowserUseFallbackEnabled', false) ? 'enabled' : 'off'}, automation profile ${get('automationProfileFallbackEnabled', 'AutomationProfileFallbackEnabled', false) ? 'enabled' : 'off'}`);
+
+  const list = document.getElementById('browserCompanionTopControls');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!controls.length) {
+    const empty = document.createElement('div');
+    empty.className = 'memory-empty';
+    empty.textContent = 'No graph controls captured yet.';
+    list.appendChild(empty);
+    return;
+  }
+  controls.slice(0, 8).forEach(control => {
+    const row = document.createElement('div');
+    row.className = 'memory-row';
+    const value = document.createElement('div');
+    value.className = 'memory-value';
+    value.textContent = control;
+    row.appendChild(value);
+    list.appendChild(row);
+  });
+}
+
+function formatDateTime(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString();
+}
+
 function renderActiveHotkeys(configured, active) {
   const labels = [
     ['Jarvis', configured.Jarvis || configured.jarvis, active.Jarvis || active.jarvis],
@@ -1456,9 +1745,12 @@ function renderActiveHotkeys(configured, active) {
   const fallbacks = labels
     .filter(item => item[1] && item[2] && item[1].toLowerCase() !== item[2].toLowerCase())
     .map(item => `${item[0]} uses ${item[2]} because ${item[1]} is occupied`);
-  document.getElementById('activeHotkeyStatus').textContent = fallbacks.length
-    ? fallbacks.join('. ') + '.'
-    : 'Configured shortcuts are active.';
+  const activeSummary =
+    `Active: Jarvis ${active.Jarvis || active.jarvis || 'not registered'} / ` +
+    `Dictation ${active.Dictation || active.dictation || 'not registered'} / ` +
+    `Smart Writing ${active.SmartWriting || active.smartWriting || 'not registered'}.`;
+  document.getElementById('activeHotkeyStatus').textContent =
+    activeSummary + (fallbacks.length ? ` ${fallbacks.join('. ')}.` : '');
 }
 
 function renderGeminiVoices(voices, selectedVoice) {
@@ -1749,6 +2041,102 @@ async function assistantChanged() {
   }
 }
 
+async function taskAgentChanged() {
+  try {
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        showTaskPopup: document.getElementById('showTaskPopup').checked,
+        askForClarificationWhenLowConfidence:
+          document.getElementById('askForClarificationWhenLowConfidence').checked,
+        taskClarificationMode: document.getElementById('taskClarificationMode').value,
+        browserAgentEnabled: document.getElementById('browserAgentEnabled').checked,
+        smartBrowserBackend: document.getElementById('smartBrowserBackend').value,
+        browserCompanionEnabled: document.getElementById('browserCompanionEnabled').checked,
+        browserUseEnabled: document.getElementById('browserUseEnabled').checked,
+        allowAutomationProfileFallback: document.getElementById('allowAutomationProfileFallback').checked,
+        browserOsEnabled: document.getElementById('browserOsEnabled').checked,
+        learnBrowserWorkflows: document.getElementById('learnBrowserWorkflows').checked,
+        maxBrowserTaskSeconds: Number(document.getElementById('maxBrowserTaskSeconds').value || 180),
+        browserAgentDeveloperDiagnostics:
+          document.getElementById('browserAgentDeveloperDiagnostics').checked
+      })
+    });
+    showToast('Task Agent settings saved');
+    loadSettings();
+  } catch (e) {
+    showToast('Failed to save Task Agent settings');
+  }
+}
+
+async function runBrowserAgentDemo(mode) {
+  try {
+    showToast(mode === 'clarification' ? 'Starting clarification demo' : 'Starting safe mock form demo');
+    const response = await fetch('/api/browser-agent/demo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode })
+    });
+    const data = await response.json();
+    showToast(data.ok
+      ? 'Browser Agent demo verified'
+      : (data.clarificationRequired || data.ClarificationRequired)
+        ? 'Task is waiting for clarification'
+        : (data.message || data.Message || data.error || 'Browser Agent demo failed'));
+    loadSettings();
+  } catch (e) {
+    showToast('Browser Agent demo failed: ' + e.message);
+  }
+}
+
+async function testBrowserCompanionConnection() {
+  const btn = document.getElementById('browserCompanionTestBtn');
+  const resultEl = document.getElementById('browserCompanionTestResult');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Testing...';
+  resultEl.textContent = 'Asking the connected extension for a fresh active-tab Page Control Graph...';
+  try {
+    const response = await fetch('/api/browser-companion/test', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Keyboard-Wtf-Settings-Action': 'explicit-user-action'
+      },
+      body: '{}'
+    });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) {
+      resultEl.textContent =
+        `Failed: ${data.error || data.message || data.status || 'Browser Companion did not return a graph.'}`;
+      if (data.status) renderBrowserCompanionStatusCard(data.status);
+      showToast('Browser Companion test failed');
+      return;
+    }
+    const controls = data.controlsFound ?? data.ControlsFound ?? 0;
+    const url = data.activeTabUrl || data.ActiveTabUrl || '';
+    resultEl.textContent = `Connected. Active tab: ${url || '(unknown)'}. Controls found: ${controls}.`;
+    if (data.status) renderBrowserCompanionStatusCard(data.status);
+    if (Array.isArray(data.topControls)) {
+      renderBrowserCompanionStatusCard({
+        ...(data.status || {}),
+        topVisibleControls: data.topControls,
+        lastControlCount: controls,
+        activeTabUrl: url
+      });
+    }
+    showToast('Browser Companion connected');
+  } catch (e) {
+    resultEl.textContent = 'Failed: ' + e.message;
+    showToast('Browser Companion test failed');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+    loadSettings();
+  }
+}
+
 async function saveWorkflow() {
   const name = document.getElementById('workflowName').value.trim();
   const apps = document.getElementById('workflowApps').value.trim();
@@ -1834,6 +2222,7 @@ async function deleteIntentMemory(id) {
 }
 
 async function addIntentMemory() {
+  const typeEl = document.getElementById('memoryType');
   const keyEl = document.getElementById('memoryKey');
   const valueEl = document.getElementById('memoryValue');
   const key = keyEl.value.trim();
@@ -1847,7 +2236,7 @@ async function addIntentMemory() {
     const resp = await fetch('/api/intent-memory/remember', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key, value })
+      body: JSON.stringify({ type: typeEl.value, key, value })
     });
     const data = await resp.json();
     if (!resp.ok || data.ok === false) {
@@ -1860,6 +2249,34 @@ async function addIntentMemory() {
     loadSettings();
   } catch (e) {
     showToast('Memory save failed');
+  }
+}
+
+async function editIntentMemory(entry) {
+  const id = entry.id || entry.Id;
+  if (!id) return;
+  const currentTrigger = entry.triggerPhrase || entry.TriggerPhrase || entry.key || entry.Key || '';
+  const currentSummary = entry.summary || entry.Summary || entry.value || entry.Value || '';
+  const currentType = entry.type || entry.Type || 'Preference';
+  const triggerPhrase = window.prompt('Trigger phrase', currentTrigger);
+  if (triggerPhrase === null) return;
+  const summary = window.prompt('Memory summary', currentSummary);
+  if (summary === null) return;
+  const type = window.prompt(
+    'Type: Preference, Correction, AppAlias, FileAlias, FolderAlias, BrowserPreference, Workflow, Routine, TaskPattern, or FailedAttemptFix',
+    currentType);
+  if (type === null) return;
+  try {
+    const response = await fetch('/api/intent-memory/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, triggerPhrase, summary, type })
+    });
+    const data = await response.json();
+    showToast(data.ok ? 'Memory updated' : (data.error || 'Memory update failed'));
+    loadSettings();
+  } catch (e) {
+    showToast('Memory update failed');
   }
 }
 

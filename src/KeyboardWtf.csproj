@@ -42,6 +42,7 @@
     <PackageReference Include="Whisper.net.Runtime" Version="1.9.*" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
     <PackageReference Include="OpenCvSharp4.Windows" Version="4.13.0.20260602" />
+    <PackageReference Include="Microsoft.Playwright" Version="1.60.0" />
   </ItemGroup>
 
   <Target Name="CopyWhisperNative" AfterTargets="Build" Condition="$(OS) == 'Windows_NT'">

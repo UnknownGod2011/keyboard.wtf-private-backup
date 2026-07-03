@@ -1,0 +1,14 @@
+{
+  "name": "keyboard-wtf-browser-agent-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "direct": "node direct_playwright.mjs",
+    "stagehand": "node stagehand_spike.mjs"
+  },
+  "dependencies": {
+    "@browserbasehq/stagehand": "^3.6.0",
+    "playwright": "^1.60.0"
+  },
+  "devDependencies": {}
+}

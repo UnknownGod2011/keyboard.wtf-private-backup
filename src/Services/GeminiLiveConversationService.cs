@@ -479,7 +479,11 @@ public sealed class GeminiLiveConversationService : IDisposable
         {
             result = await socket.ReceiveAsync(buffer, token);
             if (result.MessageType == WebSocketMessageType.Close)
-                return "";
+            {
+                var status = socket.CloseStatus?.ToString() ?? "Unknown";
+                var description = socket.CloseStatusDescription ?? "No close reason was provided.";
+                throw new WebSocketException($"Gemini Live closed the session during setup: {status}. {description}");
+            }
             stream.Write(buffer, 0, result.Count);
         }
         while (!result.EndOfMessage);
@@ -508,7 +512,12 @@ public sealed class GeminiLiveConversationService : IDisposable
             "If the user corrects an app, file, folder, link, or browser choice, ask whether they want that correction remembered. Call a remember tool only after they explicitly approve it. " +
             "Use list_learned_mappings and forget_learned_mapping for requests to inspect or forget local mappings. " +
             "Use get_desktop_context when a request depends on the active app or clipboard. Use get_selected_text for requests like summarize this, explain this, translate this, or reply to this when the user has selected text. " +
-            "Browser tab actions use the active browser. Full webpage DOM reading and reliable form automation require a future browser extension; explain that limitation when selected text is not enough. " +
+            "Never read selected text, clipboard text, or page context unless the user explicitly asks to use that context. " +
+            "Simple browser tab actions use browser_action. For a real multi-step browser task, use start_browser_task. Broad read/rank/compare/fill tasks may be handled by the smart browser-use + Gemini backend automatically, so do not decompose those into dozens of micro-actions unless Direct Playwright fallback is returned. Keep the returned task_id for every step. " +
+            "For safe read-only web tasks such as finding, comparing, ranking prize pools, products, showtimes, or visible search results, prefer browser_agent_action action=extract after navigation/observe. Extract reads visible DOM/text and returns ranked candidates without clicking ambiguous elements. Do not ask for clarification when extraction gives a clear top result. Ask only if extraction finds no useful candidates or multiple close candidates and the next choice matters. " +
+            "The Browser Agent is experimental and controls a dedicated visible Edge or Chrome profile. It can inspect pages and use accessibility-first navigate, click, fill, select, upload, verify, and extract actions. If a target is ambiguous or the page changed unexpectedly, stop and ask for clarification instead of guessing. " +
+            "Browser tasks may search and prepare reversible fields. They must pause before add-to-cart, submit, publish, post, send, delete, account changes, or other external-state actions. Never complete payment, checkout, banking, OTP, password, CAPTCHA, government, medical, or legal final submissions; ask the user to complete those manually. " +
+            "For selected-text or clipboard task context, set context_explicitly_requested true only when the user explicitly says to use it. The task popup shows context capture, practical steps, confirmation, clarification, and receipts. " +
             "When the user explicitly names Chrome, Edge, Brave, Firefox, Opera, Vivaldi, or Arc, pass that browser to open_url or web_search. Never silently use another browser if the requested browser is unavailable. " +
             "Screen inspection is one-shot and privacy-sensitive. Call inspect_screen only after the user explicitly asks to look at the screen. Ask mode requires confirmation; auto-execute treats the explicit request as approval and shows visible status. Relay the returned guidance without claiming you clicked anything. " +
             "Camera opening and take-photo requests must be explicit. Ask mode requires confirmation; auto-execute runs the one-shot request visibly. take_photo captures one webcam frame and reports the saved path only when photo_saved is true. " +
@@ -522,7 +531,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             "Never send an email or message automatically. Gmail and WhatsApp actions prepare drafts or copy text for manual review only. " +
             "If a request is unsupported, say that clearly and briefly. " +
             "For WhatsApp requests with only a contact name, call prepare_whatsapp_message with the contact name and message; the tool will explain the current limitation. " +
-            "Only save intent memory when the user explicitly asks you to remember something. Keep saved memory short and useful. " +
+            "Only save intent memory when the user explicitly asks you to remember something or explicitly approves your offer to remember a correction. Use remember_memory with a structured type, source phrase, trigger phrase, action, target, and parameters. Use list_memories, update_memory, and delete_memory when the user asks to manage memory. " +
             "Use saved intent memory only when it helps the current request. " +
             "If the user says goodbye, thanks, that they are done, or gives a clear dismissal, end the conversation. " +
             "Saved intent memory:\n" + _memory.BuildPromptDigest();
@@ -585,6 +594,66 @@ public sealed class GeminiLiveConversationService : IDisposable
                     },
                     "action"),
                 FunctionDeclaration(
+                    "start_browser_task",
+                    "Start an experimental multi-step browser task and create a task-panel tab. Auto routes broad real-site reasoning to browser-use + Gemini when enabled, with Direct Playwright fallback. Use only for proper browser tasks, not simple open-page or tab shortcuts.",
+                    new()
+                    {
+                        ["title"] = Schema("string", "Short practical task title."),
+                        ["task"] = Schema("string", "The user's complete browser task in their own words."),
+                        ["start_url"] = Schema("string", "Safe absolute http or https URL where the task should begin."),
+                        ["expected_outcome"] = Schema("string", "Visible result that should be verified before completion."),
+                        ["use_selected_text"] = Schema("boolean", "True only when the user explicitly asks to use selected text."),
+                        ["use_clipboard"] = Schema("boolean", "True only when the user explicitly asks to use clipboard context."),
+                        ["context_explicitly_requested"] = Schema("boolean", "True only when private selected or clipboard context was explicitly requested."),
+                        ["backend"] = Schema("string", "Optional. Use direct only for deterministic fast fallback; otherwise omit so Auto can use browser-use + Gemini for broad tasks."),
+                        ["risky_action_confirmed"] = Schema("boolean", "True only after the user has already explicitly approved the risky boundary, such as adding requested items to cart. Never use for checkout, payment, publishing, sending, deletion, or final submission."),
+                    },
+                    "title",
+                    "task",
+                    "start_url"),
+                FunctionDeclaration(
+                    "browser_agent_observe",
+                    "Inspect the current page in an existing controlled Browser Agent task. Returns bounded visible text, accessibility structure, and interactive element summaries.",
+                    new()
+                    {
+                        ["task_id"] = Schema("string", "Existing Browser Agent task id."),
+                    },
+                    "task_id"),
+                FunctionDeclaration(
+                    "browser_agent_action",
+                    "Perform one deterministic action in an existing controlled Browser Agent task. Use extract for safe visible-page reading/ranking before clicking. Ambiguous targets pause for clarification. Protected actions pause for confirmation or manual completion.",
+                    new()
+                    {
+                        ["task_id"] = Schema("string", "Existing Browser Agent task id."),
+                        ["action"] = Schema("string", "navigate, click, fill, select, upload, press, wait, verify, or extract."),
+                        ["role"] = Schema("string", "Accessible role such as button, link, textbox, label, field, input, or placeholder."),
+                        ["target"] = Schema("string", "Visible accessible name, label, text, placeholder, or extraction goal such as prize pool or product prices."),
+                        ["value"] = Schema("string", "URL, field value, select value, key, wait milliseconds, or extraction query."),
+                        ["file_path"] = Schema("string", "Absolute existing local file path for an explicitly requested upload."),
+                        ["expected_text"] = Schema("string", "Visible text to verify for a verify action."),
+                        ["explicitly_requested"] = Schema("boolean", "True only when the user explicitly requested this upload or protected action."),
+                    },
+                    "task_id",
+                    "action"),
+                FunctionDeclaration(
+                    "finish_browser_task",
+                    "Finish a Browser Agent task only after verifying the expected visible page result. Never use this merely because actions were attempted.",
+                    new()
+                    {
+                        ["task_id"] = Schema("string", "Existing Browser Agent task id."),
+                        ["expected_text"] = Schema("string", "Visible text that proves the requested review-stage outcome."),
+                        ["outcome"] = Schema("string", "Concise truthful receipt summary."),
+                    },
+                    "task_id"),
+                FunctionDeclaration(
+                    "cancel_browser_task",
+                    "Safely cancel an existing Browser Agent task and close its controlled page.",
+                    new()
+                    {
+                        ["task_id"] = Schema("string", "Existing Browser Agent task id."),
+                    },
+                    "task_id"),
+                FunctionDeclaration(
                     "web_search",
                     "Search Google, Bing, YouTube, or GitHub, optionally in a specifically requested installed browser.",
                     new()
@@ -633,10 +702,10 @@ public sealed class GeminiLiveConversationService : IDisposable
                     "text"),
                 FunctionDeclaration(
                     "press_key",
-                    "Press one non-submitting navigation key in the active app. Supported keys: tab, escape, arrows, page up, page down, home, end.",
+                    "Press a bounded safe key or shortcut in the active app. Supports Enter, Space, Tab, Shift+Tab, Escape, arrows, page keys, Home/End, Backspace/Delete, and safe chords like Ctrl+L, Ctrl+F, Ctrl+T, Ctrl+Tab, Ctrl+C, Ctrl+V, Ctrl+A, Ctrl+S. Risky shortcuts are blocked or confirmation-gated.",
                     new()
                     {
-                        ["key"] = Schema("string", "Key name."),
+                        ["key"] = Schema("string", "Key name or chord, such as Enter, Tab, Shift+Tab, Ctrl+L, or Ctrl+F."),
                     },
                     "key"),
                 FunctionDeclaration(
@@ -872,6 +941,54 @@ public sealed class GeminiLiveConversationService : IDisposable
                         ["kind"] = Schema("string", "Optional app, file, folder, browser, workflow, or link."),
                     },
                     "id_or_alias"),
+                FunctionDeclaration(
+                    "remember_memory",
+                    "Save a user-approved structured local memory. Use only after an explicit remember request or approval to remember a correction.",
+                    new()
+                    {
+                        ["type"] = Schema("string", "preference, correction, app_alias, file_alias, folder_alias, browser_preference, workflow, routine, task_pattern, or failed_attempt_fix."),
+                        ["source_phrase"] = Schema("string", "The user's phrase that created or approved this memory."),
+                        ["trigger_phrase"] = Schema("string", "The concise phrase used to retrieve this memory later."),
+                        ["summary"] = Schema("string", "Short human-readable meaning."),
+                        ["action"] = Schema("string", "Structured action such as open_app, open_path, run_workflow, or prefer."),
+                        ["target"] = Schema("string", "Structured app, path, workflow, URL, or preference target."),
+                        ["parameters"] = Schema("string", "Optional compact JSON object containing additional short structured string fields."),
+                        ["confidence"] = Schema("number", "Confidence from 0 to 1."),
+                    },
+                    "type",
+                    "trigger_phrase"),
+                FunctionDeclaration(
+                    "list_memories",
+                    "List and search structured local memories.",
+                    new()
+                    {
+                        ["query"] = Schema("string", "Optional search phrase."),
+                        ["type"] = Schema("string", "Optional structured memory type."),
+                    }),
+                FunctionDeclaration(
+                    "update_memory",
+                    "Edit or upgrade an existing structured local memory by id or trigger phrase.",
+                    new()
+                    {
+                        ["id_or_trigger"] = Schema("string", "Memory id or exact trigger phrase."),
+                        ["type"] = Schema("string", "Optional replacement memory type."),
+                        ["source_phrase"] = Schema("string", "Optional replacement source phrase."),
+                        ["trigger_phrase"] = Schema("string", "Optional replacement trigger phrase."),
+                        ["summary"] = Schema("string", "Optional replacement summary."),
+                        ["action"] = Schema("string", "Optional replacement action."),
+                        ["target"] = Schema("string", "Optional replacement target."),
+                        ["parameters"] = Schema("string", "Optional compact JSON object containing replacement string parameters."),
+                        ["confidence"] = Schema("number", "Optional confidence from 0 to 1."),
+                    },
+                    "id_or_trigger"),
+                FunctionDeclaration(
+                    "delete_memory",
+                    "Delete a structured local memory by id or exact trigger phrase.",
+                    new()
+                    {
+                        ["id_or_trigger"] = Schema("string", "Memory id or exact trigger phrase."),
+                    },
+                    "id_or_trigger"),
                 FunctionDeclaration(
                     "set_browser_preference",
                     "Set a user-approved preferred browser for future links, or default to restore Windows default-browser behavior.",
@@ -1111,7 +1228,9 @@ public sealed class GeminiLiveConversationService : IDisposable
         string.IsNullOrWhiteSpace(KeyboardWtfState.AssistantName) ? "Jarvis" : KeyboardWtfState.AssistantName.Trim();
 
     private string JarvisHotkey() =>
-        string.IsNullOrWhiteSpace(_settings?.Current.Hotkeys?.Jarvis) ? "Ctrl+Alt+Q" : _settings.Current.Hotkeys.Jarvis;
+        string.IsNullOrWhiteSpace(_settings?.Current.Hotkeys?.Jarvis)
+            ? HotkeyService.JarvisDefault
+            : _settings.Current.Hotkeys.Jarvis;
 
     public void Dispose()
     {

@@ -18,11 +18,16 @@ public sealed class KeyboardWtfApp : IDisposable
     private readonly IntentMemoryService _intentMemory = new();
     private readonly JarvisActionHistoryService _jarvisHistory = new();
     private readonly LearnedMappingService _learnedMappings = new();
+    private readonly JarvisTaskManager _taskManager = new();
+    private readonly BrowserWorkflowMemoryService _browserWorkflows = new();
+    private readonly BrowserCompanionBridgeService _browserCompanion = new();
 
     private NotificationService _notifications;
     private VoiceCaptureService _capture;
     private CommandRegistry _commands;
     private VoiceOverlayForm _overlay;
+    private TaskPanelForm _taskPanel;
+    private BrowserAgentService _browserAgent;
     private GeminiLiveConversationService _liveConversation;
     private JarvisAutomationService _jarvisAutomation;
     private System.Windows.Forms.Timer _startupHotkeyRetryTimer;
@@ -37,6 +42,9 @@ public sealed class KeyboardWtfApp : IDisposable
     public SettingsService Settings => _settings;
     public SpeechRecognitionService SpeechRecognition => _speechRecognition;
     public CommandRegistry Commands => _commands;
+    public bool IsJarvisActive => _liveConversation?.IsActive == true;
+    public bool IsTaskPanelVisible => _taskPanel?.Visible == true;
+    public int VisibleTaskTabCount => _taskPanel?.VisibleTaskTabCount ?? 0;
 
     public void Start()
     {
@@ -48,6 +56,7 @@ public sealed class KeyboardWtfApp : IDisposable
         _intentMemory.Load();
         _jarvisHistory.Load();
         _learnedMappings.Load();
+        _browserWorkflows.Load();
         SyncStartupRegistration();
         ApplySecretEnvironmentOverrides();
         AiProviderRegistry.Initialize(_claudeApi);
@@ -55,12 +64,20 @@ public sealed class KeyboardWtfApp : IDisposable
 
         _capture = new VoiceCaptureService(_audioRecorder, _speechRecognition, _notifications, _router);
         _liveConversation = new GeminiLiveConversationService(_notifications, _settings, _intentMemory);
+        _browserAgent = new BrowserAgentService(
+            _settings,
+            _taskManager,
+            companionBridge: _browserCompanion,
+            workflowMemory: _browserWorkflows);
         _jarvisAutomation = new JarvisAutomationService(
             _notifications,
             _settings,
             _jarvisHistory,
             _learnedMappings,
-            OpenSettings);
+            OpenSettings,
+            _intentMemory,
+            _taskManager,
+            _browserAgent);
         _commands = new CommandRegistry(
             this,
             _capture,
@@ -72,7 +89,8 @@ public sealed class KeyboardWtfApp : IDisposable
             _jarvisHistory);
         _liveConversation.SetToolExecutor(_commands.ExecuteJarvisToolAsync);
         _liveConversation.SetUserTranscriptObserver(_commands.ObserveJarvisTranscript);
-        _overlay = new VoiceOverlayForm(_audioRecorder);
+        _overlay = new VoiceOverlayForm(_audioRecorder, _settings);
+        _taskPanel = new TaskPanelForm(_taskManager, _settings);
 
         WebSettingsService.Instance.Initialize(
             this,
@@ -81,7 +99,10 @@ public sealed class KeyboardWtfApp : IDisposable
             _intentMemory,
             _jarvisHistory,
             _learnedMappings,
-            _jarvisAutomation);
+            _jarvisAutomation,
+            _taskManager,
+            _browserAgent,
+            _browserCompanion);
         WebSettingsService.Instance.Start();
 
         _hotkeys.RegistrationFailed += (name, reason) => _notifications.Warning("Hotkey unavailable", $"{name}: {reason}");
@@ -268,36 +289,12 @@ public sealed class KeyboardWtfApp : IDisposable
         });
     }
 
-    private static string ResolveStartupExecutablePath()
+    public static string ResolveStartupExecutablePath(string currentPath = null)
     {
-        var current = Environment.ProcessPath ?? Application.ExecutablePath;
-        if (!current.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
-            return current;
-
-        var installed = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Programs",
-            "keyboard.wtf",
-            "keyboard.wtf.exe");
-        if (File.Exists(installed))
-            return installed;
-
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        for (var i = 0; i < 8 && dir != null; i++, dir = dir.Parent)
-        {
-            foreach (var relative in new[]
-            {
-                Path.Combine("dist", "release", "keyboard-wtf-win-x64", "keyboard.wtf.exe"),
-                Path.Combine("dist", "keyboard-wtf-win-x64", "keyboard.wtf.exe"),
-            })
-            {
-                var candidate = Path.Combine(dir.FullName, relative);
-                if (File.Exists(candidate))
-                    return candidate;
-            }
-        }
-
-        return current;
+        var current = string.IsNullOrWhiteSpace(currentPath)
+            ? Environment.ProcessPath ?? Application.ExecutablePath
+            : currentPath;
+        return string.IsNullOrWhiteSpace(current) ? "" : Path.GetFullPath(current);
     }
 
     public void Dispose()
@@ -313,5 +310,8 @@ public sealed class KeyboardWtfApp : IDisposable
         _liveConversation?.Dispose();
         _jarvisAutomation?.Dispose();
         _overlay?.Dispose();
+        _taskPanel?.Dispose();
+        try { _browserAgent?.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
+        _taskManager.Dispose();
     }
 }

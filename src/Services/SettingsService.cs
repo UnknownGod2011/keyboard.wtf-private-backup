@@ -18,6 +18,23 @@ public enum JarvisPermissionMode
     AutoExecute
 }
 
+public enum TaskClarificationMode
+{
+    SmartClarify,
+    AlwaysAskAmbiguous,
+    LetAiDecide,
+}
+
+public enum SmartBrowserBackendMode
+{
+    Auto,
+    BrowserCompanionExtension,
+    BrowserUseGemini,
+    DirectPlaywright,
+    BrowserOSExternal,
+    StagehandExperimental,
+}
+
 public sealed class JarvisWorkflowSettings
 {
     public string Name { get; set; } = "";
@@ -30,7 +47,7 @@ public sealed class HotkeySettings
 {
     public string PushToTalk { get; set; } = "Ctrl+Alt+K";
     public string Dictation { get; set; } = "Ctrl+Alt+D";
-    public string Jarvis { get; set; } = "Ctrl+Alt+Q";
+    public string Jarvis { get; set; } = HotkeyService.JarvisDefault;
     public string CommandMode { get; set; } = "";
     public string QuickSend { get; set; } = "";
     public string Cancel { get; set; } = "Ctrl+Alt+X";
@@ -50,6 +67,7 @@ public sealed class HotkeySettings
 
 public sealed class AppSettings
 {
+    public int SettingsSchemaVersion { get; set; } = SettingsService.CurrentSchemaVersion;
     public SpeechEngine SpeechEngine { get; set; } = SpeechEngine.Whisper;
     public string Language { get; set; } = "auto";
     public int MicrophoneDevice { get; set; } = -1;
@@ -81,10 +99,23 @@ public sealed class AppSettings
     public bool StartWithWindows { get; set; } = true;
     public JarvisPermissionMode JarvisPermissionMode { get; set; } = JarvisPermissionMode.AlwaysAsk;
     public string PreferredBrowser { get; set; } = "";
+    public bool ShowTaskPopup { get; set; } = true;
+    public bool AskForClarificationWhenLowConfidence { get; set; } = true;
+    public TaskClarificationMode TaskClarificationMode { get; set; } = TaskClarificationMode.SmartClarify;
+    public bool BrowserAgentEnabled { get; set; } = true;
+    public SmartBrowserBackendMode SmartBrowserBackend { get; set; } = SmartBrowserBackendMode.Auto;
+    public bool BrowserCompanionEnabled { get; set; } = true;
+    public bool BrowserUseEnabled { get; set; } = true;
+    public bool AllowAutomationProfileFallback { get; set; }
+    public bool BrowserOSEnabled { get; set; }
+    public bool LearnBrowserWorkflows { get; set; } = true;
+    public int MaxBrowserTaskSeconds { get; set; } = 180;
+    public bool BrowserAgentDeveloperDiagnostics { get; set; }
 }
 
 public sealed class SettingsService
 {
+    public const int CurrentSchemaVersion = 2;
     public static readonly IReadOnlyDictionary<string, string> GeminiVoices =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -142,8 +173,15 @@ public sealed class SettingsService
             }
         }
 
+        var sourceSchemaVersion = hadSettingsFile
+            && settingsJson.Contains("\"SettingsSchemaVersion\"", StringComparison.OrdinalIgnoreCase)
+                ? Current.SettingsSchemaVersion
+                : 0;
         Current.Hotkeys ??= HotkeySettings.Defaults();
-        MigrateLegacyHotkeys();
+        var migratedHotkeys = MigrateLegacyHotkeys(sourceSchemaVersion);
+        if (hadSettingsFile && (sourceSchemaVersion < CurrentSchemaVersion || migratedHotkeys))
+            BackupBeforeMigration();
+        Current.SettingsSchemaVersion = CurrentSchemaVersion;
         Current.CustomPrompts ??= new Dictionary<string, string>();
         Current.JarvisWorkflows ??= new List<JarvisWorkflowSettings>();
         if (!hadSettingsFile || !settingsJson.Contains("\"StartWithWindows\"", StringComparison.OrdinalIgnoreCase))
@@ -153,18 +191,25 @@ public sealed class SettingsService
         Save();
     }
 
-    private void MigrateLegacyHotkeys()
+    private bool MigrateLegacyHotkeys(int sourceSchemaVersion)
     {
+        var changed = false;
         if (Current.Hotkeys == null)
         {
             Current.Hotkeys = HotkeySettings.Defaults();
-            return;
+            return true;
         }
 
         if (string.Equals(Current.Hotkeys.PushToTalk, "Ctrl+Alt+Space", StringComparison.OrdinalIgnoreCase))
+        {
             Current.Hotkeys.PushToTalk = HotkeySettings.Defaults().PushToTalk;
+            changed = true;
+        }
         if (string.Equals(Current.Hotkeys.Dictation, "Ctrl+Alt+V", StringComparison.OrdinalIgnoreCase))
+        {
             Current.Hotkeys.Dictation = HotkeySettings.Defaults().Dictation;
+            changed = true;
+        }
         if (string.IsNullOrWhiteSpace(Current.Hotkeys.Jarvis))
         {
             Current.Hotkeys.Jarvis = !string.IsNullOrWhiteSpace(Current.Hotkeys.QuickSend)
@@ -172,20 +217,55 @@ public sealed class SettingsService
                 : !string.IsNullOrWhiteSpace(Current.Hotkeys.CommandMode)
                     ? Current.Hotkeys.CommandMode
                     : HotkeySettings.Defaults().Jarvis;
+            changed = true;
         }
         if (string.Equals(Current.Hotkeys.Jarvis, "Ctrl+Alt+S", StringComparison.OrdinalIgnoreCase))
+        {
             Current.Hotkeys.Jarvis = HotkeySettings.Defaults().Jarvis;
+            changed = true;
+        }
+        if (sourceSchemaVersion < 2
+            && string.Equals(Current.Hotkeys.Jarvis, "Ctrl+Alt+Q", StringComparison.OrdinalIgnoreCase))
+        {
+            Current.Hotkeys.Jarvis = HotkeyService.JarvisDefault;
+            changed = true;
+            AppLog.Info($"Migrated the legacy Jarvis hotkey from Ctrl+Alt+Q to {HotkeyService.JarvisDefault}");
+        }
         if (string.IsNullOrWhiteSpace(Current.Hotkeys.Cancel))
+        {
             Current.Hotkeys.Cancel = HotkeySettings.Defaults().Cancel;
+            changed = true;
+        }
 
+        changed |= !string.IsNullOrWhiteSpace(Current.Hotkeys.CommandMode)
+            || !string.IsNullOrWhiteSpace(Current.Hotkeys.QuickSend);
         Current.Hotkeys.CommandMode = "";
         Current.Hotkeys.QuickSend = "";
+        return changed;
     }
 
     public void Save()
     {
-        Directory.CreateDirectory(AppDataDir);
-        File.WriteAllText(SettingsPath, JsonSerializer.Serialize(Current, JsonOptions));
+        var directory = Path.GetDirectoryName(SettingsPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+        var temporaryPath = SettingsPath + ".tmp";
+        File.WriteAllText(temporaryPath, JsonSerializer.Serialize(Current, JsonOptions));
+        File.Move(temporaryPath, SettingsPath, overwrite: true);
+    }
+
+    private void BackupBeforeMigration()
+    {
+        try
+        {
+            var backupPath = SettingsPath + ".pre-v2.bak";
+            if (!File.Exists(backupPath))
+                File.Copy(SettingsPath, backupPath, overwrite: false);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning(ex, "Could not create the pre-v2 settings backup");
+        }
     }
 
     public void ApplyToState()
@@ -254,6 +334,62 @@ public sealed class SettingsService
     public void SaveGeminiVoice(string value) { Current.GeminiVoice = SanitizeGeminiVoice(value); KeyboardWtfState.GeminiVoice = Current.GeminiVoice; Save(); }
     public void SaveStartWithWindows(bool value) { Current.StartWithWindows = value; Save(); }
     public void SaveJarvisPermissionMode(JarvisPermissionMode value) { Current.JarvisPermissionMode = value; Save(); }
+    public void SaveShowTaskPopup(bool value) { Current.ShowTaskPopup = value; Save(); }
+    public void SaveAskForClarificationWhenLowConfidence(bool value)
+    {
+        Current.AskForClarificationWhenLowConfidence = value;
+        Save();
+    }
+    public void SaveTaskClarificationMode(TaskClarificationMode value)
+    {
+        Current.TaskClarificationMode = value;
+        Save();
+    }
+    public void SaveBrowserAgentEnabled(bool value)
+    {
+        Current.BrowserAgentEnabled = value;
+        Save();
+    }
+    public void SaveSmartBrowserBackend(SmartBrowserBackendMode value)
+    {
+        Current.SmartBrowserBackend = value;
+        Save();
+    }
+    public void SaveBrowserCompanionEnabled(bool value)
+    {
+        Current.BrowserCompanionEnabled = value;
+        Save();
+    }
+    public void SaveBrowserUseEnabled(bool value)
+    {
+        Current.BrowserUseEnabled = value;
+        Save();
+    }
+    public void SaveAllowAutomationProfileFallback(bool value)
+    {
+        Current.AllowAutomationProfileFallback = value;
+        Save();
+    }
+    public void SaveBrowserOSEnabled(bool value)
+    {
+        Current.BrowserOSEnabled = value;
+        Save();
+    }
+    public void SaveLearnBrowserWorkflows(bool value)
+    {
+        Current.LearnBrowserWorkflows = value;
+        Save();
+    }
+    public void SaveMaxBrowserTaskSeconds(int value)
+    {
+        Current.MaxBrowserTaskSeconds = Math.Clamp(value, 30, 900);
+        Save();
+    }
+    public void SaveBrowserAgentDeveloperDiagnostics(bool value)
+    {
+        Current.BrowserAgentDeveloperDiagnostics = value;
+        Save();
+    }
     public void SavePreferredBrowser(string value)
     {
         Current.PreferredBrowser = BrowserLauncherService.NormalizeBrowser(value);

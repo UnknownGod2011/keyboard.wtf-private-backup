@@ -5,7 +5,8 @@ public static class JarvisPermissionPolicy
     private static readonly HashSet<string> ReadOnlyTools = new(StringComparer.Ordinal)
     {
         "get_desktop_context", "get_clipboard_text", "get_selected_text", "search_files",
-        "list_todos", "list_workflows", "system_status", "list_learned_mappings",
+        "list_todos", "list_workflows", "system_status", "list_learned_mappings", "list_memories",
+        "browser_agent_observe", "finish_browser_task",
     };
 
     private static readonly HashSet<string> SideEffectingTools = new(StringComparer.Ordinal)
@@ -19,6 +20,8 @@ public static class JarvisPermissionPolicy
         "remember_routine",
         "run_workflow", "delete_workflow", "remember_app_alias", "remember_path_alias",
         "remember_link_alias", "remember_workflow_alias", "forget_learned_mapping", "set_browser_preference",
+        "remember_memory", "update_memory", "delete_memory",
+        "start_browser_task", "cancel_browser_task",
     };
 
     public static bool RequiresConfirmation(

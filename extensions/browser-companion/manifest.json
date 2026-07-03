@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "keyboard.wtf Browser Companion",
+  "description": "Fast local browser executor for keyboard.wtf. Extracts compact Page Control Graphs and executes approved control actions.",
+  "version": "0.1.7",
+  "permissions": ["activeTab", "tabs", "scripting", "storage", "debugger"],
+  "host_permissions": ["http://localhost/*", "http://localhost:*/*", "http://127.0.0.1/*", "http://127.0.0.1:*/*", "<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "keyboard.wtf Browser Companion",
+    "default_popup": "popup.html"
+  }
+}

@@ -8,14 +8,14 @@ keyboard.wtf favors verified actions over brittle UI clicking. Every tool must r
 | --- | --- |
 | Windows startup | Current-user `Run` registration, settings/model reload, and a single-instance guard |
 | Desktop | Open common apps and Start menu entries; switch, minimize, maximize, or restore windows |
-| Browser | Open safe URLs; control tabs in the foreground browser; open stable service destinations |
+| Browser | Open safe URLs; control foreground-browser tabs; run experimental multi-step tasks in a dedicated Playwright-controlled Edge/Chrome profile |
 | Media | Open Spotify desktop search or YouTube search; open Spotify Liked Songs |
 | YouTube | Open Liked Videos, Subscriptions, or History |
 | Amazon | Open an Amazon India product search |
 | Camera | Open Windows Camera after confirmation |
 | Capture | One-shot Gemini screen guidance, desktop screenshots, and webcam photos |
 | Windows recording | Xbox Game Bar toggle and Windows screen-region recording shortcuts |
-| Productivity | Notes, to-dos, timers, selected text, clipboard, file search, and workflows |
+| Productivity | Notes, to-dos, timers, permission-gated selected text/clipboard context, file search, structured memory, routines, and workflows |
 | System | Volume, mute, settings pages, battery, charging, uptime, OS, machine, and user status |
 
 ## Requires Provider Authorization
@@ -26,17 +26,18 @@ keyboard.wtf favors verified actions over brittle UI clicking. Every tool must r
 - Webcam photos use a one-shot OpenCV capture after the user's explicit request and save under `Pictures\keyboard.wtf\Camera`. Windows desktop camera privacy access remains authoritative.
 - `Win+Alt+R` is a toggle owned by Xbox Game Bar. keyboard.wtf can send it but cannot independently prove the resulting recording state.
 
-## Requires A Browser Companion
+## Experimental Browser Agent
 
-Amazon cart changes and other authenticated page actions need a browser extension or equivalent companion that can:
+The local post-v1.2 build includes a replaceable Playwright for .NET backend. Gemini Live plans actions, while keyboard.wtf owns task state, ambiguity checks, confirmation, cancellation, receipts, and safety.
 
-1. Read the signed-in page DOM on an allowlisted domain.
-2. Return candidate products or targets to Jarvis.
-3. Show an action preview with exact item, price, quantity, account, and destination.
-4. Require confirmation immediately before cart, purchase, message, delete, or bulk account changes.
-5. Execute one versioned site adapter and return a verifiable receipt.
+- A dedicated browser-agent profile is stored under local app data. The normal Chrome/Edge profile is not automated or exported.
+- Visible content, accessibility structure, and interactive controls are bounded before being returned to the planner.
+- Locator ambiguity and unexpected page changes pause in a `Waiting for clarification` task state.
+- Add-to-cart, submit, publish, post, send, delete, and account-changing actions require confirmation.
+- Payment, checkout, banking, passwords, OTP, CAPTCHA, and government/medical/legal final submissions are manual-only.
+- The task manager permits four active tasks, 30 browser actions per task, and a 15-minute timeout.
 
-Generic screen-coordinate or keystroke automation is intentionally excluded because layout changes, ads, focus loss, and ambiguous targets can cause the wrong external action.
+This is a usable experimental foundation, not a claim of universal website automation. Site changes, unsupported controls, manual login, and anti-bot challenges can still stop a task.
 
 ## References
 

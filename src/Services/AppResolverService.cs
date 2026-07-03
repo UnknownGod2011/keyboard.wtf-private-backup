@@ -30,6 +30,21 @@ public sealed class AppResolution
 
 public sealed class AppResolverService
 {
+    private static readonly HashSet<string> VendorPrefixes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "adobe",
+        "amazon",
+        "apple",
+        "google",
+        "jetbrains",
+        "meta",
+        "microsoft",
+        "mozilla",
+        "openai",
+        "oracle",
+        "samsung",
+    };
+
     private static readonly Dictionary<string, string> NaturalAliases = new(StringComparer.OrdinalIgnoreCase)
     {
         ["codex"] = "Codex",
@@ -85,13 +100,17 @@ public sealed class AppResolverService
     };
 
     private readonly LearnedMappingService _mappings;
+    private readonly Func<IReadOnlyList<AppCandidate>> _candidateProvider;
     private readonly object _cacheLock = new();
     private IReadOnlyList<AppCandidate> _cached = Array.Empty<AppCandidate>();
     private DateTimeOffset _cacheTime;
 
-    public AppResolverService(LearnedMappingService mappings)
+    public AppResolverService(
+        LearnedMappingService mappings,
+        Func<IReadOnlyList<AppCandidate>> candidateProvider = null)
     {
         _mappings = mappings;
+        _candidateProvider = candidateProvider;
     }
 
     public AppResolution Resolve(string query, bool refresh = false)
@@ -112,7 +131,7 @@ public sealed class AppResolverService
             };
         }
 
-        var candidates = Discover(refresh);
+        var candidates = _candidateProvider?.Invoke() ?? Discover(refresh);
         var canonicalQuery = CanonicalizeNaturalName(cleanQuery);
         var ranked = candidates
             .Select(candidate => new AppCandidate
@@ -121,9 +140,7 @@ public sealed class AppResolverService
                 LaunchTarget = candidate.LaunchTarget,
                 Source = candidate.Source,
                 Trusted = candidate.Trusted,
-                Score = Math.Max(
-                    FuzzyMatcher.Score(cleanQuery, candidate.Name),
-                    FuzzyMatcher.Score(canonicalQuery, candidate.Name)),
+                Score = ScoreNameMatch(cleanQuery, canonicalQuery, candidate.Name),
             })
             .Where(candidate => candidate.Score >= 0.42)
             .GroupBy(candidate => FuzzyMatcher.Normalize(candidate.Name), StringComparer.Ordinal)
@@ -149,9 +166,18 @@ public sealed class AppResolverService
         var second = ranked.Length > 1 ? ranked[1] : null;
         var exactNaturalAlias = NaturalAliases.ContainsKey(cleanQuery)
             && FuzzyMatcher.Normalize(best.Name) == FuzzyMatcher.Normalize(canonicalQuery);
+        var exactProductName = IsExactProductName(cleanQuery, best.Name)
+            || IsExactProductName(canonicalQuery, best.Name);
+        var exactProductCollision = second != null
+            && (IsExactProductName(cleanQuery, second.Name)
+                || IsExactProductName(canonicalQuery, second.Name));
+        var exactProductConfidence = exactProductName
+            && (!exactProductCollision || ExplicitVendorMatches(cleanQuery, best.Name));
         var highConfidence = best.Trusted
-            && (best.Score >= 0.86
+            && ((best.Score >= 0.94
+                    && (!exactProductCollision || ExplicitVendorMatches(cleanQuery, best.Name)))
                 || exactNaturalAlias
+                || exactProductConfidence
                 || (best.Score >= 0.78 && (second == null || best.Score - second.Score >= 0.1)));
 
         return new AppResolution
@@ -210,6 +236,59 @@ public sealed class AppResolverService
             .OrderByDescending(item => item.Score)
             .FirstOrDefault();
         return typo?.Value ?? clean;
+    }
+
+    public static string ProductNameWithoutVendor(string value)
+    {
+        var normalized = FuzzyMatcher.Normalize(value);
+        var tokens = normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+        while (tokens.Count > 1 && VendorPrefixes.Contains(tokens[0]))
+            tokens.RemoveAt(0);
+        return string.Join(" ", tokens);
+    }
+
+    public static double ScoreNameMatch(string query, string candidateName) =>
+        ScoreNameMatch(query, CanonicalizeNaturalName(query), candidateName);
+
+    private static double ScoreNameMatch(string query, string canonicalQuery, string candidateName)
+    {
+        var queryProduct = ProductNameWithoutVendor(query);
+        var canonicalProduct = ProductNameWithoutVendor(canonicalQuery);
+        var candidateProduct = ProductNameWithoutVendor(candidateName);
+        var score = new[]
+        {
+            FuzzyMatcher.Score(query, candidateName),
+            FuzzyMatcher.Score(canonicalQuery, candidateName),
+            FuzzyMatcher.Score(queryProduct, candidateProduct),
+            FuzzyMatcher.Score(canonicalProduct, candidateProduct),
+        }.Max();
+
+        if (IsExactProductName(query, candidateName)
+            || IsExactProductName(canonicalQuery, candidateName))
+        {
+            score = 1;
+        }
+        return score;
+    }
+
+    private static bool IsExactProductName(string query, string candidateName)
+    {
+        var queryProduct = ProductNameWithoutVendor(query);
+        var candidateProduct = ProductNameWithoutVendor(candidateName);
+        return queryProduct.Length >= 3
+            && string.Equals(queryProduct, candidateProduct, StringComparison.Ordinal);
+    }
+
+    private static bool ExplicitVendorMatches(string query, string candidateName)
+    {
+        var queryTokens = FuzzyMatcher.Normalize(query)
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var candidateTokens = FuzzyMatcher.Normalize(candidateName)
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return queryTokens.Length > 0
+            && candidateTokens.Length > 0
+            && VendorPrefixes.Contains(queryTokens[0])
+            && string.Equals(queryTokens[0], candidateTokens[0], StringComparison.OrdinalIgnoreCase);
     }
 
     public bool TryLaunch(AppCandidate candidate, out string error)

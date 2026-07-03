@@ -131,6 +131,40 @@ public sealed class SmartFileSearchServiceTests : IDisposable
         Assert.Equal(target, result.Best.Path);
     }
 
+    [Fact]
+    public async Task CurrentWorkspaceSearchFindsTheLocalAgentTestingGuide()
+    {
+        var workspace = FindWorkspaceRoot();
+        var service = new SmartFileSearchService(
+            _mappings,
+            [(workspace, "Current workspace", 10)]);
+
+        var result = await service.SearchAsync(
+            "local agent testing",
+            workspace,
+            includeFiles: true,
+            includeFolders: false,
+            CancellationToken.None);
+
+        Assert.NotEqual(FileResolutionStatus.NotFound, result.Status);
+        Assert.EndsWith(
+            Path.Combine("docs", "LOCAL_AGENT_TESTING.md"),
+            result.Best.Path,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string FindWorkspaceRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory != null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "KeyboardWtf.sln")))
+                return directory.FullName;
+            directory = directory.Parent;
+        }
+        throw new DirectoryNotFoundException("Could not locate the keyboard.wtf workspace root.");
+    }
+
     public void Dispose()
     {
         try

@@ -7,6 +7,7 @@ using KeyboardWtf.Services;
 internal sealed class VoiceOverlayForm : Form
 {
     private readonly AudioRecorderService _audioRecorder;
+    private readonly SettingsService _settings;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly Label _statusLabel;
     private readonly Label _detailLabel;
@@ -15,9 +16,10 @@ internal sealed class VoiceOverlayForm : Form
     private VoiceUiPhase _lastPhase = VoiceUiPhase.Idle;
     private double _lastLevelDb = -96;
 
-    public VoiceOverlayForm(AudioRecorderService audioRecorder)
+    public VoiceOverlayForm(AudioRecorderService audioRecorder, SettingsService settings)
     {
         _audioRecorder = audioRecorder;
+        _settings = settings;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
@@ -57,7 +59,7 @@ internal sealed class VoiceOverlayForm : Form
             Font = new Font("Segoe UI", 9),
             BackColor = Color.Transparent,
             ForeColor = Color.FromArgb(205, 205, 205),
-            Text = "Ctrl+Alt+Q for Jarvis",
+            Text = $"{JarvisHotkey()} for Jarvis",
         };
 
         Controls.Add(_orb);
@@ -182,15 +184,15 @@ internal sealed class VoiceOverlayForm : Form
         return new Region(path);
     }
 
-    private static string Shorten(string text, int maxLength)
+    private string Shorten(string text, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(text))
-            return "Ready for Ctrl+Alt+Q";
+            return $"Ready for {JarvisHotkey()}";
         var singleLine = text.ReplaceLineEndings(" ").Trim();
         return singleLine.Length <= maxLength ? singleLine : singleLine[..(maxLength - 1)] + "...";
     }
 
-    private static string BuildDetail(VoiceUiPhase phase, string detail)
+    private string BuildDetail(VoiceUiPhase phase, string detail)
     {
         var elapsed = Math.Max(0, (int)(DateTime.UtcNow - KeyboardWtfState.UiPhaseStartedUtc).TotalSeconds);
         return phase switch
@@ -214,4 +216,9 @@ internal sealed class VoiceOverlayForm : Form
         VoiceUiPhase.Error => Color.FromArgb(220, 38, 38),
         _ => Color.FromArgb(90, 90, 90),
     };
+
+    private string JarvisHotkey() =>
+        string.IsNullOrWhiteSpace(_settings?.Current.Hotkeys?.Jarvis)
+            ? HotkeyService.JarvisDefault
+            : _settings.Current.Hotkeys.Jarvis;
 }

@@ -14,6 +14,11 @@ using NAudio.Wave;
 
 public sealed class WebSettingsService : IDisposable
 {
+    private static readonly JsonSerializerOptions CompanionJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+    };
+
     private static WebSettingsService _instance;
     private static readonly object _lock = new();
 
@@ -29,6 +34,9 @@ public sealed class WebSettingsService : IDisposable
     private JarvisActionHistoryService _jarvisHistory;
     private LearnedMappingService _learnedMappings;
     private JarvisAutomationService _jarvisAutomation;
+    private JarvisTaskManager _taskManager;
+    private BrowserAgentService _browserAgent;
+    private BrowserCompanionBridgeService _browserCompanion;
     private string _settingsHtml;
 
     // Live microphone meter state
@@ -63,7 +71,10 @@ public sealed class WebSettingsService : IDisposable
         IntentMemoryService intentMemory,
         JarvisActionHistoryService jarvisHistory,
         LearnedMappingService learnedMappings,
-        JarvisAutomationService jarvisAutomation)
+        JarvisAutomationService jarvisAutomation,
+        JarvisTaskManager taskManager,
+        BrowserAgentService browserAgent,
+        BrowserCompanionBridgeService browserCompanion = null)
     {
         _app = app;
         _settings = settings;
@@ -72,6 +83,9 @@ public sealed class WebSettingsService : IDisposable
         _jarvisHistory = jarvisHistory;
         _learnedMappings = learnedMappings;
         _jarvisAutomation = jarvisAutomation;
+        _taskManager = taskManager;
+        _browserAgent = browserAgent;
+        _browserCompanion = browserCompanion;
         _settingsHtml = LoadSettingsHtml();
     }
 
@@ -157,9 +171,91 @@ public sealed class WebSettingsService : IDisposable
             {
                 await ServeHtml(resp);
             }
+            else if (path == "/browser-agent/mock-form" && method == "GET")
+            {
+                await ServeBrowserAgentMockForm(resp);
+            }
+            else if (path == "/browser-agent/mock-store" && method == "GET")
+            {
+                await ServeBrowserAgentMockStore(resp);
+            }
             else if (path == "/api/settings" && method == "GET")
             {
                 await ServeSettings(resp);
+            }
+            else if (path == "/api/browser-companion/status" && method == "GET")
+            {
+                await ServeBrowserCompanionStatus(resp);
+            }
+            else if (path == "/api/browser-companion/graph" && method == "GET")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Settings action header required." });
+                    return;
+                }
+                await ServeBrowserCompanionGraph(resp);
+            }
+            else if (path == "/api/browser-companion/command" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Settings action header required." });
+                    return;
+                }
+                await RunBrowserCompanionCommand(req, resp);
+            }
+            else if (path == "/api/browser-companion/test" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Settings action header required." });
+                    return;
+                }
+                await TestBrowserCompanionConnection(resp);
+            }
+            else if (path == "/api/browser-companion/register" && method == "POST")
+            {
+                if (!HasCompanionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Browser Companion header required." });
+                    return;
+                }
+                await RegisterBrowserCompanion(req, resp);
+            }
+            else if (path == "/api/browser-companion/graph" && method == "POST")
+            {
+                if (!HasCompanionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Browser Companion header required." });
+                    return;
+                }
+                await ReceiveBrowserCompanionGraph(req, resp);
+            }
+            else if (path == "/api/browser-companion/result" && method == "POST")
+            {
+                if (!HasCompanionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Browser Companion header required." });
+                    return;
+                }
+                await ReceiveBrowserCompanionResult(req, resp);
+            }
+            else if (path == "/api/browser-companion/next-command" && method == "GET")
+            {
+                if (!HasCompanionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Browser Companion header required." });
+                    return;
+                }
+                await ServeBrowserCompanionCommand(req, resp);
             }
             else if (path == "/api/settings" && method == "POST")
             {
@@ -178,6 +274,10 @@ public sealed class WebSettingsService : IDisposable
             else if (path == "/api/intent-memory/remember" && method == "POST")
             {
                 await RememberIntentMemory(req, resp);
+            }
+            else if (path == "/api/intent-memory/update" && method == "POST")
+            {
+                await UpdateIntentMemory(req, resp);
             }
             else if (path == "/api/intent-memory/clear" && method == "POST")
             {
@@ -206,6 +306,64 @@ public sealed class WebSettingsService : IDisposable
             {
                 _app?.Commands?.CancelCurrent();
                 await WriteJson(resp, new { ok = true });
+            }
+            else if (path == "/api/browser-agent/demo" && method == "POST")
+            {
+                await RunBrowserAgentDemo(req, resp);
+            }
+            else if (path == "/api/browser-agent/start" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, JsonSerializer.Serialize(new { ok = false, error = "Settings action header required." }));
+                    return;
+                }
+                await StartBrowserAgentTask(req, resp);
+            }
+            else if (path == "/api/browser-agent/observe" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, JsonSerializer.Serialize(new { ok = false, error = "Settings action header required." }));
+                    return;
+                }
+                await ObserveBrowserAgentTask(req, resp);
+            }
+            else if (path == "/api/browser-agent/action" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, JsonSerializer.Serialize(new { ok = false, error = "Settings action header required." }));
+                    return;
+                }
+                await ActBrowserAgentTask(req, resp);
+            }
+            else if (path == "/api/browser-agent/finish" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, JsonSerializer.Serialize(new { ok = false, error = "Settings action header required." }));
+                    return;
+                }
+                await FinishBrowserAgentTask(req, resp);
+            }
+            else if (path == "/api/browser-agent/cancel" && method == "POST")
+            {
+                await CancelBrowserAgentTask(req, resp);
+            }
+            else if (path == "/api/browser-agent/confirm" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, JsonSerializer.Serialize(new { ok = false, error = "Settings action header required." }));
+                    return;
+                }
+                await ConfirmBrowserAgentTask(req, resp);
             }
             else if (path == "/api/microphones" && method == "GET")
             {
@@ -334,6 +492,247 @@ public sealed class WebSettingsService : IDisposable
         resp.Close();
     }
 
+    private BrowserBackendStatus BrowserCompanionStatusSnapshot() =>
+        _browserCompanion?.DetailedStatus(
+            Port,
+            _settings?.Current.BrowserUseEnabled == true,
+            _settings?.Current.AllowAutomationProfileFallback == true)
+        ?? new BrowserBackendStatus
+        {
+            Initialized = true,
+            Available = false,
+            BrowserChannel = "Browser Companion Extension",
+            ConnectionState = "Error",
+            BridgePort = Port,
+            BridgeUrl = Port > 0 ? $"http://localhost:{Port}" : "",
+            BrowserUseFallbackEnabled = _settings?.Current.BrowserUseEnabled == true,
+            AutomationProfileFallbackEnabled = _settings?.Current.AllowAutomationProfileFallback == true,
+            LastError = "Browser Companion bridge is unavailable.",
+        };
+
+    private static IReadOnlyList<string> TopVisibleControls(BrowserCompanionControlGraph graph) =>
+        graph?.Controls?
+            .Where(control => control.Visible && !control.Sensitive)
+            .Select(control => string.Join(
+                " ",
+                new[]
+                {
+                    control.ControlType,
+                    control.Role,
+                    control.Text,
+                    control.AriaLabel,
+                    control.Title,
+                    control.Placeholder,
+                }.Where(value => !string.IsNullOrWhiteSpace(value))).Trim())
+            .Where(value => value.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(10)
+            .ToArray()
+        ?? Array.Empty<string>();
+
+    private async Task ServeBrowserCompanionStatus(HttpListenerResponse resp)
+    {
+        var status = BrowserCompanionStatusSnapshot();
+        var graph = _browserCompanion?.LastGraph;
+        await WriteJson(resp, new
+        {
+            ok = true,
+            status,
+            graph = graph == null
+                ? null
+                : new
+                {
+                    graph.Url,
+                    graph.Title,
+                    graph.PageType,
+                    graph.GraphVersion,
+                    graph.CapturedAt,
+                    controlCount = graph.Controls.Count,
+                },
+        });
+    }
+
+    private async Task TestBrowserCompanionConnection(HttpListenerResponse resp)
+    {
+        if (_browserCompanion == null)
+        {
+            resp.StatusCode = 400;
+            await WriteJson(resp, new
+            {
+                ok = false,
+                connectionState = "Error",
+                error = "Browser Companion bridge is unavailable.",
+            });
+            return;
+        }
+
+        var status = BrowserCompanionStatusSnapshot();
+        if (!status.Available)
+        {
+            resp.StatusCode = 400;
+            await WriteJson(resp, new
+            {
+                ok = false,
+                status,
+                connectionState = status.ConnectionState,
+                error = status.LastError,
+            });
+            return;
+        }
+
+        var result = await _browserCompanion.ExecuteAsync(
+            new BrowserCompanionCommand
+            {
+                Type = "getGraph",
+                TimeoutMs = 12000,
+            },
+            TimeSpan.FromSeconds(12),
+            CancellationToken.None);
+        var graph = result.Graph ?? _browserCompanion.LastGraph;
+        var topControls = TopVisibleControls(graph);
+        if (!result.Ok)
+        {
+            resp.StatusCode = 400;
+            await WriteJson(resp, new
+            {
+                ok = false,
+                status = BrowserCompanionStatusSnapshot(),
+                connectionState = BrowserCompanionStatusSnapshot().ConnectionState,
+                activeTabUrl = graph?.Url ?? status.ActiveTabUrl,
+                controlsFound = graph?.Controls?.Count ?? 0,
+                topControls,
+                error = result.Message,
+                result.Status,
+            });
+            return;
+        }
+
+        await WriteJson(resp, new
+        {
+            ok = true,
+            status = BrowserCompanionStatusSnapshot(),
+            connectionState = "Connected",
+            activeTabUrl = graph?.Url ?? "",
+            pageTitle = graph?.Title ?? "",
+            pageType = graph?.PageType ?? "",
+            controlsFound = graph?.Controls?.Count ?? 0,
+            topControls,
+            lastError = BrowserCompanionStatusSnapshot().LastError,
+        });
+    }
+
+    private async Task ServeBrowserCompanionGraph(HttpListenerResponse resp)
+    {
+        await WriteJson(resp, new
+        {
+            ok = _browserCompanion?.LastGraph != null,
+            graph = _browserCompanion?.LastGraph,
+        });
+    }
+
+    private async Task RunBrowserCompanionCommand(HttpListenerRequest req, HttpListenerResponse resp)
+    {
+        if (_browserCompanion == null)
+        {
+            resp.StatusCode = 400;
+            await WriteJson(resp, new { ok = false, error = "Browser Companion bridge is unavailable." });
+            return;
+        }
+
+        using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+        var body = await reader.ReadToEndAsync();
+        using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+        var timeoutMs = doc.RootElement.TryGetProperty("timeoutMs", out var timeoutEl)
+            ? Math.Clamp(timeoutEl.GetInt32(), 1000, 60000)
+            : 15000;
+        var command = new BrowserCompanionCommand
+        {
+            TaskId = GetJsonString(doc.RootElement, "taskId") ?? GetJsonString(doc.RootElement, "task_id"),
+            Type = GetJsonString(doc.RootElement, "type"),
+            Url = GetJsonString(doc.RootElement, "url"),
+            ControlId = GetJsonString(doc.RootElement, "controlId") ?? GetJsonString(doc.RootElement, "control_id"),
+            Text = GetJsonString(doc.RootElement, "text"),
+            TimeoutMs = timeoutMs,
+        };
+        var result = await _browserCompanion.ExecuteAsync(
+            command,
+            TimeSpan.FromMilliseconds(timeoutMs),
+            CancellationToken.None);
+        if (!result.Ok)
+            resp.StatusCode = 400;
+        await WriteJson(resp, result);
+    }
+
+    private async Task RegisterBrowserCompanion(HttpListenerRequest req, HttpListenerResponse resp)
+    {
+        using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+        var body = await reader.ReadToEndAsync();
+        using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+        _browserCompanion?.Register(
+            GetJsonString(doc.RootElement, "sessionId") ?? GetJsonString(doc.RootElement, "session_id"),
+            GetJsonString(doc.RootElement, "extensionVersion") ?? GetJsonString(doc.RootElement, "extension_version"),
+            GetJsonString(doc.RootElement, "contentScriptVersion") ?? GetJsonString(doc.RootElement, "content_script_version"),
+            GetJsonString(doc.RootElement, "browserName") ?? GetJsonString(doc.RootElement, "browser_name"),
+            GetJsonString(doc.RootElement, "activeTabUrl") ?? GetJsonString(doc.RootElement, "active_tab_url"));
+        await WriteJson(resp, new { ok = true });
+    }
+
+    private async Task ReceiveBrowserCompanionGraph(HttpListenerRequest req, HttpListenerResponse resp)
+    {
+        using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+        var body = await reader.ReadToEndAsync();
+        BrowserCompanionControlGraph graph;
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            graph = null;
+        }
+        else
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("graph", out var graphElement)
+                || doc.RootElement.TryGetProperty("Graph", out graphElement))
+            {
+                _browserCompanion?.Register(
+                    GetJsonString(doc.RootElement, "sessionId") ?? GetJsonString(doc.RootElement, "session_id"),
+                    GetJsonString(doc.RootElement, "extensionVersion") ?? GetJsonString(doc.RootElement, "extension_version"),
+                    GetJsonString(doc.RootElement, "contentScriptVersion") ?? GetJsonString(doc.RootElement, "content_script_version"),
+                    GetJsonString(doc.RootElement, "browserName") ?? GetJsonString(doc.RootElement, "browser_name"),
+                    graphElement.ValueKind == JsonValueKind.Object
+                        ? GetJsonString(graphElement, "url") ?? GetJsonString(graphElement, "Url")
+                        : "");
+                graph = graphElement.Deserialize<BrowserCompanionControlGraph>(CompanionJsonOptions);
+            }
+            else
+            {
+                graph = doc.RootElement.Deserialize<BrowserCompanionControlGraph>(CompanionJsonOptions);
+            }
+        }
+        _browserCompanion?.SubmitGraph(graph);
+        await WriteJson(resp, new { ok = true });
+    }
+
+    private async Task ReceiveBrowserCompanionResult(HttpListenerRequest req, HttpListenerResponse resp)
+    {
+        using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+        var body = await reader.ReadToEndAsync();
+        var result = JsonSerializer.Deserialize<BrowserCompanionCommandResult>(
+            string.IsNullOrWhiteSpace(body) ? "{}" : body,
+            CompanionJsonOptions);
+        _browserCompanion?.Complete(result);
+        await WriteJson(resp, new { ok = true });
+    }
+
+    private async Task ServeBrowserCompanionCommand(HttpListenerRequest req, HttpListenerResponse resp)
+    {
+        var sessionId = req.QueryString["sessionId"] ?? req.QueryString["session_id"] ?? "";
+        var command = _browserCompanion?.NextCommand(sessionId);
+        await WriteJson(resp, new
+        {
+            ok = true,
+            command,
+        });
+    }
+
     private async Task ServeSettings(HttpListenerResponse resp)
     {
         // TTS info is Windows-only (SAPI/Piper); give null on non-Windows to keep the API shape.
@@ -413,9 +812,42 @@ public sealed class WebSettingsService : IDisposable
             geminiVoices = SettingsService.GeminiVoices.Select(pair => new { name = pair.Key, style = pair.Value }).ToArray(),
             startWithWindows = _settings?.Current.StartWithWindows ?? true,
             startupExecutablePath = _app?.StartupExecutablePath ?? "",
+            currentExecutablePath = Environment.ProcessPath ?? Application.ExecutablePath,
+            currentProcessId = Environment.ProcessId,
+            currentVersion = typeof(WebSettingsService).Assembly.GetName().Version?.ToString() ?? "",
+            runtime = new
+            {
+                jarvisActive = _app?.IsJarvisActive ?? false,
+                taskPanelVisible = _app?.IsTaskPanelVisible ?? false,
+                taskPanelTabCount = _app?.VisibleTaskTabCount ?? 0,
+                isRecording = KeyboardWtfState.IsRecording,
+                isProcessing = KeyboardWtfState.IsProcessing,
+                recordingMode = KeyboardWtfState.CurrentRecordingMode.ToString(),
+                uiPhase = KeyboardWtfState.UiPhase.ToString(),
+                uiTitle = KeyboardWtfState.UiTitle,
+                uiDetail = KeyboardWtfState.UiDetail,
+                inputLevelDb = Math.Round(KeyboardWtfState.InputLevelDb, 1),
+            },
             startupRegistered = WindowsStartupService.IsRegisteredFor(_app?.StartupExecutablePath ?? ""),
             startupRegisteredCommand = WindowsStartupService.RegisteredCommand(),
             jarvisPermissionMode = (_settings?.Current.JarvisPermissionMode ?? JarvisPermissionMode.AlwaysAsk).ToString(),
+            showTaskPopup = _settings?.Current.ShowTaskPopup ?? true,
+            askForClarificationWhenLowConfidence =
+                _settings?.Current.AskForClarificationWhenLowConfidence ?? true,
+            taskClarificationMode =
+                (_settings?.Current.TaskClarificationMode ?? TaskClarificationMode.SmartClarify).ToString(),
+            browserAgentEnabled = _settings?.Current.BrowserAgentEnabled ?? true,
+            smartBrowserBackend = (_settings?.Current.SmartBrowserBackend ?? SmartBrowserBackendMode.Auto).ToString(),
+            browserCompanionEnabled = _settings?.Current.BrowserCompanionEnabled ?? true,
+            browserUseEnabled = _settings?.Current.BrowserUseEnabled ?? true,
+            allowAutomationProfileFallback = _settings?.Current.AllowAutomationProfileFallback ?? false,
+            browserOsEnabled = _settings?.Current.BrowserOSEnabled ?? false,
+            learnBrowserWorkflows = _settings?.Current.LearnBrowserWorkflows ?? true,
+            maxBrowserTaskSeconds = _settings?.Current.MaxBrowserTaskSeconds ?? 180,
+            browserAgentDeveloperDiagnostics = _settings?.Current.BrowserAgentDeveloperDiagnostics ?? false,
+            browserAgentStatus = _browserAgent?.Status ?? new BrowserBackendStatus(),
+            browserCompanionStatus = BrowserCompanionStatusSnapshot(),
+            jarvisTasks = _taskManager?.Snapshot() ?? Array.Empty<JarvisTask>(),
             intentMemory = _intentMemory?.Snapshot() ?? new IntentMemorySnapshot(),
             jarvisWorkflows = _settings?.Current.JarvisWorkflows ?? new List<JarvisWorkflowSettings>(),
             jarvisActionHistory = _jarvisHistory?.Snapshot() ?? Array.Empty<JarvisActionEntry>(),
@@ -439,6 +871,11 @@ public sealed class WebSettingsService : IDisposable
                     ? "Live partial transcript available"
                     : "Final transcript available; Vosk enables live preview",
                 routineMemory = "Saved trigger phrases available",
+                browserAgent = _settings?.Current.BrowserAgentEnabled == true
+                    ? (_browserAgent?.Status.Initialized == true
+                        ? $"Experimental - {_browserAgent.Status.BrowserChannel}"
+                        : "Experimental - starts on first task")
+                    : "Disabled",
             }
         };
 
@@ -586,6 +1023,32 @@ public sealed class WebSettingsService : IDisposable
         if (root.TryGetProperty("jarvisPermissionMode", out var permissionEl)
             && Enum.TryParse<JarvisPermissionMode>(permissionEl.GetString(), out var permissionMode))
             _settings?.SaveJarvisPermissionMode(permissionMode);
+        if (root.TryGetProperty("showTaskPopup", out var showTaskPopupEl))
+            _settings?.SaveShowTaskPopup(showTaskPopupEl.GetBoolean());
+        if (root.TryGetProperty("askForClarificationWhenLowConfidence", out var askClarificationEl))
+            _settings?.SaveAskForClarificationWhenLowConfidence(askClarificationEl.GetBoolean());
+        if (root.TryGetProperty("taskClarificationMode", out var clarificationModeEl)
+            && Enum.TryParse<TaskClarificationMode>(clarificationModeEl.GetString(), out var clarificationMode))
+            _settings?.SaveTaskClarificationMode(clarificationMode);
+        if (root.TryGetProperty("browserAgentEnabled", out var browserAgentEnabledEl))
+            _settings?.SaveBrowserAgentEnabled(browserAgentEnabledEl.GetBoolean());
+        if (root.TryGetProperty("smartBrowserBackend", out var smartBrowserBackendEl)
+            && Enum.TryParse<SmartBrowserBackendMode>(smartBrowserBackendEl.GetString(), out var smartBrowserBackend))
+            _settings?.SaveSmartBrowserBackend(smartBrowserBackend);
+        if (root.TryGetProperty("browserCompanionEnabled", out var browserCompanionEnabledEl))
+            _settings?.SaveBrowserCompanionEnabled(browserCompanionEnabledEl.GetBoolean());
+        if (root.TryGetProperty("browserUseEnabled", out var browserUseEnabledEl))
+            _settings?.SaveBrowserUseEnabled(browserUseEnabledEl.GetBoolean());
+        if (root.TryGetProperty("allowAutomationProfileFallback", out var automationFallbackEl))
+            _settings?.SaveAllowAutomationProfileFallback(automationFallbackEl.GetBoolean());
+        if (root.TryGetProperty("browserOsEnabled", out var browserOsEnabledEl))
+            _settings?.SaveBrowserOSEnabled(browserOsEnabledEl.GetBoolean());
+        if (root.TryGetProperty("learnBrowserWorkflows", out var learnBrowserWorkflowsEl))
+            _settings?.SaveLearnBrowserWorkflows(learnBrowserWorkflowsEl.GetBoolean());
+        if (root.TryGetProperty("maxBrowserTaskSeconds", out var maxBrowserTaskSecondsEl))
+            _settings?.SaveMaxBrowserTaskSeconds(maxBrowserTaskSecondsEl.GetInt32());
+        if (root.TryGetProperty("browserAgentDeveloperDiagnostics", out var browserAgentDiagnosticsEl))
+            _settings?.SaveBrowserAgentDeveloperDiagnostics(browserAgentDiagnosticsEl.GetBoolean());
         if (root.TryGetProperty("preferredBrowser", out var preferredBrowserEl))
             _settings?.SavePreferredBrowser(preferredBrowserEl.GetString() ?? "");
 
@@ -619,7 +1082,7 @@ public sealed class WebSettingsService : IDisposable
                 PushToTalk = GetHotkey(hotkeysEl, "pushToTalk", _settings?.Current.Hotkeys.PushToTalk ?? "Ctrl+Alt+K"),
                 Dictation = GetHotkey(hotkeysEl, "dictation", _settings?.Current.Hotkeys.Dictation ?? "Ctrl+Alt+D"),
                 Jarvis = GetHotkey(hotkeysEl, "jarvis",
-                    GetHotkey(hotkeysEl, "quickSend", _settings?.Current.Hotkeys.Jarvis ?? "Ctrl+Alt+Q")),
+                    GetHotkey(hotkeysEl, "quickSend", _settings?.Current.Hotkeys.Jarvis ?? HotkeyService.JarvisDefault)),
                 CommandMode = "",
                 QuickSend = "",
                 Cancel = GetHotkey(hotkeysEl, "cancel", _settings?.Current.Hotkeys.Cancel ?? "Ctrl+Alt+X"),
@@ -657,6 +1120,369 @@ public sealed class WebSettingsService : IDisposable
         resp.Close();
     }
 
+    private static async Task ServeBrowserAgentMockForm(HttpListenerResponse resp)
+    {
+        const string html =
+            """
+            <!doctype html>
+            <html lang="en">
+              <head>
+                <meta charset="utf-8">
+                <title>keyboard.wtf Browser Agent Mock Form</title>
+                <style>
+                  body { font: 16px Segoe UI, sans-serif; max-width: 680px; margin: 60px auto; padding: 24px; }
+                  label { display: block; margin: 18px 0 6px; }
+                  input, textarea { width: 100%; box-sizing: border-box; padding: 10px; }
+                  button { margin: 18px 8px 0 0; padding: 10px 16px; }
+                  #result { margin-top: 24px; padding: 14px; background: #f3f4f6; }
+                </style>
+              </head>
+              <body>
+                <h1>Safe local project preview</h1>
+                <p>This page never submits or sends data. It exists only for local Browser Agent verification.</p>
+                <label for="project">Project name</label>
+                <input id="project" autocomplete="off">
+                <label for="summary">Project summary</label>
+                <textarea id="summary"></textarea>
+                <button type="button" onclick="document.getElementById('result').textContent='Preview: '+document.getElementById('project').value">Preview</button>
+                <button type="button">Choose project</button>
+                <button type="button">Choose project</button>
+                <div id="result">No preview yet.</div>
+              </body>
+            </html>
+            """;
+        var buffer = Encoding.UTF8.GetBytes(html);
+        resp.ContentType = "text/html; charset=utf-8";
+        resp.ContentLength64 = buffer.Length;
+        await resp.OutputStream.WriteAsync(buffer);
+        resp.Close();
+    }
+
+    private static async Task ServeBrowserAgentMockStore(HttpListenerResponse resp)
+    {
+        const string html =
+            """
+            <!doctype html>
+            <html lang="en">
+              <head>
+                <meta charset="utf-8">
+                <title>keyboard.wtf Browser Agent Mock Store</title>
+                <style>
+                  body { font: 16px Segoe UI, sans-serif; max-width: 760px; margin: 54px auto; padding: 24px; color:#111827; }
+                  .product { border:1px solid #e5e7eb; border-radius:18px; padding:18px; margin:14px 0; }
+                  .name { font-weight:700; font-size:20px; }
+                  .meta { color:#4b5563; margin-top:8px; }
+                  button { margin-top:12px; padding:10px 14px; border-radius:10px; border:1px solid #d1d5db; background:white; }
+                </style>
+              </head>
+              <body>
+                <h1>Safe local store comparison</h1>
+                <p>This mock page is local only. Cart and checkout buttons are intentionally inert.</p>
+                <article class="product">
+                  <div class="name">Alpha Keyboard</div>
+                  <div class="meta">Price: $129 · Rating: 4.8 stars · Prime eligible</div>
+                  <button type="button">Add to cart</button>
+                </article>
+                <article class="product">
+                  <div class="name">Budget Keyboard</div>
+                  <div class="meta">Price: $79 · Rating: 4.1 stars · Prime eligible</div>
+                  <button type="button">Add to cart</button>
+                </article>
+                <article class="product">
+                  <div class="name">Pro Creator Keyboard</div>
+                  <div class="meta">Price: $149 · Rating: 4.9 stars · Prime eligible</div>
+                  <button type="button">Add to cart</button>
+                </article>
+              </body>
+            </html>
+            """;
+        var buffer = Encoding.UTF8.GetBytes(html);
+        resp.ContentType = "text/html; charset=utf-8";
+        resp.ContentLength64 = buffer.Length;
+        await resp.OutputStream.WriteAsync(buffer);
+        resp.Close();
+    }
+
+    private async Task RunBrowserAgentDemo(HttpListenerRequest req, HttpListenerResponse resp)
+    {
+        try
+        {
+            if (_browserAgent == null)
+                throw new InvalidOperationException("Browser Agent is unavailable.");
+            using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+            var body = await reader.ReadToEndAsync();
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+            var mode = GetJsonString(doc.RootElement, "mode");
+            var url = $"http://localhost:{Port}/browser-agent/mock-form";
+            var isClarification = mode.Equals("clarification", StringComparison.OrdinalIgnoreCase);
+            var isConfirmation = mode.Equals("confirmation", StringComparison.OrdinalIgnoreCase);
+            var isManualSafety = mode.Equals("manual-safety", StringComparison.OrdinalIgnoreCase);
+            var isContext = mode.Equals("context", StringComparison.OrdinalIgnoreCase);
+            var isRunning = mode.Equals("running", StringComparison.OrdinalIgnoreCase);
+            var started = await _browserAgent.StartAsync(new BrowserTaskRequest
+            {
+                Title = isClarification
+                    ? "Clarification state demo"
+                    : isConfirmation
+                        ? "Confirmation safety demo"
+                        : isManualSafety
+                            ? "Manual safety stop demo"
+                            : isContext
+                                ? "Selected context demo"
+                                : isRunning
+                                    ? "Running task demo"
+                                    : "Safe mock form demo",
+                OriginalUserCommand = isClarification
+                    ? "Open the local mock form and demonstrate an ambiguous project choice."
+                    : isConfirmation
+                        ? "Open the local mock form and demonstrate that a submit action pauses for confirmation."
+                        : isManualSafety
+                            ? "Open the local mock form and demonstrate that checkout is never automated."
+                            : isContext
+                                ? "Use this selected text as context, then fill the local preview without submitting."
+                                : isRunning
+                                    ? "Open the local mock form and keep the task running for overlay verification."
+                                    : "Fill the local mock form with keyboard.wtf and preview it without submitting.",
+                StartUrl = url,
+                ExpectedOutcome = "Preview: keyboard.wtf",
+                UseSelectedText = isContext,
+                ContextExplicitlyRequested = isContext,
+            }, CancellationToken.None);
+            if (!started.Ok)
+            {
+                resp.StatusCode = 400;
+                await WriteJson(resp, started);
+                return;
+            }
+            if (isRunning)
+            {
+                await WriteJson(resp, started);
+                return;
+            }
+
+            BrowserAgentResult result;
+            if (isClarification)
+            {
+                result = await _browserAgent.ActAsync(new BrowserAgentActionRequest
+                {
+                    TaskId = started.TaskId,
+                    Action = BrowserAgentActionKind.Click,
+                    Role = "button",
+                    Target = "Choose project",
+                }, CancellationToken.None);
+            }
+            else if (isConfirmation || isManualSafety)
+            {
+                result = await _browserAgent.ActAsync(new BrowserAgentActionRequest
+                {
+                    TaskId = started.TaskId,
+                    Action = BrowserAgentActionKind.Click,
+                    Role = "button",
+                    Target = isConfirmation ? "Submit application" : "Checkout",
+                }, CancellationToken.None);
+            }
+            else
+            {
+                result = await _browserAgent.ActAsync(new BrowserAgentActionRequest
+                {
+                    TaskId = started.TaskId,
+                    Action = BrowserAgentActionKind.Fill,
+                    Role = "label",
+                    Target = "Project name",
+                    Value = "keyboard.wtf",
+                }, CancellationToken.None);
+                if (result.Ok)
+                {
+                    result = await _browserAgent.ActAsync(new BrowserAgentActionRequest
+                    {
+                        TaskId = started.TaskId,
+                        Action = BrowserAgentActionKind.Click,
+                        Role = "button",
+                        Target = "Preview",
+                    }, CancellationToken.None);
+                }
+                if (result.Ok)
+                {
+                    result = await _browserAgent.FinishAsync(
+                        started.TaskId,
+                        "Preview: keyboard.wtf",
+                        "Filled and verified the safe local preview without submitting.",
+                        CancellationToken.None);
+                }
+            }
+            await WriteJson(resp, result);
+        }
+        catch (Exception ex)
+        {
+            resp.StatusCode = 400;
+            await WriteJson(resp, new { ok = false, error = ex.Message });
+        }
+    }
+
+    private async Task StartBrowserAgentTask(HttpListenerRequest req, HttpListenerResponse resp)
+    {
+        try
+        {
+            if (_browserAgent == null)
+                throw new InvalidOperationException("Browser Agent is unavailable.");
+            using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+            var body = await reader.ReadToEndAsync();
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+            var result = await _browserAgent.StartAsync(new BrowserTaskRequest
+            {
+                Title = GetJsonString(doc.RootElement, "title"),
+                OriginalUserCommand = GetJsonString(doc.RootElement, "task"),
+                StartUrl = GetJsonString(doc.RootElement, "startUrl")
+                    ?? GetJsonString(doc.RootElement, "start_url"),
+                ExpectedOutcome = GetJsonString(doc.RootElement, "expectedOutcome")
+                    ?? GetJsonString(doc.RootElement, "expected_outcome"),
+                UseSelectedText = GetJsonBool(doc.RootElement, "useSelectedText")
+                    || GetJsonBool(doc.RootElement, "use_selected_text"),
+                UseClipboard = GetJsonBool(doc.RootElement, "useClipboard")
+                    || GetJsonBool(doc.RootElement, "use_clipboard"),
+                ContextExplicitlyRequested = GetJsonBool(doc.RootElement, "contextExplicitlyRequested")
+                    || GetJsonBool(doc.RootElement, "context_explicitly_requested"),
+                AutomationProfileFallbackAllowed = GetJsonBool(doc.RootElement, "automationProfileFallbackAllowed")
+                    || GetJsonBool(doc.RootElement, "automation_profile_fallback_allowed"),
+            }, CancellationToken.None);
+            if (!result.Ok)
+                resp.StatusCode = 400;
+            await WriteJson(resp, result);
+        }
+        catch (Exception ex)
+        {
+            resp.StatusCode = 400;
+            await WriteJson(resp, new { ok = false, error = ex.Message });
+        }
+    }
+
+    private async Task ObserveBrowserAgentTask(HttpListenerRequest req, HttpListenerResponse resp)
+    {
+        try
+        {
+            if (_browserAgent == null)
+                throw new InvalidOperationException("Browser Agent is unavailable.");
+            using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+            var body = await reader.ReadToEndAsync();
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+            var result = await _browserAgent.ObserveAsync(GetJsonString(doc.RootElement, "taskId")
+                ?? GetJsonString(doc.RootElement, "task_id"), CancellationToken.None);
+            if (!result.Ok)
+                resp.StatusCode = 400;
+            await WriteJson(resp, result);
+        }
+        catch (Exception ex)
+        {
+            resp.StatusCode = 400;
+            await WriteJson(resp, new { ok = false, error = ex.Message });
+        }
+    }
+
+    private async Task ActBrowserAgentTask(HttpListenerRequest req, HttpListenerResponse resp)
+    {
+        try
+        {
+            if (_browserAgent == null)
+                throw new InvalidOperationException("Browser Agent is unavailable.");
+            using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+            var body = await reader.ReadToEndAsync();
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+            var actionText = GetJsonString(doc.RootElement, "action");
+            if (!Enum.TryParse<BrowserAgentActionKind>(
+                    actionText?.Replace("_", "", StringComparison.Ordinal)
+                        .Replace("-", "", StringComparison.Ordinal)
+                        .Replace(" ", "", StringComparison.Ordinal),
+                    true,
+                    out var action))
+            {
+                throw new InvalidOperationException("Unsupported Browser Agent action.");
+            }
+            var result = await _browserAgent.ActAsync(new BrowserAgentActionRequest
+            {
+                TaskId = GetJsonString(doc.RootElement, "taskId") ?? GetJsonString(doc.RootElement, "task_id"),
+                Action = action,
+                Role = GetJsonString(doc.RootElement, "role"),
+                Target = GetJsonString(doc.RootElement, "target"),
+                Value = GetJsonString(doc.RootElement, "value"),
+                FilePath = GetJsonString(doc.RootElement, "filePath") ?? GetJsonString(doc.RootElement, "file_path"),
+                ExpectedText = GetJsonString(doc.RootElement, "expectedText") ?? GetJsonString(doc.RootElement, "expected_text"),
+                ExplicitlyRequested = GetJsonBool(doc.RootElement, "explicitlyRequested")
+                    || GetJsonBool(doc.RootElement, "explicitly_requested"),
+            }, CancellationToken.None);
+            if (!result.Ok)
+                resp.StatusCode = result.ConfirmationRequired || result.ClarificationRequired ? 409 : 400;
+            await WriteJson(resp, result);
+        }
+        catch (Exception ex)
+        {
+            resp.StatusCode = 400;
+            await WriteJson(resp, new { ok = false, error = ex.Message });
+        }
+    }
+
+    private async Task FinishBrowserAgentTask(HttpListenerRequest req, HttpListenerResponse resp)
+    {
+        try
+        {
+            if (_browserAgent == null)
+                throw new InvalidOperationException("Browser Agent is unavailable.");
+            using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+            var body = await reader.ReadToEndAsync();
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+            var result = await _browserAgent.FinishAsync(
+                GetJsonString(doc.RootElement, "taskId") ?? GetJsonString(doc.RootElement, "task_id"),
+                GetJsonString(doc.RootElement, "expectedText") ?? GetJsonString(doc.RootElement, "expected_text"),
+                GetJsonString(doc.RootElement, "outcome"),
+                CancellationToken.None);
+            if (!result.Ok)
+                resp.StatusCode = 400;
+            await WriteJson(resp, result);
+        }
+        catch (Exception ex)
+        {
+            resp.StatusCode = 400;
+            await WriteJson(resp, new { ok = false, error = ex.Message });
+        }
+    }
+
+    private async Task CancelBrowserAgentTask(HttpListenerRequest req, HttpListenerResponse resp)
+    {
+        try
+        {
+            using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+            var body = await reader.ReadToEndAsync();
+            using var doc = JsonDocument.Parse(body);
+            var result = await _browserAgent.CancelAsync(GetJsonString(doc.RootElement, "taskId"));
+            await WriteJson(resp, result);
+        }
+        catch (Exception ex)
+        {
+            resp.StatusCode = 400;
+            await WriteJson(resp, new { ok = false, error = ex.Message });
+        }
+    }
+
+    private async Task ConfirmBrowserAgentTask(HttpListenerRequest req, HttpListenerResponse resp)
+    {
+        try
+        {
+            using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+            var body = await reader.ReadToEndAsync();
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+            var taskId = GetJsonString(doc.RootElement, "taskId")
+                ?? GetJsonString(doc.RootElement, "task_id");
+            var confirmed = !doc.RootElement.TryGetProperty("confirmed", out var confirmedEl)
+                || confirmedEl.GetBoolean();
+            _taskManager?.RespondToConfirmation(taskId, confirmed);
+            await WriteJson(resp, new { ok = true });
+        }
+        catch (Exception ex)
+        {
+            resp.StatusCode = 400;
+            await WriteJson(resp, new { ok = false, error = ex.Message });
+        }
+    }
+
     private static string GetHotkey(JsonElement element, string property, string fallback)
     {
         if (!element.TryGetProperty(property, out var value))
@@ -664,6 +1490,19 @@ public sealed class WebSettingsService : IDisposable
 
         var text = value.GetString();
         return string.IsNullOrWhiteSpace(text) ? fallback : text.Trim();
+    }
+
+    private static bool GetJsonBool(JsonElement element, string property)
+    {
+        if (!element.TryGetProperty(property, out var value))
+            return false;
+        return value.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.String => bool.TryParse(value.GetString(), out var parsed) && parsed,
+            _ => false,
+        };
     }
 
     private async Task DeleteIntentMemory(HttpListenerRequest req, HttpListenerResponse resp)
@@ -700,8 +1539,76 @@ public sealed class WebSettingsService : IDisposable
                 : doc.RootElement.TryGetProperty("text", out var textEl)
                     ? textEl.GetString()
                     : "";
-            var entry = _intentMemory?.Remember(key, value);
+            var typeName = GetJsonString(doc.RootElement, "type");
+            var type = IntentMemoryType.Preference;
+            if (!string.IsNullOrWhiteSpace(typeName))
+            {
+                var normalized = typeName.Replace("_", "", StringComparison.Ordinal)
+                    .Replace("-", "", StringComparison.Ordinal)
+                    .Replace(" ", "", StringComparison.Ordinal);
+                if (!Enum.TryParse(normalized, true, out type))
+                    throw new InvalidOperationException("Unsupported memory type.");
+            }
+            var entry = _intentMemory?.RememberStructured(new IntentMemoryDraft
+            {
+                Type = type,
+                SourcePhrase = value,
+                TriggerPhrase = key,
+                Summary = value,
+                Action = GetJsonString(doc.RootElement, "action"),
+                Target = GetJsonString(doc.RootElement, "target"),
+            });
             await WriteJson(resp, new { ok = entry != null, entry });
+        }
+        catch (Exception ex)
+        {
+            resp.StatusCode = 400;
+            await WriteJson(resp, new { ok = false, error = ex.Message });
+        }
+    }
+
+    private async Task UpdateIntentMemory(HttpListenerRequest req, HttpListenerResponse resp)
+    {
+        try
+        {
+            using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+            var body = await reader.ReadToEndAsync();
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            var id = GetJsonString(root, "id");
+            IntentMemoryType? type = null;
+            var typeName = GetJsonString(root, "type");
+            if (!string.IsNullOrWhiteSpace(typeName))
+            {
+                var normalized = typeName.Replace("_", "", StringComparison.Ordinal)
+                    .Replace("-", "", StringComparison.Ordinal)
+                    .Replace(" ", "", StringComparison.Ordinal);
+                if (!Enum.TryParse<IntentMemoryType>(normalized, true, out var parsed))
+                    throw new InvalidOperationException("Unsupported memory type.");
+                type = parsed;
+            }
+            var entry = _intentMemory?.Update(id, new IntentMemoryUpdate
+            {
+                Type = type,
+                TriggerPhrase = root.TryGetProperty("triggerPhrase", out var triggerEl)
+                    ? triggerEl.GetString() ?? ""
+                    : null,
+                Summary = root.TryGetProperty("summary", out var summaryEl)
+                    ? summaryEl.GetString() ?? ""
+                    : null,
+                Action = root.TryGetProperty("action", out var actionEl)
+                    ? actionEl.GetString() ?? ""
+                    : null,
+                Target = root.TryGetProperty("target", out var targetEl)
+                    ? targetEl.GetString() ?? ""
+                    : null,
+            });
+            await WriteJson(resp, new
+            {
+                ok = entry != null,
+                entry,
+                error = entry == null ? "Memory not found." : null,
+            });
         }
         catch (Exception ex)
         {
@@ -1190,6 +2097,12 @@ public sealed class WebSettingsService : IDisposable
         string.Equals(
             request.Headers["X-Keyboard-Wtf-Settings-Action"],
             "explicit-user-action",
+            StringComparison.Ordinal);
+
+    private static bool HasCompanionHeader(HttpListenerRequest request) =>
+        string.Equals(
+            request.Headers[BrowserCompanionBridgeService.BridgeHeader],
+            BrowserCompanionBridgeService.BridgeHeaderValue,
             StringComparison.Ordinal);
 
     private async Task PreviewFilenameEndpoint(HttpListenerRequest req, HttpListenerResponse resp)

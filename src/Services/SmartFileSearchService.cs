@@ -419,8 +419,9 @@ public sealed class SmartFileSearchService
         var exactPartial = FuzzyMatcher.Normalize(name).Contains(FuzzyMatcher.Normalize(RemoveSearchWords(query)), StringComparison.Ordinal)
             ? 1
             : 0;
+        var tokenOverlap = TokenOverlapScore(query, Path.GetFileName(path));
 
-        var score = fuzzy * 0.62 + type * 0.12 + root * 0.08 + exactPartial * 0.08;
+        var score = fuzzy * 0.48 + tokenOverlap * 0.22 + type * 0.12 + root * 0.08 + exactPartial * 0.08;
         score += recency * (wantsLatest ? 0.25 : 0.1);
         return Math.Clamp(score, 0, 1);
     }
@@ -474,6 +475,26 @@ public sealed class SmartFileSearchService
             .Where(word => !ignored.Contains(word)));
     }
 
+    private static double TokenOverlapScore(string query, string filename)
+    {
+        var queryTokens = TokenizeSearchText(RemoveSearchWords(query)).ToArray();
+        if (queryTokens.Length == 0)
+            return 0;
+        var nameTokens = TokenizeSearchText(Path.GetFileNameWithoutExtension(filename)).ToHashSet(StringComparer.Ordinal);
+        if (nameTokens.Count == 0)
+            return 0;
+        var matched = queryTokens.Count(token => nameTokens.Contains(token));
+        return matched / (double)queryTokens.Length;
+    }
+
+    private static IEnumerable<string> TokenizeSearchText(string value) =>
+        FuzzyMatcher.Normalize((value ?? "")
+                .Replace("_", " ", StringComparison.Ordinal)
+                .Replace("-", " ", StringComparison.Ordinal)
+                .Replace(".", " ", StringComparison.Ordinal))
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(token => token.Length >= 2);
+
     private static string CleanQuery(string query) =>
         string.Join(" ", (query ?? "").ReplaceLineEndings(" ")
             .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
@@ -483,10 +504,18 @@ public sealed class SmartFileSearchService
         if (!isDirectory)
             return false;
         var name = Path.GetFileName(path);
+        var normalizedPath = path.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
         return name.StartsWith("$", StringComparison.Ordinal)
             || name is "Windows" or "Program Files" or "Program Files (x86)" or "ProgramData"
                 or "AppData" or "System Volume Information" or "Recovery" or ".git"
-                or "node_modules" or "bin" or "obj";
+                or "node_modules" or "bin" or "obj" or "TestResults"
+                or "browser-companion-playwright-profile"
+                or "browser-companion-product-youtube-profile"
+            || name.StartsWith(".stagehand-profile", StringComparison.OrdinalIgnoreCase)
+            || name.StartsWith(".browser-use", StringComparison.OrdinalIgnoreCase)
+            || normalizedPath.Contains($"{Path.DirectorySeparatorChar}output{Path.DirectorySeparatorChar}browser-companion-", StringComparison.OrdinalIgnoreCase)
+            || normalizedPath.Contains($"{Path.DirectorySeparatorChar}tools{Path.DirectorySeparatorChar}browser-agent-spike{Path.DirectorySeparatorChar}.browser-use", StringComparison.OrdinalIgnoreCase)
+            || normalizedPath.Contains($"{Path.DirectorySeparatorChar}tools{Path.DirectorySeparatorChar}browser-agent-spike{Path.DirectorySeparatorChar}.stagehand-profile", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool ExistsForKind(LearnedMappingEntry entry) =>

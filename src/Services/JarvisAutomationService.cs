@@ -7,7 +7,9 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
+using KeyboardWtf.Automation.Input;
 using KeyboardWtf.Helpers;
+using KeyboardWtf.Models;
 
 public sealed class JarvisAutomationService : IDisposable
 {
@@ -25,6 +27,9 @@ public sealed class JarvisAutomationService : IDisposable
     private readonly SettingsService _settings;
     private readonly JarvisActionHistoryService _history;
     private readonly LearnedMappingService _mappings;
+    private readonly IntentMemoryService _memory;
+    private readonly JarvisTaskManager _tasks;
+    private readonly BrowserAgentService _browserAgent;
     private readonly AppResolverService _apps;
     private readonly SmartFileSearchService _files;
     private readonly BrowserLauncherService _browsers;
@@ -43,12 +48,18 @@ public sealed class JarvisAutomationService : IDisposable
         SettingsService settings,
         JarvisActionHistoryService history,
         LearnedMappingService mappings,
-        Action openSettings)
+        Action openSettings,
+        IntentMemoryService memory = null,
+        JarvisTaskManager tasks = null,
+        BrowserAgentService browserAgent = null)
     {
         _notifications = notifications;
         _settings = settings;
         _history = history;
         _mappings = mappings;
+        _memory = memory;
+        _tasks = tasks;
+        _browserAgent = browserAgent;
         _apps = new AppResolverService(mappings);
         _files = new SmartFileSearchService(mappings);
         _browsers = new BrowserLauncherService(_apps, settings);
@@ -82,6 +93,11 @@ public sealed class JarvisAutomationService : IDisposable
             "open_path" => await OpenPathAsync(GetString(args, "path"), token),
             "window_action" => WindowAction(GetString(args, "action"), GetString(args, "app_name")),
             "browser_action" => BrowserAction(GetString(args, "action")),
+            "start_browser_task" => await StartBrowserTaskAsync(args, token),
+            "browser_agent_observe" => await ObserveBrowserTaskAsync(GetString(args, "task_id"), token),
+            "browser_agent_action" => await BrowserAgentActionAsync(args, token),
+            "finish_browser_task" => await FinishBrowserTaskAsync(args, token),
+            "cancel_browser_task" => await CancelBrowserTaskAsync(GetString(args, "task_id")),
             "web_search" => WebSearch(
                 GetString(args, "query"),
                 GetString(args, "engine") ?? GetString(args, "service"),
@@ -145,6 +161,12 @@ public sealed class JarvisAutomationService : IDisposable
             "forget_learned_mapping" => ForgetLearnedMapping(
                 GetString(args, "id_or_alias"),
                 GetString(args, "kind")),
+            "remember_memory" => RememberMemory(args),
+            "list_memories" => ListMemories(
+                GetString(args, "query"),
+                GetString(args, "type")),
+            "update_memory" => UpdateMemory(args),
+            "delete_memory" => DeleteMemory(GetString(args, "id_or_trigger")),
             "set_browser_preference" => SetBrowserPreference(GetString(args, "browser")),
             "request_sensitive_action" => RequestSensitiveAction(
                 GetString(args, "action"),
@@ -206,6 +228,10 @@ public sealed class JarvisAutomationService : IDisposable
         "open_path" => $"Open {GetString(args, "path")}",
         "window_action" => $"{GetString(args, "action")} the requested window",
         "browser_action" => $"{GetString(args, "action")} in the active browser",
+        "start_browser_task" => $"Start browser task: {GetString(args, "task")}",
+        "browser_agent_action" => $"{GetString(args, "action")} {GetString(args, "target")} in the controlled browser",
+        "finish_browser_task" => $"Verify and finish browser task {GetString(args, "task_id")}",
+        "cancel_browser_task" => $"Cancel browser task {GetString(args, "task_id")}",
         "web_search" => $"Search for {GetString(args, "query")}",
         "replace_selected_text" => "Replace the selected text",
         "type_text" => "Type text into the active field",
@@ -235,12 +261,16 @@ public sealed class JarvisAutomationService : IDisposable
         "remember_link_alias" => $"Remember {GetString(args, "alias")} as a web link",
         "remember_workflow_alias" => $"Remember {GetString(args, "alias")} as workflow {GetString(args, "workflow_name")}",
         "forget_learned_mapping" => $"Forget {GetString(args, "id_or_alias")}",
+        "remember_memory" => $"Remember {GetString(args, "trigger_phrase")}",
+        "update_memory" => $"Update memory {GetString(args, "id_or_trigger")}",
+        "delete_memory" => $"Delete memory {GetString(args, "id_or_trigger")}",
         "set_browser_preference" => $"Use {GetString(args, "browser")} as the preferred browser",
         _ => $"Run {toolName.Replace('_', ' ')}",
     };
 
     public void ObserveUserTranscript(string text)
     {
+        ObserveTaskResponse(text);
         PendingJarvisAction pending;
         lock (_pendingLock)
             pending = _pending;
@@ -712,24 +742,46 @@ public sealed class JarvisAutomationService : IDisposable
 
     private Dictionary<string, object> PressKey(string key)
     {
-        var sequence = NormalizeWords(key) switch
+        if (string.IsNullOrWhiteSpace(key))
+            return Result(false, "Which key should I press?", needsClarification: true);
+
+        var input = new WindowsInputController();
+        var safety = new InputSafetyContext
         {
-            "tab" => "{TAB}",
-            "escape" or "esc" => "{ESC}",
-            "up" => "{UP}",
-            "down" => "{DOWN}",
-            "left" => "{LEFT}",
-            "right" => "{RIGHT}",
-            "page up" => "{PGUP}",
-            "page down" => "{PGDN}",
-            "home" => "{HOME}",
-            "end" => "{END}",
-            _ => null,
+            Kind = InputSafetyContextKind.ReadOnlyNavigation,
+            TaskDescription = $"Jarvis press_key {key}",
         };
-        if (sequence == null)
-            return Result(false, "That key is not supported.", supported: false);
-        SendKeysOnUiThread(sequence);
-        return Logged("press_key", key, true, $"Pressed {key}.");
+        InputExecutionResult result;
+
+        if (key.Contains('+', StringComparison.Ordinal))
+        {
+            if (!InputChord.TryParse(key, out var chord))
+                return Result(false, "That shortcut is not supported.", supported: false);
+            result = input.PressChordAsync(chord, safety, CancellationToken.None).GetAwaiter().GetResult();
+        }
+        else
+        {
+            if (!InputKeyParser.TryParse(key, out var parsed))
+                return Result(false, "That key is not supported.", supported: false);
+            result = input.PressKeyAsync(parsed, safety, CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        if (result.Blocked)
+            return Result(false, result.Message, supported: false);
+        if (result.ConfirmationRequired)
+            return Result(false, result.Message, needsClarification: true);
+        if (!result.Ok)
+            return Result(false, result.Message, supported: false);
+        return Logged(
+            "press_key",
+            key,
+            true,
+            result.Message,
+            extras: new()
+            {
+                ["strategy"] = result.Strategy,
+                ["keys_sent"] = result.KeysSent,
+            });
     }
 
     private async Task<Dictionary<string, object>> SearchFilesAsync(
@@ -1218,6 +1270,14 @@ public sealed class JarvisAutomationService : IDisposable
             alias,
             resolution.Best.LaunchTarget,
             resolution.Best.Name);
+        RememberStructured(
+            IntentMemoryType.AppAlias,
+            alias,
+            alias,
+            $"Use {resolution.Best.Name} for {alias}.",
+            "open_app",
+            resolution.Best.Name,
+            new() { ["launch_target"] = resolution.Best.LaunchTarget });
         return Logged(
             "remember_app_alias",
             $"{entry.Alias} -> {entry.DisplayName}",
@@ -1239,6 +1299,15 @@ public sealed class JarvisAutomationService : IDisposable
             ? LearnedMappingKind.Folder
             : LearnedMappingKind.File;
         var entry = _mappings.Remember(mappingKind, alias, expanded, Path.GetFileName(expanded.TrimEnd(Path.DirectorySeparatorChar)));
+        RememberStructured(
+            mappingKind == LearnedMappingKind.Folder
+                ? IntentMemoryType.FolderAlias
+                : IntentMemoryType.FileAlias,
+            alias,
+            alias,
+            $"Use {expanded} for {alias}.",
+            mappingKind == LearnedMappingKind.Folder ? "open_folder" : "open_path",
+            expanded);
         return Logged(
             "remember_path_alias",
             $"{entry.Alias} -> {entry.Target}",
@@ -1250,6 +1319,13 @@ public sealed class JarvisAutomationService : IDisposable
     private Dictionary<string, object> RememberLinkAlias(string alias, string url)
     {
         var entry = _mappings.Remember(LearnedMappingKind.Link, alias, url, url);
+        RememberStructured(
+            IntentMemoryType.TaskPattern,
+            alias,
+            alias,
+            $"Use {url} for {alias}.",
+            "open_url",
+            url);
         return Logged(
             "remember_link_alias",
             $"{entry.Alias} -> {entry.Target}",
@@ -1260,13 +1336,29 @@ public sealed class JarvisAutomationService : IDisposable
 
     private Dictionary<string, object> RememberWorkflowAlias(string alias, string workflowName)
     {
-        var workflow = FindWorkflow(workflowName);
+        var resolution = ResolveWorkflow(workflowName);
+        if (resolution.Ambiguous)
+        {
+            return Result(
+                false,
+                $"Several workflows match {workflowName}. Ask the user to choose one.",
+                needsClarification: true,
+                extras: new() { ["candidates"] = resolution.Candidates });
+        }
+        var workflow = resolution.Workflow;
         if (workflow == null)
             return Result(false, $"Workflow {workflowName} was not found.", supported: false);
         var entry = _mappings.Remember(
             LearnedMappingKind.Workflow,
             alias,
             workflow.Name,
+            workflow.Name);
+        RememberStructured(
+            IntentMemoryType.Workflow,
+            alias,
+            alias,
+            $"Run {workflow.Name} for {alias}.",
+            "run_workflow",
             workflow.Name);
         return Logged(
             "remember_workflow_alias",
@@ -1304,6 +1396,15 @@ public sealed class JarvisAutomationService : IDisposable
         if (!string.IsNullOrWhiteSpace(normalized) && _browsers.FindBrowserExecutable(normalized) == null)
             return Result(false, $"{browser} is not installed, so the browser preference was not changed.", supported: false);
         _settings.SavePreferredBrowser(normalized);
+        RememberStructured(
+            IntentMemoryType.BrowserPreference,
+            $"Use {browser} as my preferred browser",
+            "preferred browser",
+            string.IsNullOrWhiteSpace(normalized)
+                ? "Use the Windows default browser."
+                : $"Use {normalized} for links unless another browser is named.",
+            "set_browser_preference",
+            normalized);
         return Logged(
             "set_browser_preference",
             normalized,
@@ -1311,6 +1412,217 @@ public sealed class JarvisAutomationService : IDisposable
             string.IsNullOrWhiteSpace(normalized)
                 ? "Future links will use the Windows default browser."
                 : $"Future links will use {browser} unless you name another browser.");
+    }
+
+    private async Task<Dictionary<string, object>> StartBrowserTaskAsync(
+        JsonElement args,
+        CancellationToken token)
+    {
+        if (_browserAgent == null)
+            return Result(false, "Jarvis Browser Agent is unavailable.", supported: false);
+        var result = await _browserAgent.StartAsync(new BrowserTaskRequest
+        {
+            Title = GetString(args, "title") ?? "Browser task",
+            OriginalUserCommand = GetString(args, "task"),
+            StartUrl = GetString(args, "start_url"),
+            ExpectedOutcome = GetString(args, "expected_outcome"),
+            UseSelectedText = GetBool(args, "use_selected_text"),
+            UseClipboard = GetBool(args, "use_clipboard"),
+            ContextExplicitlyRequested = GetBool(args, "context_explicitly_requested"),
+            UseSmartBackend = !string.Equals(
+                GetString(args, "backend"),
+                "direct",
+                StringComparison.OrdinalIgnoreCase),
+            RiskyActionConfirmed = GetBool(args, "risky_action_confirmed"),
+            AutomationProfileFallbackAllowed = GetBool(args, "automation_profile_fallback_allowed"),
+        }, token);
+        return BrowserResult(result);
+    }
+
+    private async Task<Dictionary<string, object>> ObserveBrowserTaskAsync(
+        string taskId,
+        CancellationToken token)
+    {
+        if (_browserAgent == null)
+            return Result(false, "Jarvis Browser Agent is unavailable.", supported: false);
+        return BrowserResult(await _browserAgent.ObserveAsync(taskId, token));
+    }
+
+    private async Task<Dictionary<string, object>> BrowserAgentActionAsync(
+        JsonElement args,
+        CancellationToken token)
+    {
+        if (_browserAgent == null)
+            return Result(false, "Jarvis Browser Agent is unavailable.", supported: false);
+        if (!TryParseBrowserAction(GetString(args, "action"), out var action))
+            return Result(false, "That browser-agent action is not supported.", needsClarification: true);
+        var result = await _browserAgent.ActAsync(new BrowserAgentActionRequest
+        {
+            TaskId = GetString(args, "task_id"),
+            Action = action,
+            Role = GetString(args, "role"),
+            Target = GetString(args, "target"),
+            Value = GetString(args, "value"),
+            FilePath = GetString(args, "file_path"),
+            ExpectedText = GetString(args, "expected_text"),
+            ExplicitlyRequested = GetBool(args, "explicitly_requested"),
+        }, token);
+        return BrowserResult(result);
+    }
+
+    private async Task<Dictionary<string, object>> FinishBrowserTaskAsync(
+        JsonElement args,
+        CancellationToken token)
+    {
+        if (_browserAgent == null)
+            return Result(false, "Jarvis Browser Agent is unavailable.", supported: false);
+        return BrowserResult(await _browserAgent.FinishAsync(
+            GetString(args, "task_id"),
+            GetString(args, "expected_text"),
+            GetString(args, "outcome"),
+            token));
+    }
+
+    private async Task<Dictionary<string, object>> CancelBrowserTaskAsync(string taskId)
+    {
+        if (_browserAgent == null)
+            return Result(false, "Jarvis Browser Agent is unavailable.", supported: false);
+        return BrowserResult(await _browserAgent.CancelAsync(taskId));
+    }
+
+    public int CancelActiveTasks() =>
+        _tasks?.CancelAllActive("Cancelled by the user.") ?? 0;
+
+    private void ObserveTaskResponse(string text)
+    {
+        if (_tasks == null || string.IsNullOrWhiteSpace(text))
+            return;
+        var waiting = _tasks.Snapshot(includeCompleted: false)
+            .Where(task => task.Status is JarvisTaskStatus.WaitingForConfirmation
+                or JarvisTaskStatus.WaitingForClarification)
+            .OrderByDescending(task => task.UpdatedAt)
+            .FirstOrDefault();
+        if (waiting == null)
+            return;
+
+        var normalized = NormalizePhraseText(text);
+        if (ContainsPhrase(normalized, "cancel", "no", "nope", "do not", "don't", "stop", "never mind"))
+        {
+            if (waiting.Status == JarvisTaskStatus.WaitingForConfirmation)
+                _tasks.RespondToConfirmation(waiting.TaskId, false);
+            else
+                _tasks.Cancel(waiting.TaskId, "Cancelled while waiting for clarification.");
+            return;
+        }
+        if (waiting.Status == JarvisTaskStatus.WaitingForConfirmation)
+        {
+            if (normalized.Length <= 80
+                && ContainsPhrase(normalized, "yes", "yeah", "yep", "sure", "confirm", "go ahead", "proceed", "do it", "okay do it", "ok do it"))
+            {
+                _tasks.RespondToConfirmation(waiting.TaskId, true);
+            }
+            return;
+        }
+        _tasks.ProvideClarification(waiting.TaskId, text);
+    }
+
+    private Dictionary<string, object> RememberMemory(JsonElement args)
+    {
+        if (_memory == null)
+            return Result(false, "Structured memory is unavailable.", supported: false);
+        if (!TryParseMemoryType(GetString(args, "type"), out var type))
+            return Result(false, "That memory type is not supported.", needsClarification: true);
+        var entry = _memory.RememberStructured(new IntentMemoryDraft
+        {
+            Type = type,
+            SourcePhrase = GetString(args, "source_phrase"),
+            TriggerPhrase = GetString(args, "trigger_phrase"),
+            Summary = GetString(args, "summary"),
+            Action = GetString(args, "action"),
+            Target = GetString(args, "target"),
+            Parameters = GetStringDictionary(args, "parameters"),
+            Confidence = GetDouble(args, "confidence", 1),
+        });
+        return Logged(
+            "remember_memory",
+            $"{entry.Type}: {entry.TriggerPhrase}",
+            true,
+            $"Remembered {entry.TriggerPhrase}.",
+            extras: new() { ["memory"] = entry });
+    }
+
+    private Dictionary<string, object> ListMemories(string query, string typeName)
+    {
+        if (_memory == null)
+            return Result(false, "Structured memory is unavailable.", supported: false);
+        IntentMemoryType? type = null;
+        if (!string.IsNullOrWhiteSpace(typeName))
+        {
+            if (!TryParseMemoryType(typeName, out var parsed))
+                return Result(false, "That memory type is not supported.", needsClarification: true);
+            type = parsed;
+        }
+        var memories = _memory.SearchRanked(query, 20, type);
+        return Result(
+            true,
+            memories.Count == 0 ? "No matching memories were found." : $"Loaded {memories.Count} memories.",
+            extras: new()
+            {
+                ["memories"] = memories.Select(match => new
+                {
+                    match.Entry,
+                    score = Math.Round(match.Score, 3),
+                }).ToArray(),
+            });
+    }
+
+    private Dictionary<string, object> UpdateMemory(JsonElement args)
+    {
+        if (_memory == null)
+            return Result(false, "Structured memory is unavailable.", supported: false);
+        IntentMemoryType? type = null;
+        var typeName = GetString(args, "type");
+        if (!string.IsNullOrWhiteSpace(typeName))
+        {
+            if (!TryParseMemoryType(typeName, out var parsed))
+                return Result(false, "That memory type is not supported.", needsClarification: true);
+            type = parsed;
+        }
+        var entry = _memory.Update(
+            GetString(args, "id_or_trigger"),
+            new IntentMemoryUpdate
+            {
+                Type = type,
+                SourcePhrase = GetOptionalString(args, "source_phrase"),
+                TriggerPhrase = GetOptionalString(args, "trigger_phrase"),
+                Summary = GetOptionalString(args, "summary"),
+                Action = GetOptionalString(args, "action"),
+                Target = GetOptionalString(args, "target"),
+                Parameters = args.ValueKind == JsonValueKind.Object && args.TryGetProperty("parameters", out _)
+                    ? GetStringDictionary(args, "parameters")
+                    : null,
+                Confidence = GetOptionalDouble(args, "confidence"),
+            });
+        if (entry == null)
+            return Result(false, "No matching memory was found.", supported: false);
+        return Logged(
+            "update_memory",
+            entry.Id,
+            true,
+            $"Updated {entry.TriggerPhrase}.",
+            extras: new() { ["memory"] = entry });
+    }
+
+    private Dictionary<string, object> DeleteMemory(string idOrTrigger)
+    {
+        if (_memory == null)
+            return Result(false, "Structured memory is unavailable.", supported: false);
+        var removed = _memory.Forget(idOrTrigger);
+        return Logged(
+            "delete_memory",
+            idOrTrigger,
+            removed,
+            removed ? "Memory deleted." : "No matching memory was found.");
     }
 
     private Dictionary<string, object> OpenGmailDraft(string recipient, string subject, string body)
@@ -1402,6 +1714,19 @@ public sealed class JarvisAutomationService : IDisposable
             trigger,
             workflow.Name,
             workflow.Name);
+        var memory = RememberStructured(
+            IntentMemoryType.Routine,
+            GetString(args, "source_phrase") ?? trigger,
+            trigger,
+            $"Run the saved routine {workflow.Name}.",
+            "run_workflow",
+            workflow.Name,
+            new()
+            {
+                ["apps"] = workflow.Apps,
+                ["urls"] = workflow.Urls,
+                ["folder"] = workflow.Folder,
+            });
         return Logged(
             "remember_routine",
             trigger,
@@ -1411,6 +1736,7 @@ public sealed class JarvisAutomationService : IDisposable
             {
                 ["workflow"] = new { workflow.Name, workflow.Apps, workflow.Urls, workflow.Folder },
                 ["mapping"] = PublicMapping(mapping),
+                ["memory"] = memory,
             });
     }
 
@@ -1429,7 +1755,16 @@ public sealed class JarvisAutomationService : IDisposable
 
     private async Task<Dictionary<string, object>> RunWorkflowAsync(string name, CancellationToken token)
     {
-        var workflow = FindWorkflow(name);
+        var resolution = ResolveWorkflow(name);
+        if (resolution.Ambiguous)
+        {
+            return Result(
+                false,
+                $"Several routines are close to {name}. Ask the user to choose one.",
+                needsClarification: true,
+                extras: new() { ["candidates"] = resolution.Candidates });
+        }
+        var workflow = resolution.Workflow;
         if (workflow == null)
             return Result(false, $"Workflow {name} was not found. Create it first or use a built-in example.", supported: false);
 
@@ -1644,42 +1979,69 @@ public sealed class JarvisAutomationService : IDisposable
             extras: new() { ["browser"] = browserUsed });
     }
 
-    private JarvisWorkflowSettings FindWorkflow(string name)
+    private WorkflowMatchResult ResolveWorkflow(string name)
     {
         var learned = _mappings.FindExact(LearnedMappingKind.Workflow, name);
-        learned ??= _mappings.Search(name, LearnedMappingKind.Workflow, 2)
-            .Select(entry => new
-            {
-                Entry = entry,
-                Score = Math.Max(
-                    FuzzyMatcher.Score(name, entry.Alias),
-                    FuzzyMatcher.Score(name, entry.DisplayName)),
-            })
-            .Where(item => item.Score >= 0.78)
-            .OrderByDescending(item => item.Score)
-            .Select(item => item.Entry)
-            .FirstOrDefault();
         if (learned != null)
             name = learned.Target;
+
+        if (learned == null && _memory != null)
+        {
+            var memoryResolution = _memory.ResolveTrigger(
+                name,
+                [IntentMemoryType.Routine, IntentMemoryType.Workflow]);
+            if (memoryResolution.Status == IntentMemoryResolutionStatus.Ambiguous)
+            {
+                return new WorkflowMatchResult
+                {
+                    Ambiguous = true,
+                    Candidates = memoryResolution.Candidates
+                        .Select(match => new
+                        {
+                            trigger = match.Entry.TriggerPhrase,
+                            workflow = match.Entry.ActionData.Target,
+                            score = Math.Round(match.Score, 3),
+                        })
+                        .Cast<object>()
+                        .ToArray(),
+                };
+            }
+            if (memoryResolution.Status == IntentMemoryResolutionStatus.Found)
+            {
+                _memory.MarkUsed(memoryResolution.Best.Id);
+                if (!string.IsNullOrWhiteSpace(memoryResolution.Best.ActionData.Target))
+                    name = memoryResolution.Best.ActionData.Target;
+            }
+        }
+
         var normalized = NormalizeWords(name);
         var saved = _settings.Current.JarvisWorkflows?.FirstOrDefault(w =>
             string.Equals(NormalizeWords(w.Name), normalized, StringComparison.OrdinalIgnoreCase));
         if (saved != null)
-            return saved;
+            return new WorkflowMatchResult { Workflow = saved };
         var ranked = _settings.Current.JarvisWorkflows?
             .Select(workflow => (Workflow: workflow, Score: FuzzyMatcher.Score(normalized, workflow.Name)))
-            .Where(item => item.Score >= 0.72)
+            .Where(item => item.Score >= 0.62)
             .OrderByDescending(item => item.Score)
-            .Take(2)
+            .Take(4)
             .ToArray() ?? Array.Empty<(JarvisWorkflowSettings Workflow, double Score)>();
         if (ranked.Length > 0)
         {
             var top = ranked[0];
             var secondScore = ranked.Length > 1 ? ranked[1].Score : 0;
-            if (top.Score >= 0.9 || top.Score - secondScore >= 0.08)
-                return top.Workflow;
+            if (top.Score >= 0.86 && (ranked.Length == 1 || top.Score - secondScore >= 0.08))
+                return new WorkflowMatchResult { Workflow = top.Workflow };
+            return new WorkflowMatchResult
+            {
+                Ambiguous = true,
+                Candidates = ranked.Select(item => new
+                {
+                    workflow = item.Workflow.Name,
+                    score = Math.Round(item.Score, 3),
+                }).Cast<object>().ToArray(),
+            };
         }
-        return normalized switch
+        var builtIn = normalized switch
         {
             "coding mode" => new JarvisWorkflowSettings
             {
@@ -1701,6 +2063,30 @@ public sealed class JarvisAutomationService : IDisposable
             },
             _ => null,
         };
+        return new WorkflowMatchResult { Workflow = builtIn };
+    }
+
+    private IntentMemoryEntry RememberStructured(
+        IntentMemoryType type,
+        string sourcePhrase,
+        string triggerPhrase,
+        string summary,
+        string action,
+        string target,
+        Dictionary<string, string> parameters = null)
+    {
+        if (_memory == null)
+            return null;
+        return _memory.RememberStructured(new IntentMemoryDraft
+        {
+            Type = type,
+            SourcePhrase = sourcePhrase,
+            TriggerPhrase = triggerPhrase,
+            Summary = summary,
+            Action = action,
+            Target = target,
+            Parameters = parameters ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+        });
     }
 
     private Dictionary<string, object> Logged(
@@ -1732,6 +2118,22 @@ public sealed class JarvisAutomationService : IDisposable
         return result;
     }
 
+    private static Dictionary<string, object> BrowserResult(BrowserAgentResult result) =>
+        Result(
+            result?.Ok == true,
+            result?.Message ?? "Browser Agent returned no result.",
+            supported: result != null,
+            needsClarification: result?.ClarificationRequired == true,
+            confirmationRequired: result?.ConfirmationRequired == true,
+            extras: new()
+            {
+                ["task_id"] = result?.TaskId ?? "",
+                ["task"] = result?.Task,
+                ["page"] = result?.Page,
+                ["extraction"] = result?.Extraction ?? "",
+                ["manual_action_required"] = result?.ManualActionRequired == true,
+            });
+
     private static string GetString(JsonElement args, string name)
     {
         if (args.ValueKind != JsonValueKind.Object || !args.TryGetProperty(name, out var value))
@@ -1746,6 +2148,87 @@ public sealed class JarvisAutomationService : IDisposable
         if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number))
             return number;
         return int.TryParse(value.ToString(), out number) ? number : 0;
+    }
+
+    private static bool GetBool(JsonElement args, string name)
+    {
+        if (args.ValueKind != JsonValueKind.Object || !args.TryGetProperty(name, out var value))
+            return false;
+        if (value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            return value.GetBoolean();
+        return bool.TryParse(value.ToString(), out var parsed) && parsed;
+    }
+
+    private static bool TryParseBrowserAction(string value, out BrowserAgentActionKind action)
+    {
+        var normalized = (value ?? "")
+            .Replace("_", "", StringComparison.Ordinal)
+            .Replace("-", "", StringComparison.Ordinal)
+            .Replace(" ", "", StringComparison.Ordinal);
+        return Enum.TryParse(normalized, true, out action);
+    }
+
+    private static double GetDouble(JsonElement args, string name, double fallback)
+    {
+        var value = GetOptionalDouble(args, name);
+        return value ?? fallback;
+    }
+
+    private static double? GetOptionalDouble(JsonElement args, string name)
+    {
+        if (args.ValueKind != JsonValueKind.Object || !args.TryGetProperty(name, out var value))
+            return null;
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number))
+            return number;
+        return double.TryParse(value.ToString(), out number) ? number : null;
+    }
+
+    private static string GetOptionalString(JsonElement args, string name)
+    {
+        if (args.ValueKind != JsonValueKind.Object || !args.TryGetProperty(name, out _))
+            return null;
+        return GetString(args, name) ?? "";
+    }
+
+    private static Dictionary<string, string> GetStringDictionary(JsonElement args, string name)
+    {
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (args.ValueKind != JsonValueKind.Object
+            || !args.TryGetProperty(name, out var element))
+        {
+            return values;
+        }
+        if (element.ValueKind == JsonValueKind.String)
+        {
+            var json = element.GetString();
+            if (string.IsNullOrWhiteSpace(json))
+                return values;
+            try
+            {
+                using var document = JsonDocument.Parse(json);
+                element = document.RootElement.Clone();
+            }
+            catch
+            {
+                return values;
+            }
+        }
+        if (element.ValueKind != JsonValueKind.Object)
+            return values;
+        foreach (var property in element.EnumerateObject())
+            values[property.Name] = property.Value.ValueKind == JsonValueKind.String
+                ? property.Value.GetString() ?? ""
+                : property.Value.ToString();
+        return values;
+    }
+
+    private static bool TryParseMemoryType(string value, out IntentMemoryType type)
+    {
+        var normalized = (value ?? "")
+            .Replace("_", "", StringComparison.Ordinal)
+            .Replace("-", "", StringComparison.Ordinal)
+            .Replace(" ", "", StringComparison.Ordinal);
+        return Enum.TryParse(normalized, true, out type);
     }
 
     private static string NormalizeWords(string text) =>
@@ -1960,6 +2443,12 @@ public sealed class JarvisAutomationService : IDisposable
     }
 
     private sealed record WindowInfo(IntPtr Handle, string Title, string ProcessName);
+    private sealed class WorkflowMatchResult
+    {
+        public JarvisWorkflowSettings Workflow { get; init; }
+        public bool Ambiguous { get; init; }
+        public IReadOnlyList<object> Candidates { get; init; } = Array.Empty<object>();
+    }
 
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 

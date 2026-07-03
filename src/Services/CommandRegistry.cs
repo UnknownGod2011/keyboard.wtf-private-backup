@@ -653,6 +653,7 @@ public sealed class CommandRegistry
     {
         _actionCts?.Cancel();
         _capture.Cancel();
+        _automation?.CancelActiveTasks();
         _automation?.ObserveUserTranscript("cancel");
         if (_liveConversation?.IsActive == true)
             await _liveConversation.StopAsync();
