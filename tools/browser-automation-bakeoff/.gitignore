@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+profiles/
+results/
+screenshots/
+traces/
+logs/
+storage-state/
+.playwright-mcp/

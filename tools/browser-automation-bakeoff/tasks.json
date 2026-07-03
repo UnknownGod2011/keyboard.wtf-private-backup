@@ -1,0 +1,112 @@
+[
+  {
+    "id": "youtube-dude-perfect-oldest",
+    "taskText": "Play the oldest Dude Perfect video on YouTube.",
+    "targetSite": "youtube.com",
+    "startUrl": "https://www.youtube.com",
+    "allowedActionLevel": "navigation",
+    "maxRuntimeMs": 120000,
+    "screenshotRequired": true,
+    "realChromeRequired": false,
+    "controlledBrowserAllowed": true,
+    "cloudBackendAllowed": false,
+    "successCriteria": [
+      "Final browser location is a real YouTube watch page",
+      "The selected channel/entity is Dude Perfect, not MrBeast or another channel",
+      "A video player is visible or detected",
+      "The backend stops after success"
+    ]
+  },
+  {
+    "id": "youtube-mkbhd-oldest",
+    "taskText": "Play the oldest MKBHD video on YouTube.",
+    "targetSite": "youtube.com",
+    "startUrl": "https://www.youtube.com",
+    "allowedActionLevel": "navigation",
+    "maxRuntimeMs": 120000,
+    "screenshotRequired": true,
+    "realChromeRequired": false,
+    "controlledBrowserAllowed": true,
+    "cloudBackendAllowed": false,
+    "successCriteria": [
+      "Final browser location is a real YouTube watch page",
+      "The selected channel/entity is MKBHD, not Dude Perfect or MrBeast",
+      "A video player is visible or detected",
+      "The backend stops after success"
+    ]
+  },
+  {
+    "id": "flipkart-iphone-cta",
+    "taskText": "Open Flipkart and search for iPhone 17 Pro. Open the best matching result and tell me whether Add to Cart, Buy Now, Notify Me, or unavailable is visible.",
+    "targetSite": "flipkart.com",
+    "startUrl": "https://www.flipkart.com",
+    "allowedActionLevel": "read-only",
+    "maxRuntimeMs": 120000,
+    "screenshotRequired": true,
+    "realChromeRequired": false,
+    "controlledBrowserAllowed": true,
+    "cloudBackendAllowed": false,
+    "successCriteria": [
+      "Real Flipkart page is opened",
+      "The query is iPhone 17 Pro",
+      "A relevant product page or listing is inspected",
+      "The visible CTA state is reported without pretending to add to cart"
+    ]
+  },
+  {
+    "id": "amazon-in-cart-two-products",
+    "taskText": "Open Amazon India and add MX Master 4 mouse and Stanley bottle to cart. Stop at the cart page.",
+    "targetSite": "amazon.in",
+    "startUrl": "https://www.amazon.in",
+    "allowedActionLevel": "cart-mutation-after-confirmation",
+    "cartMutationPreconfirmed": true,
+    "maxRuntimeMs": 180000,
+    "screenshotRequired": true,
+    "realChromeRequired": false,
+    "controlledBrowserAllowed": true,
+    "cloudBackendAllowed": false,
+    "successCriteria": [
+      "Real amazon.in is opened",
+      "The backend searches/selects relevant products",
+      "Cart mutation is treated as one upfront confirmed action",
+      "The final page is the cart or add-to-cart/cart-confirmation page",
+      "No checkout, payment, order placement, or payment/address changes"
+    ]
+  },
+  {
+    "id": "google-crishirt-devpost-youtube",
+    "taskText": "Search Google for Crishirt Devpost, open the first relevant result, then open the YouTube video inside that page in a new tab and switch it to theatre mode if possible.",
+    "targetSite": "google.com",
+    "startUrl": "https://www.google.com/search?q=Crishirt%20Devpost",
+    "allowedActionLevel": "navigation",
+    "maxRuntimeMs": 180000,
+    "screenshotRequired": true,
+    "realChromeRequired": false,
+    "controlledBrowserAllowed": true,
+    "cloudBackendAllowed": false,
+    "successCriteria": [
+      "A real Google/search result page is used",
+      "A relevant Devpost result is opened",
+      "A YouTube video/link/embed is found if present",
+      "The task reports exact blocker if no video/theatre mode is found"
+    ]
+  },
+  {
+    "id": "google-docs-amethyst",
+    "taskText": "Open Google Docs and write a short description about amethyst.",
+    "targetSite": "docs.google.com",
+    "startUrl": "https://docs.google.com/document/u/0/create",
+    "allowedActionLevel": "form-fill-preview",
+    "maxRuntimeMs": 180000,
+    "screenshotRequired": true,
+    "realChromeRequired": false,
+    "controlledBrowserAllowed": true,
+    "cloudBackendAllowed": false,
+    "successCriteria": [
+      "If logged in and editing is available, text is inserted into the document body",
+      "If login/new-doc flow blocks, the blocker is reported clearly",
+      "The backend does not type into the wrong field",
+      "The backend stops after success or clear failure"
+    ]
+  }
+]
