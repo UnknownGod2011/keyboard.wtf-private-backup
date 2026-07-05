@@ -18,39 +18,22 @@
     ]
   },
   {
-    "id": "youtube-dude-perfect-oldest",
-    "taskText": "Play the oldest Dude Perfect video on YouTube.",
-    "targetSite": "youtube.com",
-    "startUrl": "https://www.youtube.com",
-    "allowedActionLevel": "navigation",
+    "id": "amazon-in-mx-master-visible-products",
+    "taskText": "Open Amazon India and search for MX Master 4. Report the top visible products/prices.",
+    "targetSite": "amazon.in",
+    "startUrl": "https://www.amazon.in",
+    "allowedActionLevel": "read-only",
     "maxRuntimeMs": 120000,
     "screenshotRequired": true,
     "realChromeRequired": false,
     "controlledBrowserAllowed": true,
     "cloudBackendAllowed": false,
     "successCriteria": [
-      "Final browser location is a real YouTube watch page",
-      "The selected channel/entity is Dude Perfect, not MrBeast or another channel",
-      "A video player is visible or detected",
-      "The backend stops after success"
-    ]
-  },
-  {
-    "id": "youtube-mkbhd-oldest",
-    "taskText": "Play the oldest MKBHD video on YouTube.",
-    "targetSite": "youtube.com",
-    "startUrl": "https://www.youtube.com",
-    "allowedActionLevel": "navigation",
-    "maxRuntimeMs": 120000,
-    "screenshotRequired": true,
-    "realChromeRequired": false,
-    "controlledBrowserAllowed": true,
-    "cloudBackendAllowed": false,
-    "successCriteria": [
-      "Final browser location is a real YouTube watch page",
-      "The selected channel/entity is MKBHD, not Dude Perfect or MrBeast",
-      "A video player is visible or detected",
-      "The backend stops after success"
+      "Real amazon.in is opened",
+      "The query is MX Master 4",
+      "Top visible product names and prices are reported if visible",
+      "No cart, checkout, payment, address, or account mutation occurs",
+      "The backend stops after reporting the visible products/prices or a clear blocker"
     ]
   },
   {
@@ -92,8 +75,63 @@
     ]
   },
   {
+    "id": "youtube-dude-perfect-official-channel",
+    "taskText": "Open YouTube and search for Dude Perfect. Open the official channel or first clearly relevant result.",
+    "targetSite": "youtube.com",
+    "startUrl": "https://www.youtube.com",
+    "allowedActionLevel": "navigation",
+    "maxRuntimeMs": 120000,
+    "screenshotRequired": true,
+    "realChromeRequired": false,
+    "controlledBrowserAllowed": true,
+    "cloudBackendAllowed": false,
+    "successCriteria": [
+      "Real YouTube is opened",
+      "The query is Dude Perfect",
+      "The official Dude Perfect channel or first clearly relevant result is opened",
+      "The backend stops after opening the relevant result"
+    ]
+  },
+  {
+    "id": "youtube-dude-perfect-oldest",
+    "taskText": "Play the oldest Dude Perfect video on YouTube.",
+    "targetSite": "youtube.com",
+    "startUrl": "https://www.youtube.com",
+    "allowedActionLevel": "navigation",
+    "maxRuntimeMs": 150000,
+    "screenshotRequired": true,
+    "realChromeRequired": false,
+    "controlledBrowserAllowed": true,
+    "cloudBackendAllowed": false,
+    "successCriteria": [
+      "Final browser location is a real YouTube watch page",
+      "The selected channel/entity is Dude Perfect, not MrBeast or another channel",
+      "A video player is visible or detected",
+      "The backend stops after success"
+    ]
+  },
+  {
+    "id": "youtube-mkbhd-most-recent",
+    "taskText": "Play the most recent MKBHD video on YouTube.",
+    "targetSite": "youtube.com",
+    "startUrl": "https://www.youtube.com",
+    "allowedActionLevel": "navigation",
+    "maxRuntimeMs": 150000,
+    "screenshotRequired": true,
+    "realChromeRequired": false,
+    "controlledBrowserAllowed": true,
+    "cloudBackendAllowed": false,
+    "successCriteria": [
+      "Final browser location is a real YouTube watch page",
+      "The selected channel/entity is MKBHD, not Dude Perfect or MrBeast",
+      "The video is the most recent visible/uploaded MKBHD video as far as the page can determine",
+      "A video player is visible or detected",
+      "The backend stops after success"
+    ]
+  },
+  {
     "id": "google-crishirt-devpost-youtube",
-    "taskText": "Search Google for Crishirt Devpost, open the first relevant result, then open the YouTube video inside that page in a new tab and switch it to theatre mode if possible.",
+    "taskText": "Search Google for Crishirt Devpost, open the first relevant result, then open the YouTube video inside that page.",
     "targetSite": "google.com",
     "startUrl": "https://www.google.com/search?q=Crishirt%20Devpost",
     "allowedActionLevel": "navigation",
@@ -106,25 +144,8 @@
       "A real Google/search result page is used",
       "A relevant Devpost result is opened",
       "A YouTube video/link/embed is found if present",
-      "The task reports exact blocker if no video/theatre mode is found"
-    ]
-  },
-  {
-    "id": "google-docs-amethyst",
-    "taskText": "Open Google Docs and write a short description about amethyst.",
-    "targetSite": "docs.google.com",
-    "startUrl": "https://docs.google.com/document/u/0/create",
-    "allowedActionLevel": "form-fill-preview",
-    "maxRuntimeMs": 180000,
-    "screenshotRequired": true,
-    "realChromeRequired": false,
-    "controlledBrowserAllowed": true,
-    "cloudBackendAllowed": false,
-    "successCriteria": [
-      "If logged in and editing is available, text is inserted into the document body",
-      "If login/new-doc flow blocks, the blocker is reported clearly",
-      "The backend does not type into the wrong field",
-      "The backend stops after success or clear failure"
+      "The YouTube video is opened or the exact blocker is reported",
+      "The backend stops after success or blocker"
     ]
   }
 ]

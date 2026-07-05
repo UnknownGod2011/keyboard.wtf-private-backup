@@ -32,8 +32,8 @@ lines.push("# Browser automation bake-off report");
 lines.push("");
 lines.push(`Generated: ${new Date().toISOString()}`);
 lines.push("");
-lines.push("| Backend | Task | Status | Runtime ms | Model/provider | Masked key | Browser | Final URL | Confirmations | Failure / Summary |");
-lines.push("|---|---|---:|---:|---|---|---|---|---:|---|");
+lines.push("| Backend | Task | Run | Status | Runtime ms | Model/provider | Masked key | Browser | Final URL | Confirmations | Failure / Summary |");
+lines.push("|---|---|---|---:|---:|---|---|---|---|---:|---|");
 for (const result of results.sort((a, b) => `${a.backendName}:${a.taskId}`.localeCompare(`${b.backendName}:${b.taskId}`))) {
   let noteText = result.failureReason ?? result.summary ?? "";
   if (!result.success && /Stagehand completed but success criteria require manual review/i.test(noteText) && /denied access|PERMISSION_DENIED/i.test(result.summary ?? "")) {
@@ -43,7 +43,7 @@ for (const result of results.sort((a, b) => `${a.backendName}:${a.taskId}`.local
   const model = result.modelProvider ?? result.rawBackendMetadata?.model ?? "";
   const finalUrlMatch = String(result.finalUrl ?? "").match(/https?:\/\/[^\s"'`]+/i);
   const finalUrl = finalUrlMatch ? finalUrlMatch[0] : (result.finalUrl ?? "");
-  lines.push(`| ${result.backendName ?? ""} | ${result.taskId ?? ""} | ${result.success ? "PASS" : "FAIL"} | ${result.runtimeMs ?? ""} | ${model} | ${result.maskedKeyId ?? ""} | ${result.browserUsed ?? ""} | ${finalUrl} | ${result.confirmationCount ?? ""} | ${note} |`);
+  lines.push(`| ${result.backendName ?? ""} | ${result.taskId ?? ""} | ${result.runTemperature ?? ""} | ${result.success ? "PASS" : "FAIL"} | ${result.runtimeMs ?? ""} | ${model} | ${result.maskedKeyId ?? ""} | ${result.browserUsed ?? ""} | ${finalUrl} | ${result.confirmationCount ?? ""} | ${note} |`);
 }
 lines.push("");
 lines.push("## Notes");

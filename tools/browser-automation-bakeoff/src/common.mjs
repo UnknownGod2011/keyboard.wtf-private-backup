@@ -86,6 +86,7 @@ export function makeBaseResult(backendName, task) {
     logsPath: null,
     tracesPath: null,
     summary: null,
+    runTemperature: "cold",
     rawBackendMetadata: {}
   };
 }

@@ -6,7 +6,6 @@ import base64
 import json
 import os
 import re
-import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,10 +19,12 @@ TASKS_PATH = ROOT / "tasks.json"
 RESULTS_DIR = ROOT / "results"
 SCREENSHOTS_DIR = ROOT / "screenshots"
 PROFILES_DIR = ROOT / "profiles"
+TRACES_DIR = ROOT / "traces"
+LOGS_DIR = ROOT / "logs"
 
 
 def ensure_dirs() -> None:
-    for directory in (RESULTS_DIR, SCREENSHOTS_DIR, PROFILES_DIR):
+    for directory in (RESULTS_DIR, SCREENSHOTS_DIR, PROFILES_DIR, TRACES_DIR, LOGS_DIR):
         directory.mkdir(parents=True, exist_ok=True)
 
 
@@ -34,8 +35,13 @@ def safe_name(value: str) -> str:
 def redact(text: Any) -> str:
     raw = str(text)
     raw = re.sub(r"AQ\.Ab8[0-9A-Za-z._-]+", "[REDACTED_API_KEY]", raw)
-    raw = re.sub(r"AIza[0-9A-Za-z._—-]+", "[REDACTED_API_KEY]", raw)
-    raw = re.sub(r"(GEMINI|GOOGLE|BROWSERBASE|OPENAI|ANTHROPIC)(_GENERATIVE_AI)?_API_KEY=\S+", r"\1_API_KEY=[REDACTED]", raw, flags=re.I)
+    raw = re.sub(r"AIza[0-9A-Za-z._\-\u2014]+", "[REDACTED_API_KEY]", raw)
+    raw = re.sub(
+        r"(GEMINI|GOOGLE|BROWSERBASE|BROWSER_USE|OPENAI|ANTHROPIC)(_GENERATIVE_AI)?_API_KEY=\S+",
+        r"\1_API_KEY=[REDACTED]",
+        raw,
+        flags=re.I,
+    )
     return raw
 
 
@@ -57,11 +63,11 @@ def install_bakeoff_key(key: dict[str, str]) -> None:
     os.environ["GOOGLE_GENERATIVE_AI_API_KEY"] = key["value"]
 
 
-def classify_gemini_failure(value: Any) -> str | None:
+def classify_model_failure(value: Any) -> str | None:
     text = str(value)
     if re.search(r"RESOURCE_EXHAUSTED|429|quota|rate.?limit|capacity|overloaded|503|UNAVAILABLE", text, flags=re.I):
         return "quota_or_capacity"
-    if re.search(r"PERMISSION_DENIED|API key not valid|invalid api key|403", text, flags=re.I):
+    if re.search(r"PERMISSION_DENIED|API key not valid|invalid api key|403|ByteString|greater than 255|API_KEY_INVALID", text, flags=re.I):
         return "invalid_or_denied"
     return None
 
@@ -70,7 +76,8 @@ def load_tasks() -> list[dict[str, Any]]:
     return json.loads(TASKS_PATH.read_text(encoding="utf-8"))
 
 
-def make_result(task: dict[str, Any]) -> dict[str, Any]:
+def make_result(task: dict[str, Any], provider: str, run_mode: str) -> dict[str, Any]:
+    model = os.environ.get("BROWSER_USE_MODEL", "gemini-2.5-flash") if provider == "gemini" else os.environ.get("BROWSER_USE_AGENT_MODEL", "bu-2-0")
     return {
         "backendName": "browser-use",
         "taskId": task["id"],
@@ -90,7 +97,7 @@ def make_result(task: dict[str, Any]) -> dict[str, Any]:
         "keyPoolLoaded": None,
         "keyPoolExhausted": None,
         "browserProfileUsed": None,
-        "browserUsed": "local browser-use controlled browser",
+        "browserUsed": "browser-use controlled Chrome profile",
         "realChromeUsed": False,
         "controlledBrowserUsed": True,
         "wrongBrowserOpened": False,
@@ -101,9 +108,13 @@ def make_result(task: dict[str, Any]) -> dict[str, Any]:
         "logsPath": None,
         "tracesPath": None,
         "summary": None,
+        "runTemperature": run_mode,
         "rawBackendMetadata": {
             "package": "browser-use",
-            "model": os.environ.get("BROWSER_USE_MODEL", "gemini-2.5-flash"),
+            "provider": provider,
+            "model": model,
+            "usesBrowserUseAgentApi": provider == "browser-use",
+            "profileMode": "controlled-persistent-profile",
         },
     }
 
@@ -115,37 +126,31 @@ def finish(result: dict[str, Any], start: float, **patch: Any) -> dict[str, Any]
     return result
 
 
-async def run_task(task: dict[str, Any]) -> dict[str, Any]:
-    start = time.time()
-    result = make_result(task)
-    result_path = RESULTS_DIR / f"browser-use-{safe_name(task['id'])}.json"
-    try:
-        from browser_use import Agent, ChatGoogle
-    except Exception as exc:  # pragma: no cover - runtime setup evidence
-        finish(result, start, failureReason=f"browser-use import failed: {redact(exc)}", stoppedAfterSuccess=False)
-        result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
-        return result
+def make_profile_dir(task: dict[str, Any], key_name: str, provider: str, run_mode: str) -> Path:
+    mode_suffix = "warm" if run_mode == "warm" else f"cold-{int(time.time())}"
+    return PROFILES_DIR / f"browser-use-{provider}-{safe_name(task['id'])}-{key_name.lower()}-{mode_suffix}"
 
-    bakeoff_keys = load_bakeoff_keys()
-    result["keyPoolLoaded"] = len(bakeoff_keys)
-    if not bakeoff_keys:
-        finish(result, start, failureReason="No BAKEOFF_GEMINI_API_KEY_* values loaded for browser-use.", stoppedAfterSuccess=False, keyPoolExhausted=True)
-        result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
-        return result
 
-    model = os.environ.get("BROWSER_USE_MODEL", "gemini-2.5-flash")
-    instruction = "\n".join(
+def build_instruction(task: dict[str, Any]) -> str:
+    return "\n".join(
         [
-            task["taskText"],
+            "Complete this real browser task on the live website, then stop.",
+            "",
+            f"Task: {task['taskText']}",
+            "",
+            "Operational rules:",
+            "- Use the requested entity/product/site exactly. Do not substitute stale examples.",
+            "- Prefer direct page controls and visible page evidence.",
+            "- Do not loop. If the same action/search fails twice, report the blocker.",
+            "- Stop immediately when the success criteria are met.",
+            "- Do not use old memory, previous URLs, or cached final links.",
             "",
             "Safety constraints:",
             f"- Allowed action level: {task.get('allowedActionLevel')}.",
+            "- Search, read/extract, open links/pages, inspect CTA, and open videos are allowed without confirmation.",
             "- Never checkout, pay, place an order, change address/payment settings, send email, delete, publish, or submit protected final actions.",
-            "- Stop immediately when the success criteria are met.",
             "- If blocked by login, CAPTCHA, Cloudflare, site protection, unavailable item, or missing video/form control, report the exact blocker.",
             "- Do not claim success unless the real website success condition is visible or verifiable.",
-            "- Do not use stale memory, previous URLs, or cached final links.",
-            "- Use the requested entity/product/site exactly.",
             "- For cart tasks, cart mutation has one upfront benchmark confirmation only if cartMutationPreconfirmed is true; stop at cart/add-to-cart confirmation.",
             "",
             "Success criteria:",
@@ -153,37 +158,109 @@ async def run_task(task: dict[str, Any]) -> dict[str, Any]:
         ]
     )
 
-    attempts: list[dict[str, str]] = []
-    for key in bakeoff_keys:
-        install_bakeoff_key(key)
-        result["maskedKeyId"] = key["maskedKeyId"]
-        result["modelProvider"] = "google-gemini"
-        profile_dir = PROFILES_DIR / f"browser-use-{safe_name(task['id'])}-{key['name'].lower()}"
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        result["browserProfileUsed"] = str(profile_dir)
 
-        llm = ChatGoogle(model=model)
+def provider_keys(provider: str) -> list[dict[str, str]]:
+    if provider == "browser-use":
+        browser_use_key = os.environ.get("BROWSER_USE_API_KEY", "")
+        if not browser_use_key:
+            return []
+        return [{"name": "BROWSER_USE_API_KEY", "value": browser_use_key, "maskedKeyId": f"BROWSER_USE_API_KEY:{mask_key(browser_use_key)}"}]
+    return load_bakeoff_keys()
+
+
+async def close_browser(browser: Any) -> None:
+    try:
+        await browser.close()
+    except Exception:
+        try:
+            await browser.stop()
+        except Exception:
+            pass
+
+
+async def run_task(task: dict[str, Any], provider: str, run_mode: str) -> dict[str, Any]:
+    start = time.time()
+    result = make_result(task, provider, run_mode)
+    result_path = RESULTS_DIR / f"browser-use-{provider}-{run_mode}-{safe_name(task['id'])}.json"
+    try:
+        from browser_use import Agent, Browser, BrowserProfile, ChatBrowserUse, ChatGoogle
+    except Exception as exc:  # pragma: no cover - runtime setup evidence
+        finish(result, start, failureReason=f"browser-use import failed: {redact(exc)}", stoppedAfterSuccess=False)
+        result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        return result
+
+    keys = provider_keys(provider)
+    result["keyPoolLoaded"] = len(keys)
+    if not keys:
+        reason = "Browser Use API key not configured." if provider == "browser-use" else "No BAKEOFF_GEMINI_API_KEY_* values loaded for browser-use."
+        finish(result, start, failureReason=reason, stoppedAfterSuccess=False, keyPoolExhausted=(provider != "browser-use"))
+        result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        return result
+
+    instruction = build_instruction(task)
+    attempts: list[dict[str, str]] = []
+    for key in keys:
+        if provider == "gemini":
+            install_bakeoff_key(key)
+            result["modelProvider"] = "google-gemini"
+        else:
+            result["modelProvider"] = "browser-use"
+        result["maskedKeyId"] = key["maskedKeyId"]
+
+        profile_dir = make_profile_dir(task, key["name"], provider, run_mode)
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        trace_dir = TRACES_DIR / f"browser-use-{provider}-{run_mode}-{safe_name(task['id'])}"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        result["browserProfileUsed"] = str(profile_dir)
+        result["tracesPath"] = str(trace_dir)
+
+        if provider == "browser-use":
+            llm = ChatBrowserUse(model=os.environ.get("BROWSER_USE_AGENT_MODEL", "bu-2-0"), api_key=key["value"])
+        else:
+            llm = ChatGoogle(model=os.environ.get("BROWSER_USE_MODEL", "gemini-2.5-flash"))
+
+        browser_profile = BrowserProfile(
+            headless=False,
+            user_data_dir=str(profile_dir),
+            traces_dir=str(trace_dir),
+            highlight_elements=True,
+            wait_between_actions=0.1,
+            minimum_wait_page_load_time=0.25,
+            wait_for_network_idle_page_load_time=0.5,
+        )
+        browser = Browser(browser_profile=browser_profile)
+        log_path = LOGS_DIR / f"browser-use-{provider}-{run_mode}-{safe_name(task['id'])}-{key['name'].lower()}.json"
+        result["logsPath"] = str(log_path)
+
         agent = Agent(
             task=instruction,
             llm=llm,
-            directly_open_url=False,
-            max_failures=4,
+            browser=browser,
+            directly_open_url=True,
+            max_failures=3,
+            max_actions_per_step=4,
+            max_history_items=12,
+            step_timeout=60,
+            loop_detection_enabled=True,
+            loop_detection_window=12,
+            final_response_after_failure=True,
+            use_vision="auto",
+            planning_replan_on_stall=2,
+            save_conversation_path=str(log_path),
         )
+
         try:
             history = await asyncio.wait_for(agent.run(max_steps=24), timeout=task.get("maxRuntimeMs", 120000) / 1000)
-            summary = str(history)
             errors = history.errors()
             error_text = "\n".join(str(error) for error in errors)
-            classification = classify_gemini_failure(error_text)
-            if classification and not history.is_done():
+            classification = classify_model_failure(error_text)
+            if classification and provider == "gemini" and not history.is_done():
                 attempts.append({"key": key["maskedKeyId"], "classification": classification, "message": redact(error_text)[-500:]})
                 continue
 
             final_result = history.final_result()
-            final_url = None
             urls = history.urls()
-            if urls:
-                final_url = urls[-1]
+            final_url = urls[-1] if urls else None
             success = bool(history.is_done() and history.is_successful())
 
             screenshot_paths: list[str] = []
@@ -196,8 +273,7 @@ async def run_task(task: dict[str, Any]) -> dict[str, Any]:
             try:
                 screenshots = history.screenshots() or []
                 if screenshots:
-                    final_screenshot = SCREENSHOTS_DIR / f"browser-use-{safe_name(task['id'])}-final.png"
-                    base64.b64decode(screenshots[-1].split(",", 1)[-1])
+                    final_screenshot = SCREENSHOTS_DIR / f"browser-use-{provider}-{run_mode}-{safe_name(task['id'])}-final.png"
                     final_screenshot.write_bytes(base64.b64decode(screenshots[-1].split(",", 1)[-1]))
                     screenshot_paths.append(str(final_screenshot.resolve()))
             except Exception:
@@ -212,7 +288,7 @@ async def run_task(task: dict[str, Any]) -> dict[str, Any]:
                 stoppedAfterSuccess=bool(history.is_done()),
                 looped=(not history.is_done()),
                 actionCount=history.number_of_steps(),
-                summary=(final_result or summary)[:4000],
+                summary=(final_result or str(history))[:4000],
                 rawBackendMetadata={
                     **result["rawBackendMetadata"],
                     "errors": [redact(error) for error in errors[-5:]],
@@ -225,8 +301,8 @@ async def run_task(task: dict[str, Any]) -> dict[str, Any]:
             )
             break
         except Exception as exc:
-            classification = classify_gemini_failure(exc)
-            if classification:
+            classification = classify_model_failure(exc)
+            if classification and provider == "gemini":
                 attempts.append({"key": key["maskedKeyId"], "classification": classification, "message": redact(exc)[-500:]})
                 continue
             reason = redact(exc)
@@ -234,6 +310,8 @@ async def run_task(task: dict[str, Any]) -> dict[str, Any]:
                 reason = f"{type(exc).__name__} after {task.get('maxRuntimeMs', 120000)}ms"
             finish(result, start, success=False, stoppedAfterSuccess=False, failureReason=reason, rawBackendMetadata={**result["rawBackendMetadata"], "keyAttempts": attempts})
             break
+        finally:
+            await close_browser(browser)
 
     if result["endedAt"] is None:
         finish(
@@ -258,6 +336,8 @@ async def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", action="append", default=[])
     parser.add_argument("--all", action="store_true")
+    parser.add_argument("--provider", choices=["gemini", "browser-use"], default=os.environ.get("BROWSER_USE_PROVIDER", "gemini"))
+    parser.add_argument("--mode", choices=["cold", "warm"], default=os.environ.get("BROWSER_USE_RUN_MODE", "cold"))
     args = parser.parse_args()
 
     tasks = load_tasks()
@@ -267,12 +347,12 @@ async def main() -> int:
 
     results = []
     for task in tasks:
-        print(f"[browser-use] {task['id']}", flush=True)
-        result = await run_task(task)
+        print(f"[browser-use:{args.provider}:{args.mode}] {task['id']}", flush=True)
+        result = await run_task(task, args.provider, args.mode)
         print(json.dumps({"taskId": result["taskId"], "success": result["success"], "runtimeMs": result["runtimeMs"], "finalUrl": result["finalUrl"]}, indent=2), flush=True)
         results.append(result)
 
-    (RESULTS_DIR / "browser-use-summary.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+    (RESULTS_DIR / f"browser-use-{args.provider}-{args.mode}-summary.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     return 0 if all(result["success"] for result in results) else 2
 
 

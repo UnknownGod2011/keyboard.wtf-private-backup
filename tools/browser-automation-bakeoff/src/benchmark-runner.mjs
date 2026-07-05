@@ -5,12 +5,13 @@ ensureDirs();
 loadLocalEnv();
 
 const args = parseArgs();
-const requestedBackends = args.backend?.length ? args.backend : ["stagehand", "playwright-mcp"];
+const requestedBackends = args.backend?.length ? args.backend : ["browser-use", "stagehand", "playwright-mcp"];
 const tasks = selectTasks(args);
 const allResults = [];
 
 const backendCommands = {
-  "browser-use": (task) => [path.join(rootDir, ".venv", "Scripts", "python.exe"), ["python/backends/browser_use_runner.py", "--task", task.id]],
+  "browser-use": (task) => [path.join(rootDir, ".venv", "Scripts", "python.exe"), ["python/backends/browser_use_runner.py", "--provider", "gemini", "--mode", args.warm ? "warm" : "cold", "--task", task.id]],
+  "browser-use-native": (task) => [path.join(rootDir, ".venv", "Scripts", "python.exe"), ["python/backends/browser_use_runner.py", "--provider", "browser-use", "--mode", args.warm ? "warm" : "cold", "--task", task.id]],
   "stagehand": (task) => ["node", ["src/backends/stagehand-runner.mjs", "--task", task.id]],
   "playwright-mcp": (task) => ["node", ["src/backends/playwright-mcp-runner.mjs", "--task", task.id]]
 };

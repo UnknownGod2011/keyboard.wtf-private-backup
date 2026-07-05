@@ -16,6 +16,7 @@ add(".env.local ignored", (await runProcess("git", ["check-ignore", "-q", "--", 
 const bakeoffKeys = loadBakeoffKeys();
 add("BAKEOFF_GEMINI_API_KEY_* loaded", bakeoffKeys.length > 0, `${bakeoffKeys.length} key(s), values not printed`);
 add("main Gemini/Jarvis key ignored by harness", true, "runners use only BAKEOFF_GEMINI_API_KEY_*");
+add("BROWSER_USE_API_KEY optional", true, process.env.BROWSER_USE_API_KEY ? "configured, value not printed" : "not configured; Browser Use optimized model path will be skipped");
 
 for (const [cmd, args, name] of [
   ["node", ["--version"], "node"],
