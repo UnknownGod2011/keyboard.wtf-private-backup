@@ -21,6 +21,7 @@ SCREENSHOTS_DIR = ROOT / "screenshots"
 PROFILES_DIR = ROOT / "profiles"
 TRACES_DIR = ROOT / "traces"
 LOGS_DIR = ROOT / "logs"
+SHARED_BROWSER: Any | None = None
 
 
 def ensure_dirs() -> None:
@@ -65,9 +66,9 @@ def install_bakeoff_key(key: dict[str, str]) -> None:
 
 def classify_model_failure(value: Any) -> str | None:
     text = str(value)
-    if re.search(r"RESOURCE_EXHAUSTED|429|quota|rate.?limit|capacity|overloaded|503|UNAVAILABLE", text, flags=re.I):
+    if re.search(r"RESOURCE_EXHAUSTED|429|quota|rate.?limit|capacity|overloaded|credits?|free.?tier|503|UNAVAILABLE", text, flags=re.I):
         return "quota_or_capacity"
-    if re.search(r"PERMISSION_DENIED|API key not valid|invalid api key|403|ByteString|greater than 255|API_KEY_INVALID", text, flags=re.I):
+    if re.search(r"PERMISSION_DENIED|API key not valid|invalid api key|unauthorized|authentication|401|403|ByteString|greater than 255|API_KEY_INVALID", text, flags=re.I):
         return "invalid_or_denied"
     return None
 
@@ -127,7 +128,9 @@ def finish(result: dict[str, Any], start: float, **patch: Any) -> dict[str, Any]
 
 
 def make_profile_dir(task: dict[str, Any], key_name: str, provider: str, run_mode: str) -> Path:
-    mode_suffix = "warm" if run_mode == "warm" else f"cold-{int(time.time())}"
+    if run_mode == "warm":
+        return PROFILES_DIR / f"browser-use-{provider}-warm-shared"
+    mode_suffix = f"cold-{int(time.time())}"
     return PROFILES_DIR / f"browser-use-{provider}-{safe_name(task['id'])}-{key_name.lower()}-{mode_suffix}"
 
 
@@ -161,10 +164,14 @@ def build_instruction(task: dict[str, Any]) -> str:
 
 def provider_keys(provider: str) -> list[dict[str, str]]:
     if provider == "browser-use":
+        keys: list[dict[str, str]] = []
+        for name, value in sorted(os.environ.items()):
+            if re.match(r"^BROWSER_USE_API_KEY_\d+$", name, flags=re.I) and value:
+                keys.append({"name": name, "value": value, "maskedKeyId": f"{name}:{mask_key(value)}"})
         browser_use_key = os.environ.get("BROWSER_USE_API_KEY", "")
-        if not browser_use_key:
-            return []
-        return [{"name": "BROWSER_USE_API_KEY", "value": browser_use_key, "maskedKeyId": f"BROWSER_USE_API_KEY:{mask_key(browser_use_key)}"}]
+        if browser_use_key:
+            keys.append({"name": "BROWSER_USE_API_KEY", "value": browser_use_key, "maskedKeyId": f"BROWSER_USE_API_KEY:{mask_key(browser_use_key)}"})
+        return keys
     return load_bakeoff_keys()
 
 
@@ -178,7 +185,37 @@ async def close_browser(browser: Any) -> None:
             pass
 
 
-async def run_task(task: dict[str, Any], provider: str, run_mode: str) -> dict[str, Any]:
+async def get_browser(Browser: Any, BrowserProfile: Any, profile_dir: Path, trace_dir: Path, run_mode: str, real_chrome: bool) -> Any:
+    global SHARED_BROWSER
+    if run_mode == "warm" and SHARED_BROWSER is not None:
+        return SHARED_BROWSER
+
+    if real_chrome:
+        browser = Browser.from_system_chrome(
+            profile_directory=os.environ.get("BROWSER_USE_CHROME_PROFILE", "Default"),
+            keep_alive=run_mode == "warm",
+            traces_dir=str(trace_dir),
+            highlight_elements=True,
+        )
+    else:
+        browser_profile = BrowserProfile(
+            headless=False,
+            user_data_dir=str(profile_dir),
+            traces_dir=str(trace_dir),
+            highlight_elements=True,
+            wait_between_actions=0.1,
+            minimum_wait_page_load_time=0.25,
+            wait_for_network_idle_page_load_time=0.5,
+            keep_alive=run_mode == "warm",
+        )
+        browser = Browser(browser_profile=browser_profile)
+
+    if run_mode == "warm":
+        SHARED_BROWSER = browser
+    return browser
+
+
+async def run_task(task: dict[str, Any], provider: str, run_mode: str, real_chrome: bool = False) -> dict[str, Any]:
     start = time.time()
     result = make_result(task, provider, run_mode)
     result_path = RESULTS_DIR / f"browser-use-{provider}-{run_mode}-{safe_name(task['id'])}.json"
@@ -213,22 +250,16 @@ async def run_task(task: dict[str, Any], provider: str, run_mode: str) -> dict[s
         trace_dir.mkdir(parents=True, exist_ok=True)
         result["browserProfileUsed"] = str(profile_dir)
         result["tracesPath"] = str(trace_dir)
+        result["browserUsed"] = "browser-use real system Chrome profile" if real_chrome else "browser-use controlled Chrome profile"
+        result["realChromeUsed"] = real_chrome
+        result["controlledBrowserUsed"] = not real_chrome
 
         if provider == "browser-use":
             llm = ChatBrowserUse(model=os.environ.get("BROWSER_USE_AGENT_MODEL", "bu-2-0"), api_key=key["value"])
         else:
             llm = ChatGoogle(model=os.environ.get("BROWSER_USE_MODEL", "gemini-2.5-flash"))
 
-        browser_profile = BrowserProfile(
-            headless=False,
-            user_data_dir=str(profile_dir),
-            traces_dir=str(trace_dir),
-            highlight_elements=True,
-            wait_between_actions=0.1,
-            minimum_wait_page_load_time=0.25,
-            wait_for_network_idle_page_load_time=0.5,
-        )
-        browser = Browser(browser_profile=browser_profile)
+        browser = await get_browser(Browser, BrowserProfile, profile_dir, trace_dir, run_mode, real_chrome)
         log_path = LOGS_DIR / f"browser-use-{provider}-{run_mode}-{safe_name(task['id'])}-{key['name'].lower()}.json"
         result["logsPath"] = str(log_path)
 
@@ -254,7 +285,7 @@ async def run_task(task: dict[str, Any], provider: str, run_mode: str) -> dict[s
             errors = history.errors()
             error_text = "\n".join(str(error) for error in errors)
             classification = classify_model_failure(error_text)
-            if classification and provider == "gemini" and not history.is_done():
+            if classification and not history.is_done():
                 attempts.append({"key": key["maskedKeyId"], "classification": classification, "message": redact(error_text)[-500:]})
                 continue
 
@@ -302,7 +333,7 @@ async def run_task(task: dict[str, Any], provider: str, run_mode: str) -> dict[s
             break
         except Exception as exc:
             classification = classify_model_failure(exc)
-            if classification and provider == "gemini":
+            if classification:
                 attempts.append({"key": key["maskedKeyId"], "classification": classification, "message": redact(exc)[-500:]})
                 continue
             reason = redact(exc)
@@ -311,16 +342,18 @@ async def run_task(task: dict[str, Any], provider: str, run_mode: str) -> dict[s
             finish(result, start, success=False, stoppedAfterSuccess=False, failureReason=reason, rawBackendMetadata={**result["rawBackendMetadata"], "keyAttempts": attempts})
             break
         finally:
-            await close_browser(browser)
+            if run_mode != "warm":
+                await close_browser(browser)
 
     if result["endedAt"] is None:
+        exhausted_message = "All Browser Use API keys exhausted or denied." if provider == "browser-use" else "All bake-off Gemini keys exhausted or denied."
         finish(
             result,
             start,
             success=False,
             stoppedAfterSuccess=False,
             keyPoolExhausted=True,
-            failureReason=f"All bake-off Gemini keys exhausted or denied. Attempts: {json.dumps(attempts)}",
+            failureReason=f"{exhausted_message} Attempts: {json.dumps(attempts)}",
             rawBackendMetadata={**result["rawBackendMetadata"], "keyAttempts": attempts},
         )
 
@@ -338,6 +371,7 @@ async def main() -> int:
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--provider", choices=["gemini", "browser-use"], default=os.environ.get("BROWSER_USE_PROVIDER", "gemini"))
     parser.add_argument("--mode", choices=["cold", "warm"], default=os.environ.get("BROWSER_USE_RUN_MODE", "cold"))
+    parser.add_argument("--real-chrome", action="store_true", default=os.environ.get("BROWSER_USE_REAL_CHROME", "").lower() in {"1", "true", "yes"})
     args = parser.parse_args()
 
     tasks = load_tasks()
@@ -346,11 +380,17 @@ async def main() -> int:
         tasks = [task for task in tasks if task["id"] in wanted]
 
     results = []
-    for task in tasks:
-        print(f"[browser-use:{args.provider}:{args.mode}] {task['id']}", flush=True)
-        result = await run_task(task, args.provider, args.mode)
-        print(json.dumps({"taskId": result["taskId"], "success": result["success"], "runtimeMs": result["runtimeMs"], "finalUrl": result["finalUrl"]}, indent=2), flush=True)
-        results.append(result)
+    try:
+        for task in tasks:
+            print(f"[browser-use:{args.provider}:{args.mode}{':real-chrome' if args.real_chrome else ''}] {task['id']}", flush=True)
+            result = await run_task(task, args.provider, args.mode, args.real_chrome)
+            print(json.dumps({"taskId": result["taskId"], "success": result["success"], "runtimeMs": result["runtimeMs"], "finalUrl": result["finalUrl"]}, indent=2), flush=True)
+            results.append(result)
+    finally:
+        global SHARED_BROWSER
+        if SHARED_BROWSER is not None:
+            await close_browser(SHARED_BROWSER)
+            SHARED_BROWSER = None
 
     (RESULTS_DIR / f"browser-use-{args.provider}-{args.mode}-summary.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     return 0 if all(result["success"] for result in results) else 2

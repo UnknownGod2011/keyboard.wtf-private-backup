@@ -147,5 +147,24 @@
       "The YouTube video is opened or the exact blocker is reported",
       "The backend stops after success or blocker"
     ]
+  },
+  {
+    "id": "generic-popup-navigation-w3schools",
+    "taskText": "Open W3Schools, close or dismiss any cookie/banner/popup if it appears, search for CSS Flexbox, and open the first clearly relevant tutorial/result.",
+    "targetSite": "w3schools.com",
+    "startUrl": "https://www.w3schools.com",
+    "allowedActionLevel": "navigation",
+    "maxRuntimeMs": 150000,
+    "screenshotRequired": true,
+    "realChromeRequired": false,
+    "controlledBrowserAllowed": true,
+    "cloudBackendAllowed": false,
+    "successCriteria": [
+      "A real W3Schools page is opened",
+      "Any visible cookie/banner/popup is closed or safely ignored if it does not block navigation",
+      "The query or target topic is CSS Flexbox",
+      "A clearly relevant CSS Flexbox tutorial/result is opened",
+      "The backend stops after success or exact blocker"
+    ]
   }
 ]

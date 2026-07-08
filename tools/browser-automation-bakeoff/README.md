@@ -30,10 +30,12 @@ Optional Browser Use optimized model path:
 
 ```env
 BROWSER_USE_API_KEY=
+BROWSER_USE_API_KEY_01=
+BROWSER_USE_API_KEY_02=
 BROWSER_USE_AGENT_MODEL=bu-2-0
 ```
 
-If `BROWSER_USE_API_KEY` is absent, the optimized Browser Use model path is reported as skipped and normal Gemini-backed browser-use benchmarks still run.
+If `BROWSER_USE_API_KEY` / `BROWSER_USE_API_KEY_*` are absent, the optimized Browser Use model path is reported as skipped and normal Gemini-backed browser-use benchmarks still run. When multiple `BROWSER_USE_API_KEY_*` values are present, the runner rotates across them on quota/rate/auth failures and records only masked key ids.
 
 Generated output is ignored by Git:
 
