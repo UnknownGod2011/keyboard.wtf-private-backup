@@ -19,10 +19,12 @@
   },
   {
     "id": "amazon-in-mx-master-visible-products",
-    "taskText": "Open Amazon India and search for MX Master 4. Report the top visible products/prices.",
+    "taskText": "Open Amazon India, search MX Master 4, open the best matching product page, and report visible title/price.",
     "targetSite": "amazon.in",
     "startUrl": "https://www.amazon.in",
     "allowedActionLevel": "read-only",
+    "visionMode": "auto",
+    "receiptVerification": "product_cta",
     "maxRuntimeMs": 120000,
     "screenshotRequired": true,
     "realChromeRequired": false,
@@ -31,17 +33,20 @@
     "successCriteria": [
       "Real amazon.in is opened",
       "The query is MX Master 4",
-      "Top visible product names and prices are reported if visible",
+      "A relevant product page is opened or the exact blocker is reported",
+      "Visible product title and price are reported if visible",
       "No cart, checkout, payment, address, or account mutation occurs",
-      "The backend stops after reporting the visible products/prices or a clear blocker"
+      "The backend stops after reporting the visible product page evidence or a clear blocker"
     ]
   },
   {
     "id": "flipkart-iphone-cta",
-    "taskText": "Open Flipkart and search for iPhone 17 Pro. Open the best matching result and tell me whether Add to Cart, Buy Now, Notify Me, or unavailable is visible.",
+    "taskText": "Open Flipkart, close the login popup if it appears, search for iPhone 17 Pro, open the best matching result, and report CTA state: Add to Cart / Buy Now / Notify Me / unavailable.",
     "targetSite": "flipkart.com",
     "startUrl": "https://www.flipkart.com",
     "allowedActionLevel": "read-only",
+    "visionMode": "auto",
+    "receiptVerification": "product_cta",
     "maxRuntimeMs": 120000,
     "screenshotRequired": true,
     "realChromeRequired": false,
@@ -60,6 +65,7 @@
     "targetSite": "amazon.in",
     "startUrl": "https://www.amazon.in",
     "allowedActionLevel": "cart-mutation-after-confirmation",
+    "visionMode": "auto",
     "cartMutationPreconfirmed": true,
     "maxRuntimeMs": 180000,
     "screenshotRequired": true,
@@ -80,6 +86,7 @@
     "targetSite": "youtube.com",
     "startUrl": "https://www.youtube.com",
     "allowedActionLevel": "navigation",
+    "visionMode": "auto",
     "maxRuntimeMs": 120000,
     "screenshotRequired": true,
     "realChromeRequired": false,
@@ -98,6 +105,7 @@
     "targetSite": "youtube.com",
     "startUrl": "https://www.youtube.com",
     "allowedActionLevel": "navigation",
+    "visionMode": "auto",
     "maxRuntimeMs": 150000,
     "screenshotRequired": true,
     "realChromeRequired": false,
@@ -116,6 +124,7 @@
     "targetSite": "youtube.com",
     "startUrl": "https://www.youtube.com",
     "allowedActionLevel": "navigation",
+    "visionMode": "auto",
     "maxRuntimeMs": 150000,
     "screenshotRequired": true,
     "realChromeRequired": false,
@@ -135,6 +144,7 @@
     "targetSite": "google.com",
     "startUrl": "https://www.google.com/search?q=Crishirt%20Devpost",
     "allowedActionLevel": "navigation",
+    "visionMode": "auto",
     "maxRuntimeMs": 180000,
     "screenshotRequired": true,
     "realChromeRequired": false,
@@ -154,6 +164,7 @@
     "targetSite": "w3schools.com",
     "startUrl": "https://www.w3schools.com",
     "allowedActionLevel": "navigation",
+    "visionMode": "auto",
     "maxRuntimeMs": 150000,
     "screenshotRequired": true,
     "realChromeRequired": false,
@@ -165,6 +176,98 @@
       "The query or target topic is CSS Flexbox",
       "A clearly relevant CSS Flexbox tutorial/result is opened",
       "The backend stops after success or exact blocker"
+    ]
+  },
+  {
+    "id": "wikipedia-alan-turing-summary",
+    "taskText": "Open Wikipedia, search for Alan Turing, open the correct page, and summarize the first paragraph.",
+    "targetSite": "wikipedia.org",
+    "startUrl": "https://www.wikipedia.org",
+    "allowedActionLevel": "read-only",
+    "maxRuntimeMs": 120000,
+    "screenshotRequired": true,
+    "realChromeRequired": false,
+    "controlledBrowserAllowed": true,
+    "cloudBackendAllowed": false,
+    "successCriteria": [
+      "Real Wikipedia is opened",
+      "The Alan Turing article is opened",
+      "The first paragraph is summarized from the visible article text",
+      "No edit/login/account action occurs"
+    ]
+  },
+  {
+    "id": "imdb-interstellar-rating",
+    "taskText": "Open IMDb, search for Interstellar, open the correct movie page, and report its rating if visible.",
+    "targetSite": "imdb.com",
+    "startUrl": "https://www.imdb.com",
+    "allowedActionLevel": "read-only",
+    "visionMode": "auto",
+    "maxRuntimeMs": 120000,
+    "screenshotRequired": true,
+    "realChromeRequired": false,
+    "controlledBrowserAllowed": true,
+    "cloudBackendAllowed": false,
+    "successCriteria": [
+      "Real IMDb is opened",
+      "The Interstellar movie page is opened",
+      "Visible rating is reported if visible",
+      "The backend stops after reporting the rating or exact blocker"
+    ]
+  },
+  {
+    "id": "github-browser-use-repo-stats",
+    "taskText": "Open GitHub, search for browser-use/browser-use, open the repository, and report stars/forks if visible.",
+    "targetSite": "github.com",
+    "startUrl": "https://github.com",
+    "allowedActionLevel": "read-only",
+    "maxRuntimeMs": 120000,
+    "screenshotRequired": true,
+    "realChromeRequired": false,
+    "controlledBrowserAllowed": true,
+    "cloudBackendAllowed": false,
+    "successCriteria": [
+      "Real GitHub is opened",
+      "The browser-use/browser-use repository is opened",
+      "Visible stars and forks are reported if visible",
+      "No login, star, fork, issue, or repo mutation occurs"
+    ]
+  },
+  {
+    "id": "google-maps-djsce-mumbai",
+    "taskText": "Open Google Maps in browser, search for DJSCE Mumbai, and report whether the correct location page is visible. Do not start navigation.",
+    "targetSite": "google.com/maps",
+    "startUrl": "https://www.google.com/maps",
+    "allowedActionLevel": "read-only",
+    "visionMode": "auto",
+    "maxRuntimeMs": 120000,
+    "screenshotRequired": true,
+    "realChromeRequired": false,
+    "controlledBrowserAllowed": true,
+    "cloudBackendAllowed": false,
+    "successCriteria": [
+      "Real Google Maps is opened",
+      "The query is DJSCE Mumbai",
+      "The visible result/location is assessed",
+      "No directions/navigation route is started"
+    ]
+  },
+  {
+    "id": "news-ai-browser-automation-result",
+    "taskText": "Open a public news or search page, search for AI browser automation, open a relevant result, and report title/source.",
+    "targetSite": "google.com",
+    "startUrl": "https://www.google.com/search?q=AI%20browser%20automation%20news",
+    "allowedActionLevel": "read-only",
+    "maxRuntimeMs": 120000,
+    "screenshotRequired": true,
+    "realChromeRequired": false,
+    "controlledBrowserAllowed": true,
+    "cloudBackendAllowed": false,
+    "successCriteria": [
+      "A real public search/news page is used",
+      "A relevant AI browser automation result is opened",
+      "Title and source are reported",
+      "No account, subscription, or form action occurs"
     ]
   }
 ]

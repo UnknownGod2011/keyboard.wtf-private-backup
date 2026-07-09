@@ -81,6 +81,12 @@ public sealed class AppSettings
     public bool StartWithWindows { get; set; } = true;
     public JarvisPermissionMode JarvisPermissionMode { get; set; } = JarvisPermissionMode.AlwaysAsk;
     public string PreferredBrowser { get; set; } = "";
+    public bool ExperimentalSmartBrowserAutomation { get; set; }
+    public string BrowserAutomationModel { get; set; } = "gemini-3.1-flash-lite";
+    public string BrowserAutomationProfileMode { get; set; } = "adaptive";
+    public int BrowserAutomationMaxRuntimeSeconds { get; set; } = 180;
+    public bool BrowserAutomationPatternMemory { get; set; } = true;
+    public bool BrowserAutomationPersistentSession { get; set; } = true;
 }
 
 public sealed class SettingsService
@@ -148,6 +154,10 @@ public sealed class SettingsService
         Current.JarvisWorkflows ??= new List<JarvisWorkflowSettings>();
         if (!hadSettingsFile || !settingsJson.Contains("\"StartWithWindows\"", StringComparison.OrdinalIgnoreCase))
             Current.StartWithWindows = true;
+        if (string.IsNullOrWhiteSpace(Current.BrowserAutomationModel))
+            Current.BrowserAutomationModel = "gemini-3.1-flash-lite";
+        Current.BrowserAutomationProfileMode = SanitizeBrowserAutomationProfileMode(Current.BrowserAutomationProfileMode);
+        Current.BrowserAutomationMaxRuntimeSeconds = Math.Clamp(Current.BrowserAutomationMaxRuntimeSeconds, 30, 300);
         Current.GeminiVoice = SanitizeGeminiVoice(Current.GeminiVoice);
         ApplyToState();
         Save();
@@ -260,6 +270,44 @@ public sealed class SettingsService
         Save();
     }
 
+    public void SaveExperimentalSmartBrowserAutomation(bool value)
+    {
+        Current.ExperimentalSmartBrowserAutomation = value;
+        Save();
+    }
+
+    public void SaveBrowserAutomationModel(string value)
+    {
+        Current.BrowserAutomationModel = string.IsNullOrWhiteSpace(value)
+            ? "gemini-3.1-flash-lite"
+            : value.Trim();
+        Save();
+    }
+
+    public void SaveBrowserAutomationProfileMode(string value)
+    {
+        Current.BrowserAutomationProfileMode = SanitizeBrowserAutomationProfileMode(value);
+        Save();
+    }
+
+    public void SaveBrowserAutomationMaxRuntimeSeconds(int value)
+    {
+        Current.BrowserAutomationMaxRuntimeSeconds = Math.Clamp(value, 30, 300);
+        Save();
+    }
+
+    public void SaveBrowserAutomationPatternMemory(bool value)
+    {
+        Current.BrowserAutomationPatternMemory = value;
+        Save();
+    }
+
+    public void SaveBrowserAutomationPersistentSession(bool value)
+    {
+        Current.BrowserAutomationPersistentSession = value;
+        Save();
+    }
+
     public JarvisWorkflowSettings SaveWorkflow(string name, string apps, string urls, string folder)
     {
         var cleanName = CleanInline(name, 48);
@@ -346,6 +394,14 @@ public sealed class SettingsService
 
     private static string SanitizeGeminiVoice(string value) =>
         GeminiVoices.ContainsKey(value ?? "") ? value.Trim() : "Kore";
+
+    private static string SanitizeBrowserAutomationProfileMode(string value)
+    {
+        var clean = (value ?? "").Trim().ToLowerInvariant();
+        return clean is "adaptive" or "fast" or "smart" or "recovery"
+            ? clean
+            : "adaptive";
+    }
 
     private static string CleanInline(string value, int maxLength)
     {

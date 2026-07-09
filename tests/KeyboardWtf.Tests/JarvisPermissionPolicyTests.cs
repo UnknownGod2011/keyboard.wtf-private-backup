@@ -82,4 +82,45 @@ public sealed class JarvisPermissionPolicyTests
             "",
             JarvisPermissionMode.AlwaysAsk));
     }
+
+    [Fact]
+    public void BrowserAutomationReadOnlyDoesNotAskEveryClick()
+    {
+        Assert.False(JarvisPermissionPolicy.RequiresConfirmation(
+            "browser_automation_task",
+            "read-only",
+            "",
+            JarvisPermissionMode.AlwaysAsk));
+    }
+
+    [Fact]
+    public void BrowserAutomationNavigationDoesNotAskForSafeMedia()
+    {
+        Assert.False(JarvisPermissionPolicy.RequiresConfirmation(
+            "browser_automation_task",
+            "navigation",
+            "",
+            JarvisPermissionMode.AlwaysAsk));
+    }
+
+    [Fact]
+    public void BrowserAutomationCartMutationGetsOneUpfrontConfirmation()
+    {
+        Assert.True(JarvisPermissionPolicy.RequiresConfirmation(
+            "browser_automation_task",
+            "cart-mutation-after-confirmation",
+            "",
+            JarvisPermissionMode.AutoExecute));
+    }
+
+    [Fact]
+    public void BrowserAutomationApprovedCartMutationSkipsRepeatPrompt()
+    {
+        Assert.False(JarvisPermissionPolicy.RequiresConfirmation(
+            "browser_automation_task",
+            "cart-mutation-after-confirmation",
+            "",
+            JarvisPermissionMode.AutoExecute,
+            executingApprovedAction: true));
+    }
 }

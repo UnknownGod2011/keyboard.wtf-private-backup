@@ -19,6 +19,7 @@ public static class JarvisPermissionPolicy
         "remember_routine",
         "run_workflow", "delete_workflow", "remember_app_alias", "remember_path_alias",
         "remember_link_alias", "remember_workflow_alias", "forget_learned_mapping", "set_browser_preference",
+        "browser_automation_task",
     };
 
     public static bool RequiresConfirmation(
@@ -37,6 +38,15 @@ public static class JarvisPermissionPolicy
             return false;
         if (toolName == "window_action" && normalizedAction is "list" or "list windows")
             return false;
+        if (toolName == "browser_automation_task")
+        {
+            if (normalizedAction.Contains("cart", StringComparison.Ordinal)
+                || normalizedAction.Contains("form fill", StringComparison.Ordinal)
+                || normalizedAction.Contains("account", StringComparison.Ordinal)
+                || normalizedAction.Contains("submit", StringComparison.Ordinal))
+                return true;
+            return false;
+        }
         if (!SideEffectingTools.Contains(toolName))
             return false;
         if (toolName == "virtual_desktop_action"

@@ -33,6 +33,10 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>tts\voices\%(RecursiveDir)%(Filename)%(Extension)</Link>
     </Content>
+    <Content Include="Services\BrowserAutomation\BrowserUseSidecar\browser_use_runtime.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>BrowserAutomation\browser_use_runtime.py</Link>
+    </Content>
   </ItemGroup>
 
   <ItemGroup>

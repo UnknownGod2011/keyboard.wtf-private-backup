@@ -508,7 +508,9 @@ public sealed class GeminiLiveConversationService : IDisposable
             "If the user corrects an app, file, folder, link, or browser choice, ask whether they want that correction remembered. Call a remember tool only after they explicitly approve it. " +
             "Use list_learned_mappings and forget_learned_mapping for requests to inspect or forget local mappings. " +
             "Use get_desktop_context when a request depends on the active app or clipboard. Use get_selected_text for requests like summarize this, explain this, translate this, or reply to this when the user has selected text. " +
-            "Browser tab actions use the active browser. Full webpage DOM reading and reliable form automation require a future browser extension; explain that limitation when selected text is not enough. " +
+            "Browser tab actions use the active browser. For simple browser requests like open YouTube, search MrBeast on YouTube, open Amazon, search Amazon for MX Master 4, open a new tab, or close a tab, use open_url, web_search, open_service_page, or browser_action, not browser_automation_task. " +
+            "Use browser_automation_task only for true multi-step browser automation where page state determines the next action: oldest/latest YouTube video, embedded video traversal, product CTA inspection, add-to-cart then stop at cart, popup handling plus continued navigation, and similar multi-step page reasoning. " +
+            "Experimental browser automation uses browser-use plus Gemini and must be enabled in Settings. Never claim it succeeded unless the tool response says it did. " +
             "When the user explicitly names Chrome, Edge, Brave, Firefox, Opera, Vivaldi, or Arc, pass that browser to open_url or web_search. Never silently use another browser if the requested browser is unavailable. " +
             "Screen inspection is one-shot and privacy-sensitive. Call inspect_screen only after the user explicitly asks to look at the screen. Ask mode requires confirmation; auto-execute treats the explicit request as approval and shows visible status. Relay the returned guidance without claiming you clicked anything. " +
             "Camera opening and take-photo requests must be explicit. Ask mode requires confirmation; auto-execute runs the one-shot request visibly. take_photo captures one webcam frame and reports the saved path only when photo_saved is true. " +
@@ -518,7 +520,8 @@ public sealed class GeminiLiveConversationService : IDisposable
             closeAppInstruction +
             "If the user asks who created you, who made you, who built you, or who your creator is, answer exactly: I was created by Tanush Shah on 7th June 2026. Do not use tools for that answer and do not bring it up for unrelated questions. " +
             "Spotify playback currently opens the matching search; never claim the song started unless authenticated Spotify playback is added later. take_screenshot captures the desktop, not the webcam. " +
-            "Do not claim you added items to a cart, changed account data, bulk-unliked content, or sent a Discord message. Those authenticated browser actions are not supported without a browser companion and explicit confirmation. " +
+            "For add-to-cart browser tasks, call browser_automation_task with allowed_action_level cart-mutation-after-confirmation; the local app will ask for one upfront confirmation. Never checkout, pay, place an order, change address/payment settings, enter passwords, solve OTP/CAPTCHA, or bypass site protections. " +
+            "Do not claim you changed account data, bulk-unliked content, or sent a Discord message. Those authenticated/destructive actions are not supported without explicit review and confirmation. " +
             "Never send an email or message automatically. Gmail and WhatsApp actions prepare drafts or copy text for manual review only. " +
             "If a request is unsupported, say that clearly and briefly. " +
             "For WhatsApp requests with only a contact name, call prepare_whatsapp_message with the contact name and message; the tool will explain the current limitation. " +
@@ -594,6 +597,18 @@ public sealed class GeminiLiveConversationService : IDisposable
                         ["browser"] = Schema("string", "Optional: chrome, edge, brave, firefox, opera, vivaldi, or arc."),
                     },
                     "query"),
+                FunctionDeclaration(
+                    "browser_automation_task",
+                    "Run experimental smart browser automation through browser-use + Gemini for true multi-step page-state tasks. Do not use for simple open/search/tab commands. Use for oldest/latest YouTube video, product CTA inspection, add-to-cart then stop at cart, embedded video traversal, popup handling, or multi-step flows where the next click depends on the current page.",
+                    new()
+                    {
+                        ["task"] = Schema("string", "The user's full browser automation task, preserving requested site, entity, products, and stop condition."),
+                        ["allowed_action_level"] = Schema("string", "One of: read-only, navigation, form-fill-preview, cart-mutation-after-confirmation, protected-final-action-blocked."),
+                        ["target_site"] = Schema("string", "Optional target domain such as youtube.com, amazon.in, flipkart.com, google.com, github.com, wikipedia.org."),
+                        ["profile"] = Schema("string", "Optional: fast, smart, or recovery. Leave empty unless the user or task clearly needs a profile."),
+                    },
+                    "task",
+                    "allowed_action_level"),
                 FunctionDeclaration(
                     "get_desktop_context",
                     "Get the active window title, active process, and a capped copy of clipboard text.",

@@ -40,7 +40,8 @@ for (const result of results.sort((a, b) => `${a.backendName}:${a.taskId}`.local
     noteText = "Stagehand Gemini provider access failed before completing the browser task.";
   }
   const note = noteText.replaceAll("|", "\\|").replace(/\s+/g, " ").slice(0, 500);
-  const model = result.modelProvider ?? result.rawBackendMetadata?.model ?? "";
+  const modelParts = [result.modelProvider, result.rawBackendMetadata?.model].filter(Boolean);
+  const model = modelParts.length ? [...new Set(modelParts)].join(":") : "";
   const finalUrlMatch = String(result.finalUrl ?? "").match(/https?:\/\/[^\s"'`]+/i);
   const finalUrl = finalUrlMatch ? finalUrlMatch[0] : (result.finalUrl ?? "");
   lines.push(`| ${result.backendName ?? ""} | ${result.taskId ?? ""} | ${result.runTemperature ?? ""} | ${result.success ? "PASS" : "FAIL"} | ${result.runtimeMs ?? ""} | ${model} | ${result.maskedKeyId ?? ""} | ${result.browserUsed ?? ""} | ${finalUrl} | ${result.confirmationCount ?? ""} | ${note} |`);

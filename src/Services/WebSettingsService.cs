@@ -265,6 +265,16 @@ public sealed class WebSettingsService : IDisposable
                 }
                 await RunScreenGuidanceTest(resp);
             }
+            else if (path == "/api/browser-automation-test" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, JsonSerializer.Serialize(new { ok = false, error = "Settings action header required." }));
+                    return;
+                }
+                await RunBrowserAutomationTest(resp);
+            }
             else if (path == "/api/download-models" && method == "POST")
             {
                 await DownloadModels(resp);
@@ -338,6 +348,9 @@ public sealed class WebSettingsService : IDisposable
     {
         // TTS info is Windows-only (SAPI/Piper); give null on non-Windows to keep the API shape.
         var ttsBackend = OperatingSystem.IsWindows() ? TtsService.Instance.ActiveBackend.ToString() : "None";
+
+        var browserAutomationAvailability = BrowserUseAutomationProvider.GetAvailability(
+            _settings?.Current.ExperimentalSmartBrowserAutomation == true);
 
         var settings = new
         {
@@ -421,6 +434,14 @@ public sealed class WebSettingsService : IDisposable
             jarvisActionHistory = _jarvisHistory?.Snapshot() ?? Array.Empty<JarvisActionEntry>(),
             pendingSensitiveAction = _app?.Commands?.PendingSensitiveAction,
             preferredBrowser = _settings?.Current.PreferredBrowser ?? "",
+            experimentalSmartBrowserAutomation = _settings?.Current.ExperimentalSmartBrowserAutomation ?? false,
+            browserAutomationModel = _settings?.Current.BrowserAutomationModel ?? "gemini-3.1-flash-lite",
+            browserAutomationProfileMode = _settings?.Current.BrowserAutomationProfileMode ?? "adaptive",
+            browserAutomationMaxRuntimeSeconds = _settings?.Current.BrowserAutomationMaxRuntimeSeconds ?? 180,
+            browserAutomationPatternMemory = _settings?.Current.BrowserAutomationPatternMemory ?? true,
+            browserAutomationPersistentSession = _settings?.Current.BrowserAutomationPersistentSession ?? true,
+            browserAutomationBackend = "browser-use + Gemini",
+            browserAutomationAvailability,
             learnedMappings = _learnedMappings?.Snapshot() ?? Array.Empty<LearnedMappingEntry>(),
             featureStatus = new
             {
@@ -439,6 +460,9 @@ public sealed class WebSettingsService : IDisposable
                     ? "Live partial transcript available"
                     : "Final transcript available; Vosk enables live preview",
                 routineMemory = "Saved trigger phrases available",
+                smartBrowserAutomation = browserAutomationAvailability.Ready
+                    ? "Ready: browser-use + Gemini"
+                    : browserAutomationAvailability.Message,
             }
         };
 
@@ -588,6 +612,18 @@ public sealed class WebSettingsService : IDisposable
             _settings?.SaveJarvisPermissionMode(permissionMode);
         if (root.TryGetProperty("preferredBrowser", out var preferredBrowserEl))
             _settings?.SavePreferredBrowser(preferredBrowserEl.GetString() ?? "");
+        if (root.TryGetProperty("experimentalSmartBrowserAutomation", out var smartBrowserEl))
+            _settings?.SaveExperimentalSmartBrowserAutomation(smartBrowserEl.GetBoolean());
+        if (root.TryGetProperty("browserAutomationModel", out var browserModelEl))
+            _settings?.SaveBrowserAutomationModel(browserModelEl.GetString() ?? "gemini-3.1-flash-lite");
+        if (root.TryGetProperty("browserAutomationProfileMode", out var browserProfileEl))
+            _settings?.SaveBrowserAutomationProfileMode(browserProfileEl.GetString() ?? "adaptive");
+        if (root.TryGetProperty("browserAutomationMaxRuntimeSeconds", out var browserRuntimeEl))
+            _settings?.SaveBrowserAutomationMaxRuntimeSeconds(browserRuntimeEl.GetInt32());
+        if (root.TryGetProperty("browserAutomationPatternMemory", out var browserMemoryEl))
+            _settings?.SaveBrowserAutomationPatternMemory(browserMemoryEl.GetBoolean());
+        if (root.TryGetProperty("browserAutomationPersistentSession", out var browserPersistentEl))
+            _settings?.SaveBrowserAutomationPersistentSession(browserPersistentEl.GetBoolean());
 
         if (root.TryGetProperty("jarvisWorkflow", out var workflowEl))
         {
@@ -1150,6 +1186,39 @@ public sealed class WebSettingsService : IDisposable
         }
         catch (Exception ex)
         {
+            await WriteJson(resp, JsonSerializer.Serialize(new { ok = false, error = ex.Message }));
+        }
+    }
+
+    private async Task RunBrowserAutomationTest(HttpListenerResponse resp)
+    {
+        if (_jarvisAutomation == null)
+        {
+            await WriteJson(resp, JsonSerializer.Serialize(new { ok = false, error = "Jarvis automation service is unavailable." }));
+            return;
+        }
+
+        try
+        {
+            var args = JsonSerializer.SerializeToElement(new
+            {
+                task = "Open YouTube and play the most recent MKBHD video.",
+                allowed_action_level = "navigation",
+                max_runtime_seconds = 120
+            });
+            var result = await _jarvisAutomation.ExecuteAsync(
+                "browser_automation_task",
+                args,
+                _cts?.Token ?? CancellationToken.None);
+            await WriteJson(resp, JsonSerializer.Serialize(result));
+        }
+        catch (OperationCanceledException)
+        {
+            await WriteJson(resp, JsonSerializer.Serialize(new { ok = false, error = "Browser automation test cancelled." }));
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error(ex, "Browser automation settings test failed");
             await WriteJson(resp, JsonSerializer.Serialize(new { ok = false, error = ex.Message }));
         }
     }
