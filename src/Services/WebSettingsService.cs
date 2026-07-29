@@ -216,6 +216,35 @@ public sealed class WebSettingsService : IDisposable
                 _app?.Commands?.CancelCurrent();
                 await WriteJson(resp, new { ok = true });
             }
+            else if (path == "/api/app/restart" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Settings action header required." });
+                    return;
+                }
+
+                var restartError = "";
+                var restarted = _app != null
+                    && _app.RequestRestart(out restartError);
+                await WriteJson(resp, new
+                {
+                    ok = restarted,
+                    error = restarted ? "" : restartError,
+                });
+            }
+            else if (path == "/api/app/uninstall" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Settings action header required." });
+                    return;
+                }
+
+                await LaunchUninstaller(req, resp);
+            }
             else if (path == "/api/jarvis/text-turn" && method == "POST")
             {
                 if (!HasSettingsActionHeader(req))
@@ -230,6 +259,16 @@ public sealed class WebSettingsService : IDisposable
             {
                 await ServeBrowserAutomationStatus(resp);
             }
+            else if (path == "/api/browser-automation/consent" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Settings action header required." });
+                    return;
+                }
+                await SaveBrowserAutomationConsent(req, resp);
+            }
             else if (path == "/api/browser-helper/connect" && method == "POST")
             {
                 if (!HasSettingsActionHeader(req))
@@ -239,6 +278,16 @@ public sealed class WebSettingsService : IDisposable
                     return;
                 }
                 await ConnectBrowserHelper(resp);
+            }
+            else if (path == "/api/browser-helper/reconnect" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Settings action header required." });
+                    return;
+                }
+                await ReconnectBrowserHelper(resp);
             }
             else if (path == "/api/browser-helper/test" && method == "POST")
             {
@@ -1248,14 +1297,30 @@ public sealed class WebSettingsService : IDisposable
             model = _settings?.Current.BrowserAutomationModel ?? "gemini-3.1-flash-lite-preview",
             memoryEnabled = _settings?.Current.BrowserAutomationMemoryEnabled ?? false,
             memoryAvailable = false,
+            consentAccepted = _settings?.HasBrowserAutomationConsent ?? false,
+            consentVersion = _settings?.Current.BrowserAutomationConsentVersion ?? 0,
+            requiredConsentVersion = SettingsService.CurrentBrowserAutomationConsentVersion,
             helperConnected = helper.Connected,
             currentTabAutomationAvailable = helper.CommandChannelReady,
+            multipleHelpersDetected = helper.MultipleHelpersDetected,
             nativeHostRegistered = !string.IsNullOrWhiteSpace(executable)
                 && _browserNativeHostInstaller.IsRegistered(executable),
             expectedVersion = BrowserHelperProtocol.Version,
             serviceWorkerVersion = helper.ServiceWorkerVersion,
             contentScriptVersion = helper.ContentScriptVersion,
-            extensionId = BrowserHelperProtocol.ExtensionId,
+            extensionId = helper.ExtensionId,
+            storeExtensionId = BrowserHelperProtocol.StoreExtensionId,
+            developmentExtensionId = BrowserHelperProtocol.DevelopmentExtensionId,
+            storeUrl =
+                $"https://chromewebstore.google.com/detail/{BrowserHelperProtocol.StoreExtensionId}",
+            storeHelperConnected = string.Equals(
+                helper.ExtensionId,
+                BrowserHelperProtocol.StoreExtensionId,
+                StringComparison.OrdinalIgnoreCase),
+            developmentHelperConnected = string.Equals(
+                helper.ExtensionId,
+                BrowserHelperProtocol.DevelopmentExtensionId,
+                StringComparison.OrdinalIgnoreCase),
             bridgeReachable = helper.Connected,
             activeTabFresh = helper.ActiveTabFresh,
             activeTabUrl = helper.ActiveUrl,
@@ -1324,6 +1389,29 @@ public sealed class WebSettingsService : IDisposable
     private async Task ServeBrowserAutomationStatus(HttpListenerResponse resp) =>
         await WriteJson(resp, BrowserAutomationSettingsSnapshot());
 
+    private async Task SaveBrowserAutomationConsent(
+        HttpListenerRequest req,
+        HttpListenerResponse resp)
+    {
+        using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+        using var document = JsonDocument.Parse(await reader.ReadToEndAsync());
+        var accepted = document.RootElement.TryGetProperty("accepted", out var acceptedElement)
+            && acceptedElement.ValueKind is JsonValueKind.True or JsonValueKind.False
+            && acceptedElement.GetBoolean();
+        _settings?.SaveBrowserAutomationConsent(accepted);
+        if (accepted)
+            _settings?.SaveBrowserAutomationEnabled(true);
+        else if (_browserAutomation?.Snapshot().CanCancel == true)
+            await _browserAutomation.CancelAsync("Browser Automation consent was withdrawn.");
+
+        await WriteJson(resp, new
+        {
+            ok = true,
+            accepted = _settings?.HasBrowserAutomationConsent ?? false,
+            enabled = _settings?.Current.BrowserAutomationEnabled ?? false,
+        });
+    }
+
     private static async Task ServeEmbeddedHtml(HttpListenerResponse resp, string resourceName)
     {
         var assembly = typeof(WebSettingsService).Assembly;
@@ -1360,14 +1448,42 @@ public sealed class WebSettingsService : IDisposable
             {
                 ok = true,
                 extensionFolder,
-                extensionId = BrowserHelperProtocol.ExtensionId,
+                extensionId = BrowserHelperProtocol.DevelopmentExtensionId,
                 expectedVersion = BrowserHelperProtocol.Version,
-                message = "Native messaging is registered. Load or reload the unpacked helper once in Chrome, then return here and use Test current tab.",
+                message = "The unpacked fallback folder is ready. Load or reload it once in Chrome, then return here and use Check connection status.",
             });
         }
         catch (Exception ex)
         {
             AppLog.Warning(ex, "Chrome Helper registration failed");
+            await WriteJson(resp, new
+            {
+                ok = false,
+                error = ex.Message,
+            });
+        }
+    }
+
+    private async Task ReconnectBrowserHelper(HttpListenerResponse resp)
+    {
+        try
+        {
+            var executable = Environment.ProcessPath ?? _app?.StartupExecutablePath;
+            if (string.IsNullOrWhiteSpace(executable))
+                throw new InvalidOperationException("The keyboard.wtf executable path is unavailable.");
+
+            _browserNativeHostInstaller.Register(executable);
+            await WriteJson(resp, new
+            {
+                ok = true,
+                expectedVersion = BrowserHelperProtocol.Version,
+                storeExtensionId = BrowserHelperProtocol.StoreExtensionId,
+                message = "The local Chrome bridge was re-registered. Chrome Helper will reconnect automatically.",
+            });
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning(ex, "Chrome Helper reconnection failed");
             await WriteJson(resp, new
             {
                 ok = false,
@@ -1393,6 +1509,11 @@ public sealed class WebSettingsService : IDisposable
             controlCount = helper.ControlCount,
             serviceWorkerVersion = helper.ServiceWorkerVersion,
             contentScriptVersion = helper.ContentScriptVersion,
+            extensionId = helper.ExtensionId,
+            storeHelperConnected = string.Equals(
+                helper.ExtensionId,
+                BrowserHelperProtocol.StoreExtensionId,
+                StringComparison.OrdinalIgnoreCase),
             expectedVersion = BrowserHelperProtocol.Version,
             error = helper.CommandChannelReady
                 ? ""
@@ -1430,6 +1551,42 @@ public sealed class WebSettingsService : IDisposable
     private bool AddBrowserGuidance(string guidance)
     {
         return _browserAutomation?.TryAddTaskGuidance(guidance, out _) == true;
+    }
+
+    private static async Task LaunchUninstaller(
+        HttpListenerRequest req,
+        HttpListenerResponse resp)
+    {
+        var removeUserData = false;
+        try
+        {
+            using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+            var body = await reader.ReadToEndAsync();
+            if (!string.IsNullOrWhiteSpace(body))
+            {
+                using var document = JsonDocument.Parse(body);
+                removeUserData = document.RootElement.TryGetProperty(
+                        "removeUserData",
+                        out var removeElement)
+                    && removeElement.ValueKind == JsonValueKind.True;
+            }
+        }
+        catch (JsonException)
+        {
+            resp.StatusCode = 400;
+            await WriteJson(resp, new { ok = false, error = "Invalid uninstall request." });
+            return;
+        }
+
+        var launched = WindowsAppLifecycleService.LaunchRegisteredUninstaller(
+            removeUserData,
+            out var error);
+        await WriteJson(resp, new
+        {
+            ok = launched,
+            removeUserData,
+            error = launched ? "" : error,
+        });
     }
 
     private static async Task WriteJson(HttpListenerResponse resp, string json)

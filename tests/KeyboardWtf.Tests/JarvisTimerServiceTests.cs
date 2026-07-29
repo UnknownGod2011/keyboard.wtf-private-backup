@@ -53,4 +53,31 @@ public sealed class JarvisTimerServiceTests
         Assert.Equal(new[] { JarvisTimerState.Cancelled }, terminalStates);
         Assert.Empty(service.ActiveTimers);
     }
+
+    [Fact]
+    public async Task Lifecycle_subscriber_owns_completion_speech_without_duplicate_local_tts()
+    {
+        var spoken = new List<string>();
+        var announcements = new List<JarvisLifecycleAnnouncement>();
+        var completed = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var service = new JarvisTimerService(
+            (_, _) => { },
+            message => spoken.Add(message),
+            (_, _, _) => { });
+        service.AnnouncementRequested += announcement =>
+        {
+            announcements.Add(announcement);
+            completed.TrySetResult(true);
+        };
+
+        service.Start(TimeSpan.FromMilliseconds(100), "natural voice test");
+        await completed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Empty(spoken);
+        var announcement = Assert.Single(announcements);
+        Assert.Equal("timer", announcement.Source);
+        Assert.Equal("completed", announcement.State);
+        Assert.Contains("natural voice test", announcement.Detail);
+    }
 }

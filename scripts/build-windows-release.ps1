@@ -8,7 +8,6 @@ $project = Join-Path $root "src\KeyboardWtf.csproj"
 $publishDir = Join-Path $root "dist\release\keyboard-wtf-win-x64"
 $installerScript = Join-Path $root "installer\keyboard-wtf.iss"
 $installerDir = Join-Path $root "dist\installer"
-$siteDownloadDir = Join-Path $root "site\downloads"
 $siteIndex = Join-Path $root "site\index.html"
 $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
 
@@ -22,7 +21,6 @@ if (Test-Path -LiteralPath $publishDir) {
 
 New-Item -ItemType Directory -Path $publishDir -Force | Out-Null
 New-Item -ItemType Directory -Path $installerDir -Force | Out-Null
-New-Item -ItemType Directory -Path $siteDownloadDir -Force | Out-Null
 
 dotnet publish $project `
     --configuration $Configuration `
@@ -44,26 +42,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $installer = Join-Path $installerDir "keyboard-wtf-setup.exe"
-$siteInstaller = Join-Path $siteDownloadDir "keyboard-wtf-setup.exe"
-$copied = $false
-for ($attempt = 1; $attempt -le 10; $attempt++) {
-    try {
-        Copy-Item -LiteralPath $installer -Destination $siteInstaller -Force
-        $copied = $true
-        break
-    }
-    catch {
-        if ($attempt -eq 10) { throw }
-        Start-Sleep -Milliseconds 750
-    }
-}
-
-if (-not $copied) {
-    throw "Could not copy the installer to the website download directory"
-}
-
-$hash = Get-FileHash -LiteralPath $siteInstaller -Algorithm SHA256
-$sizeMb = [Math]::Round((Get-Item -LiteralPath $siteInstaller).Length / 1MB, 1)
+$hash = Get-FileHash -LiteralPath $installer -Algorithm SHA256
+$sizeMb = [Math]::Round((Get-Item -LiteralPath $installer).Length / 1MB, 1)
 $siteHtml = Get-Content -LiteralPath $siteIndex -Raw
 $updatedSiteHtml = $siteHtml -replace 'SHA256 [A-Fa-f0-9]{64}', "SHA256 $($hash.Hash)"
 if ($updatedSiteHtml -eq $siteHtml -and $siteHtml -notmatch "SHA256 $($hash.Hash)") {
@@ -74,6 +54,6 @@ if ($updatedSiteHtml -eq $siteHtml -and $siteHtml -notmatch "SHA256 $($hash.Hash
     $updatedSiteHtml,
     [System.Text.UTF8Encoding]::new($false))
 
-Write-Host "Built: $siteInstaller"
+Write-Host "Built: $installer"
 Write-Host "Size: $sizeMb MB"
 Write-Host "SHA256: $($hash.Hash)"

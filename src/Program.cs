@@ -19,6 +19,8 @@ internal static class Program
             return;
         }
 
+        WindowsAppLifecycleService.WaitForRestartParent(args);
+
         if (!TryAcquireInstanceLock())
             return;
 

@@ -10,7 +10,15 @@ public sealed class BrowserNativeHostInstaller
         "manifest.json",
         "service-worker.js",
         "content-script.js",
+        "popup.html",
+        "popup.css",
+        "popup.js",
         "README.md",
+    };
+
+    private static readonly string[] ExtensionDirectories =
+    {
+        "icons",
     };
 
     private const string RegistryPath =
@@ -43,19 +51,32 @@ public sealed class BrowserNativeHostInstaller
             }
 
             using var document = JsonDocument.Parse(File.ReadAllText(path));
+            var registeredOrigins = document.RootElement
+                .GetProperty("allowed_origins")
+                .EnumerateArray()
+                .Select(value => value.GetString())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
             return string.Equals(
                     document.RootElement.GetProperty("path").GetString(),
                     Path.GetFullPath(executablePath),
                     StringComparison.OrdinalIgnoreCase)
-                && document.RootElement
-                    .GetProperty("allowed_origins")[0]
-                    .GetString()
-                    == $"chrome-extension://{BrowserHelperProtocol.ExtensionId}/";
+                && HasExactAllowedOrigins(registeredOrigins);
         }
         catch
         {
             return false;
         }
+    }
+
+    internal static bool HasExactAllowedOrigins(
+        IEnumerable<string> registeredOrigins)
+    {
+        var actual = (registeredOrigins ?? Array.Empty<string>())
+            .Where(origin => !string.IsNullOrWhiteSpace(origin))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return actual.SetEquals(BrowserHelperProtocol.AllowedExtensionOrigins);
     }
 
     public void Register(string executablePath)
@@ -71,10 +92,7 @@ public sealed class BrowserNativeHostInstaller
             description = "keyboard.wtf Chrome Helper bridge",
             path = fullExecutablePath,
             type = "stdio",
-            allowed_origins = new[]
-            {
-                $"chrome-extension://{BrowserHelperProtocol.ExtensionId}/",
-            },
+            allowed_origins = BrowserHelperProtocol.AllowedExtensionOrigins,
         };
         File.WriteAllText(
             ManifestPath,
@@ -117,6 +135,14 @@ public sealed class BrowserNativeHostInstaller
             File.Copy(sourcePath, Path.Combine(destination, file), overwrite: true);
         }
 
+        foreach (var directory in ExtensionDirectories)
+        {
+            var sourcePath = Path.Combine(source, directory);
+            if (!Directory.Exists(sourcePath))
+                continue;
+            CopyDirectory(sourcePath, Path.Combine(destination, directory));
+        }
+
         if (!ExtensionVersionMatches(destination))
         {
             throw new InvalidDataException(
@@ -147,6 +173,25 @@ public sealed class BrowserNativeHostInstaller
         catch
         {
             return false;
+        }
+    }
+
+    private static void CopyDirectory(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (var file in Directory.EnumerateFiles(source))
+        {
+            File.Copy(
+                file,
+                Path.Combine(destination, Path.GetFileName(file)),
+                overwrite: true);
+        }
+
+        foreach (var child in Directory.EnumerateDirectories(source))
+        {
+            CopyDirectory(
+                child,
+                Path.Combine(destination, Path.GetFileName(child)));
         }
     }
 

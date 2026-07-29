@@ -12,6 +12,10 @@ public sealed class BrowserAutomationTaskClassifier
         @"\b(browser automation|automate (?:the )?browser|use (?:the )?(?:current|logged[- ]in) (?:browser|chrome)|use this tab)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex LocalTimerAction = new(
+        @"^\s*(?:please\s+)?(?:(?:set|start|create|make|cancel|stop|pause|resume|list|show|check)\s+)?(?:an?\s+|the\s+|my\s+|active\s+|all\s+)?(?:\w+\s+){0,8}\b(?:timer|timers|alarm|alarms|reminder|reminders)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly Regex DirectCurrentControl = new(
         @"^\s*(?:please\s+)?(?:(?:continue|resume)\s+)?(?:click|press|choose|select|unselect|check|uncheck|fill(?:ing)?|answer(?:ing)?|solv(?:e|ing)|type|enter|paste|write|insert|place|put|scroll|dismiss|close\s+(?:the\s+)?(?:popup|banner|modal))\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -40,6 +44,10 @@ public sealed class BrowserAutomationTaskClassifier
         @"\b(?:find|compare|identify|choose|show)\b.{0,180}\b(?:cheapest|lowest|highest|best|earliest|latest|shortest|fastest|largest|smallest|top|second[- ]largest)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex RankedBrowserInteraction = new(
+        @"\b(?:play|open|find|choose|select)\b.{0,160}\b(?:oldest|latest|newest|most recent|first|last|highest[- ]rated|lowest[- ]priced)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly Regex UnambiguouslyInteractive = new(
         @"\b(click|press|choose|select|unselect|check|uncheck|fill(?:ing)?|answer(?:ing)?|solv(?:e|ing)|type|enter|paste|scroll|dismiss|send|post|publish|delete|close .{0,40}\b(?:popup|banner|modal)|add .{0,80}\bto (?:my |the )?cart|play the (?:oldest|latest|newest|most recent)|upload)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -50,12 +58,20 @@ public sealed class BrowserAutomationTaskClassifier
         if (text.Length == 0)
             return Result(BrowserAutomationDecision.SimpleTool, "No browser request was provided.");
 
+        if (LocalTimerAction.IsMatch(text))
+        {
+            return Result(
+                BrowserAutomationDecision.SimpleTool,
+                "Timers, alarms, and reminders are handled by normal Jarvis rather than webpage automation.");
+        }
+
         var current = CurrentContext.IsMatch(text)
             || DirectCurrentControl.IsMatch(text);
         var interaction = PageInteraction.IsMatch(text)
             || CartInteraction.IsMatch(text)
             || DocumentMutation.IsMatch(text)
-            || ComparativeResearch.IsMatch(text);
+            || ComparativeResearch.IsMatch(text)
+            || RankedBrowserInteraction.IsMatch(text);
         if (ExplicitAutomation.IsMatch(text))
             return Result(
                 BrowserAutomationDecision.BrowserAutomation,
@@ -72,6 +88,12 @@ public sealed class BrowserAutomationTaskClassifier
             return Result(
                 BrowserAutomationDecision.BrowserAutomation,
                 "The request requires comparing live results and selecting an outcome rather than opening a direct search URL.",
+                current);
+
+        if (RankedBrowserInteraction.IsMatch(text) && WebContext.IsMatch(text))
+            return Result(
+                BrowserAutomationDecision.BrowserAutomation,
+                "The request requires navigating live webpage state to choose an ordered result.",
                 current);
 
         if (interaction && UnambiguouslyInteractive.IsMatch(text))

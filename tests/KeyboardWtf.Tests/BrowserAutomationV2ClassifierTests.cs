@@ -19,6 +19,9 @@ public sealed class BrowserAutomationV2ClassifierTests
     [InlineData("Switch to the last tab")]
     [InlineData("Go to the second last tab")]
     [InlineData("Switch to the second-to-last tab")]
+    [InlineData("Set a ten second timer called cancellation check.")]
+    [InlineData("Cancel the active timer.")]
+    [InlineData("Show my active timers.")]
     public void Simple_open_and_search_commands_stay_on_fast_tools(string request)
     {
         var result = _classifier.Classify(request);
@@ -39,6 +42,9 @@ public sealed class BrowserAutomationV2ClassifierTests
     [InlineData("Open GitHub, find browser-use/browser-use, and report visible stars and forks")]
     [InlineData("Find the cheapest round-trip flights from Mumbai to Switzerland in September 2026 for one week")]
     [InlineData("Compare the best three options and open the lowest-priced result")]
+    [InlineData("Open YouTube and play latest video by NASA")]
+    [InlineData("Can you play NASA's latest video on YouTube?")]
+    [InlineData("Play latest YouTube video by MrBeast")]
     public void Live_page_interactions_use_browser_automation(string request)
     {
         var result = _classifier.Classify(request);

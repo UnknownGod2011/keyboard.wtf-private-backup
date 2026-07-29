@@ -867,6 +867,7 @@ public sealed class CommandRegistry
             ["started"] = result.Started,
             ["supported"] = true,
             ["needs_clarification"] = result.NeedsClarification,
+            ["needs_consent"] = result.NeedsConsent,
             ["task_id"] = result.TaskId,
             ["message"] = result.Message,
             ["routing_reason"] = result.RoutingReason,

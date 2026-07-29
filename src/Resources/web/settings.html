@@ -457,6 +457,8 @@
       <a href="#hotkeys">Hotkeys</a>
       <a href="#assistant">Assistant</a>
       <a href="#browser-automation">Browser Automation</a>
+      <a href="#how-to-use">How to use Jarvis</a>
+      <a href="#support-maintenance">Support &amp; maintenance</a>
       <a href="#set-api-key">Set API Key</a>
       <a href="#speech-models">Speech Models</a>
       <a href="#tts">Text-to-Speech</a>
@@ -791,6 +793,26 @@
       <h2>Browser Automation</h2>
       <p class="section-hint">Smart page interaction in your existing logged-in Chrome. Direct opens and searches keep using Jarvis&rsquo;s fast lightweight tools.</p>
 
+      <div class="field" id="browserAutomationConsentPanel" style="border:1px solid var(--warning);background:color-mix(in srgb,var(--warning) 7%,transparent)">
+        <label>Browser Automation data disclosure</label>
+        <div class="hint">
+          When you start a browser task, the Chrome Helper sends the controlled tab's URL/title, bounded visible page text, selected text, form/control state, and action receipts to the local keyboard.wtf app through Chrome Native Messaging. This can include personal information or communications present in the task you selected. When page understanding needs AI, keyboard.wtf sends the user request and a bounded task snapshot - plus a current-tab screenshot only for visual recovery - to the configured Gemini browser model.
+        </div>
+        <div class="hint" style="margin-top:8px">
+          The extension does not read cookies, password values, OTPs, authentication storage, or file contents. Password, CAPTCHA, file-upload, payment, checkout, banking, and account-security steps stay manual. Data is not sold, used for advertising, creditworthiness, or unrelated profiling. Compact local diagnostic metadata remains until you delete the app log or local app data; page text and screenshots are not written to browser-task history.
+        </div>
+        <label id="browserAutomationConsentChoice" style="display:flex;align-items:flex-start;gap:10px;margin-top:12px;font-weight:normal;cursor:pointer">
+          <input type="checkbox" id="browserAutomationConsentCheck" style="width:18px;height:18px;margin-top:2px;cursor:pointer">
+          <span>I understand this disclosure and consent to browser-task data being processed for tasks I explicitly ask Jarvis to perform.</span>
+        </label>
+        <div class="btn-row" style="margin-top:12px">
+          <button id="browserAutomationConsentAccept" onclick="setBrowserAutomationConsent(true)">I understand - enable Browser Automation</button>
+          <button class="ghost" id="browserAutomationConsentWithdraw" onclick="setBrowserAutomationConsent(false)" style="display:none">Withdraw consent and disable</button>
+          <a class="button-link ghost" href="https://keyboard-wtf.vercel.app/privacy" target="_blank" rel="noopener noreferrer">Read privacy policy</a>
+        </div>
+        <div class="hint" id="browserAutomationConsentStatus">Consent is required before the first browser task.</div>
+      </div>
+
       <div class="field">
         <label style="display:flex;align-items:center;gap:10px;font-weight:normal;cursor:pointer">
           <input type="checkbox" id="browserAutomationEnabled" onchange="browserAutomationChanged()" style="width:18px;height:18px;cursor:pointer">
@@ -817,7 +839,31 @@
       </div>
 
       <div class="field">
-        <label>Existing Chrome Helper</label>
+        <label>Browser Extension</label>
+        <div class="setup-grid">
+          <div class="setup-item"><div class="setup-label">Installation</div><div class="setup-value" id="browserExtensionSource">Not connected</div></div>
+          <div class="setup-item"><div class="setup-label">Store identity</div><div class="setup-value mono" id="browserStoreIdentity">gojdebdikepkpapmnggeljneamjdigbh</div></div>
+        </div>
+        <div class="btn-row" style="margin-top:12px">
+          <a class="button-link" href="https://chromewebstore.google.com/detail/gojdebdikepkpapmnggeljneamjdigbh" target="_blank" rel="noopener noreferrer">Install from Chrome Web Store (recommended)</a>
+          <button class="ghost" onclick="testBrowserHelper()">Check connection status</button>
+          <button class="ghost" onclick="retryBrowserHelper()">Retry / reconnect</button>
+        </div>
+        <details style="margin-top:14px">
+          <summary style="cursor:pointer;font-size:13px;font-weight:600">Manual unpacked-extension fallback</summary>
+          <div class="hint" style="margin-top:10px">
+            Use this only when the Chrome Web Store installation is unavailable. Click the button below, open <span class="mono">chrome://extensions</span>, enable Developer mode, choose Load unpacked, and select the opened folder.
+          </div>
+          <div class="btn-row" style="margin-top:10px">
+            <button class="ghost" onclick="connectBrowserHelper()">Prepare manual fallback</button>
+          </div>
+          <div class="hint" style="color:var(--warning)">Manual installations do not receive normal Chrome Web Store updates.</div>
+        </details>
+        <div class="hint" style="color:var(--warning);margin-top:10px"><strong>Do not enable both helpers at once.</strong> If the Store and unpacked versions are both enabled, keyboard.wtf stops browser commands until one is disabled.</div>
+      </div>
+
+      <div class="field">
+        <label>Existing Chrome Helper status</label>
         <div class="setup-grid">
           <div class="setup-item"><div class="setup-label">Connection</div><div class="setup-value" id="browserHelperConnection">Not connected</div></div>
           <div class="setup-item"><div class="setup-label">Native bridge</div><div class="setup-value" id="browserBridgeStatus">Not registered</div></div>
@@ -827,8 +873,6 @@
           <div class="setup-item"><div class="setup-label">Active task</div><div class="setup-value" id="browserTaskStatus">Idle</div></div>
         </div>
         <div class="btn-row" style="margin-top:12px">
-          <button onclick="connectBrowserHelper()">Connect Chrome Helper</button>
-          <button class="ghost" onclick="testBrowserHelper()">Test current tab</button>
           <button class="ghost" onclick="controlBrowserAutomation('cancel')">Cancel task</button>
         </div>
         <div class="hint" id="browserActiveTab">Open a normal http/https page in Chrome.</div>
@@ -838,6 +882,67 @@
       <div class="field">
         <label>How it behaves</label>
         <div class="hint">The helper is idle until Jarvis starts a browser task. Controlled tabs show a small badge and exact orange target outline. Passwords, OTP, CAPTCHA, payment, checkout, and account-security steps pause for you. Ctrl+Alt+X cancels and leaves Chrome open.</div>
+      </div>
+    </section>
+
+    <!-- How to use Jarvis -->
+    <section id="how-to-use">
+      <h2>How to use Jarvis</h2>
+      <p class="section-hint">Speak naturally. Jarvis uses fast direct actions when possible and browser automation only when a page must be read or changed.</p>
+
+      <div class="field">
+        <label>Things to try</label>
+        <ul class="roadmap-list">
+          <li><strong>Open things:</strong> “Open Chrome, my Downloads folder, and Spotify.”</li>
+          <li><strong>Use Windows:</strong> “Open the camera” or ask for another supported Windows feature.</li>
+          <li><strong>Understand your screen:</strong> select something and ask Jarvis to explain or analyse it.</li>
+          <li><strong>Write faster:</strong> draft an email, message, note, or polished paragraph.</li>
+          <li><strong>Automate a web page:</strong> ask Jarvis to fill a form, inspect a page, choose a visible option, or complete a multi-step browser task.</li>
+          <li><strong>Remember preferences:</strong> “Remember my preferred meeting length is 30 minutes.”</li>
+          <li><strong>Create routines:</strong> “Whenever I say initialize my setup, open these apps and websites.”</li>
+          <li><strong>Use timers:</strong> start, check, pause, resume, or cancel a timer.</li>
+          <li><strong>Just ask:</strong> Jarvis is available for normal questions and conversation too.</li>
+        </ul>
+      </div>
+
+      <div class="field">
+        <label>Browser safety</label>
+        <div class="hint">Browser automation pauses for passwords, OTPs, CAPTCHAs, payments, checkout, and account-security steps. You can cancel at any time with Ctrl+Alt+X.</div>
+      </div>
+    </section>
+
+    <!-- Support and maintenance -->
+    <section id="support-maintenance">
+      <h2>Support &amp; maintenance</h2>
+      <p class="section-hint">Recover a frozen local session or use the registered Windows uninstaller.</p>
+
+      <div class="field">
+        <label>Restart Jarvis</label>
+        <div class="hint">Safely cancels active work, releases hotkeys and helper connections, then starts exactly one fresh keyboard.wtf instance.</div>
+        <div class="btn-row" style="margin-top:10px">
+          <button onclick="restartKeyboardWtf()">Restart keyboard.wtf</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Uninstall keyboard.wtf</label>
+        <label style="display:flex;align-items:flex-start;gap:10px;font-weight:normal;cursor:pointer">
+          <input type="checkbox" id="uninstallRemoveUserData" style="width:18px;height:18px;margin-top:2px;cursor:pointer">
+          <span>Also remove local settings, memories, and diagnostic logs. Leave unchecked to preserve them for a later reinstall.</span>
+        </label>
+        <div class="btn-row" style="margin-top:10px">
+          <button class="ghost" onclick="uninstallKeyboardWtf()">Open Windows uninstaller</button>
+        </div>
+        <div class="hint">Windows asks for confirmation before uninstalling. This removes only keyboard.wtf files and its startup registration.</div>
+      </div>
+
+      <div class="field">
+        <label>Need help?</label>
+        <div class="hint">
+          Visit <a href="https://keyboard-wtf.vercel.app/support" target="_blank" rel="noopener noreferrer">keyboard.wtf Support</a>
+          or email <a href="mailto:keyboard.wtf@gmail.com">keyboard.wtf@gmail.com</a> or
+          <a href="mailto:tanushshah2006@gmail.com">tanushshah2006@gmail.com</a>.
+        </div>
       </div>
     </section>
 
@@ -1807,11 +1912,33 @@ async function assistantChanged() {
 }
 
 function renderBrowserAutomation(browser) {
+  const consentAccepted = browser.consentAccepted === true;
+  document.getElementById('browserAutomationConsentPanel').style.borderColor =
+    consentAccepted ? 'var(--success)' : 'var(--warning)';
+  document.getElementById('browserAutomationConsentChoice').style.display =
+    consentAccepted ? 'none' : 'flex';
+  document.getElementById('browserAutomationConsentAccept').style.display =
+    consentAccepted ? 'none' : '';
+  document.getElementById('browserAutomationConsentWithdraw').style.display =
+    consentAccepted ? '' : 'none';
+  document.getElementById('browserAutomationConsentStatus').textContent =
+    consentAccepted
+      ? `Disclosure accepted (version ${browser.consentVersion || 0}). You can withdraw consent at any time.`
+      : 'Consent is required before the first browser task.';
+  document.getElementById('browserAutomationConsentCheck').checked = false;
   document.getElementById('browserAutomationEnabled').checked = browser.enabled === true;
+  document.getElementById('browserAutomationEnabled').dataset.consent =
+    consentAccepted ? 'true' : 'false';
   document.getElementById('browserAutomationModel').value =
     browser.model || 'gemini-3.1-flash-lite-preview';
   document.getElementById('browserAutomationMemoryEnabled').checked =
     browser.memoryEnabled === true;
+  document.getElementById('browserExtensionSource').textContent =
+    browser.multipleHelpersDetected ? 'Conflict: two helpers enabled'
+      : browser.storeHelperConnected ? 'Chrome Web Store (recommended)'
+      : (browser.developmentHelperConnected ? 'Manual fallback' : 'Not connected');
+  document.getElementById('browserStoreIdentity').textContent =
+    browser.storeExtensionId || 'gojdebdikepkpapmnggeljneamjdigbh';
   document.getElementById('browserHelperConnection').textContent =
     browser.currentTabAutomationAvailable ? 'Connected and ready'
       : (browser.helperConnected ? 'Connected; tab not ready' : 'Not connected');
@@ -1838,6 +1965,14 @@ function renderBrowserAutomation(browser) {
 }
 
 async function browserAutomationChanged() {
+  const enabled = document.getElementById('browserAutomationEnabled').checked;
+  if (enabled
+      && document.getElementById('browserAutomationEnabled').dataset.consent !== 'true') {
+    document.getElementById('browserAutomationEnabled').checked = false;
+    document.getElementById('browserAutomationConsentPanel').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    showToast('Accept the Browser Automation disclosure first');
+    return;
+  }
   try {
     await fetch('/api/settings', {
       method: 'POST',
@@ -1855,6 +1990,31 @@ async function browserAutomationChanged() {
   }
 }
 
+async function setBrowserAutomationConsent(accepted) {
+  if (accepted && !document.getElementById('browserAutomationConsentCheck').checked) {
+    showToast('Check the consent box to continue');
+    return;
+  }
+  try {
+    const response = await fetch('/api/browser-automation/consent', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Keyboard-Wtf-Settings-Action': 'explicit-user-action'
+      },
+      body: JSON.stringify({ accepted })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || 'Consent update failed');
+    showToast(accepted
+      ? 'Browser Automation enabled'
+      : 'Browser Automation consent withdrawn');
+    loadSettings();
+  } catch (error) {
+    showToast(error.message || 'Consent update failed');
+  }
+}
+
 async function connectBrowserHelper() {
   try {
     const response = await fetch('/api/browser-helper/connect', {
@@ -1862,10 +2022,25 @@ async function connectBrowserHelper() {
       headers: { 'X-Keyboard-Wtf-Settings-Action': 'explicit-user-action' }
     });
     const data = await response.json();
-    showToast(data.ok ? 'Helper folder opened; load or reload it once in Chrome' : (data.error || 'Connect failed'));
+    showToast(data.ok ? 'Manual fallback folder opened' : (data.error || 'Fallback setup failed'));
     loadSettings();
   } catch (error) {
-    showToast('Connect failed: ' + error.message);
+    showToast('Fallback setup failed: ' + error.message);
+  }
+}
+
+async function retryBrowserHelper() {
+  try {
+    const response = await fetch('/api/browser-helper/reconnect', {
+      method: 'POST',
+      headers: { 'X-Keyboard-Wtf-Settings-Action': 'explicit-user-action' }
+    });
+    const data = await response.json();
+    showToast(data.ok ? 'Chrome bridge re-registered; reconnecting' : (data.error || 'Reconnect failed'));
+    await new Promise(resolve => setTimeout(resolve, 900));
+    await refreshBrowserAutomationStatus();
+  } catch (error) {
+    showToast('Reconnect failed: ' + error.message);
   }
 }
 
@@ -1900,6 +2075,44 @@ async function controlBrowserAutomation(action) {
     await refreshBrowserAutomationStatus();
   } catch (error) {
     showToast('Browser control failed: ' + error.message);
+  }
+}
+
+async function restartKeyboardWtf() {
+  if (!confirm('Restart keyboard.wtf now? Active listening, timers, and browser tasks will stop.')) return;
+  try {
+    const response = await fetch('/api/app/restart', {
+      method: 'POST',
+      headers: { 'X-Keyboard-Wtf-Settings-Action': 'explicit-user-action' }
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || 'Restart failed');
+    showToast('Restarting keyboard.wtf...');
+  } catch (error) {
+    showToast(error.message || 'Restart failed');
+  }
+}
+
+async function uninstallKeyboardWtf() {
+  const removeUserData = document.getElementById('uninstallRemoveUserData').checked;
+  const dataNotice = removeUserData
+    ? ' Local settings, memories, and diagnostic logs will also be removed.'
+    : ' Local settings and memories will be preserved.';
+  if (!confirm('Open the registered Windows uninstaller?' + dataNotice)) return;
+  try {
+    const response = await fetch('/api/app/uninstall', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Keyboard-Wtf-Settings-Action': 'explicit-user-action'
+      },
+      body: JSON.stringify({ removeUserData })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || 'Uninstaller could not start');
+    showToast('Windows uninstaller opened');
+  } catch (error) {
+    showToast(error.message || 'Uninstaller could not start');
   }
 }
 

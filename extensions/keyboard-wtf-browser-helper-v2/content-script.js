@@ -2,7 +2,7 @@
   if (globalThis.__keyboardWtfBrowserHelperV2) return;
   globalThis.__keyboardWtfBrowserHelperV2 = true;
 
-const VERSION = "2.1.18";
+const VERSION = "2.1.21";
   const MAX_CONTROLS = 350;
   const MAX_PAGE_TEXT = 14000;
   const controlSelectors = [
@@ -155,6 +155,13 @@ const VERSION = "2.1.18";
         ok: false,
         stale: true,
         error: "The target control is no longer present in the live page."
+      };
+    }
+    if (isRestrictedInput(element)
+        && command?.type !== "focus") {
+      return {
+        ok: false,
+        error: "Passwords and file uploads require direct user action."
       };
     }
 
@@ -501,6 +508,7 @@ const VERSION = "2.1.18";
     }
 
     if (!("value" in element)) throw new Error("The target is not editable.");
+    text = normalizeNativeInputValue(element, text);
     const previous = element.value || "";
     const value = replace ? text : `${previous}${text}`;
     const prototype = element instanceof HTMLTextAreaElement
@@ -515,6 +523,58 @@ const VERSION = "2.1.18";
       data: text
     }));
     element.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function normalizeNativeInputValue(element, text) {
+    if (!(element instanceof HTMLInputElement)
+        || (element.type || "").toLowerCase() !== "date") {
+      return text;
+    }
+
+    const value = `${text || ""}`.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+
+    // Native date inputs accept ISO values only. Support explicit month-name
+    // dates as a defensive executor boundary, but never guess ambiguous
+    // numeric dates such as 07/08/2026.
+    const monthNames = {
+      january: 1, jan: 1,
+      february: 2, feb: 2,
+      march: 3, mar: 3,
+      april: 4, apr: 4,
+      may: 5,
+      june: 6, jun: 6,
+      july: 7, jul: 7,
+      august: 8, aug: 8,
+      september: 9, sep: 9, sept: 9,
+      october: 10, oct: 10,
+      november: 11, nov: 11,
+      december: 12, dec: 12
+    };
+    const normalized = value.replace(/,/g, " ").replace(/\s+/g, " ").trim();
+    let match = normalized.match(/^([A-Za-z]+)\s+(\d{1,2})\s+(\d{4})$/);
+    let monthName;
+    let day;
+    let year;
+    if (match) {
+      [, monthName, day, year] = match;
+    } else {
+      match = normalized.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/);
+      if (match) [, day, monthName, year] = match;
+    }
+    const month = monthNames[(monthName || "").toLowerCase()];
+    const dayNumber = Number(day);
+    const yearNumber = Number(year);
+    const candidate = month
+      ? new Date(Date.UTC(yearNumber, month - 1, dayNumber))
+      : null;
+    if (!candidate
+        || candidate.getUTCFullYear() !== yearNumber
+        || candidate.getUTCMonth() !== month - 1
+        || candidate.getUTCDate() !== dayNumber) {
+      throw new Error("Native date fields require an explicit date such as 2026-07-29 or July 29 2026.");
+    }
+    return `${yearNumber.toString().padStart(4, "0")}-${month.toString().padStart(2, "0")}-${dayNumber.toString().padStart(2, "0")}`;
   }
 
   function pressKey(element, key, command) {
@@ -748,6 +808,7 @@ const VERSION = "2.1.18";
 
   function safeActions(element) {
     const actions = ["focus"];
+    if (isRestrictedInput(element)) return actions;
     if (isEditable(element)) actions.push("type", "press_key");
     if (element instanceof HTMLSelectElement) actions.push("select_option");
     if (roleOf(element) === "checkbox") actions.push("check", "uncheck", "click");
@@ -759,7 +820,13 @@ const VERSION = "2.1.18";
     return element.isContentEditable
       || element instanceof HTMLTextAreaElement
       || (element instanceof HTMLInputElement
-        && !["button", "submit", "reset", "checkbox", "radio", "file", "hidden"].includes(element.type));
+        && !["button", "submit", "reset", "checkbox", "radio", "file", "hidden", "password"].includes(element.type));
+  }
+
+  function isRestrictedInput(element) {
+    if (!(element instanceof HTMLInputElement)) return false;
+    return ["password", "file"].includes(
+      String(element.getAttribute("type") || "").toLowerCase());
   }
 
   function visibleText(element) {
@@ -777,19 +844,19 @@ const VERSION = "2.1.18";
   }
 
   function valueSignature(element) {
-    if (String(element.getAttribute("type") || "").toLowerCase() === "password") return "password:redacted";
+    if (isRestrictedInput(element)) return "restricted:redacted";
     const value = element.isContentEditable ? element.textContent : element.value;
     return hashString(String(value || ""));
   }
 
   function valueMatches(element, expected) {
-    if (String(element.getAttribute("type") || "").toLowerCase() === "password") return false;
+    if (isRestrictedInput(element)) return false;
     const value = element.isContentEditable ? element.textContent : element.value;
     return String(value || "") === String(expected || "");
   }
 
   function valueContains(element, expected) {
-    if (String(element.getAttribute("type") || "").toLowerCase() === "password") return false;
+    if (isRestrictedInput(element)) return false;
     const value = element.isContentEditable ? element.textContent : element.value;
     return String(value || "").includes(String(expected || ""));
   }
@@ -803,7 +870,7 @@ const VERSION = "2.1.18";
   }
 
   function safeControlValue(element) {
-    if (String(element.getAttribute("type") || "").toLowerCase() === "password") return "";
+    if (isRestrictedInput(element)) return "";
     const value = element.isContentEditable ? element.textContent : element.value;
     return truncate(String(value || ""), 240);
   }
@@ -811,7 +878,7 @@ const VERSION = "2.1.18";
   function pageFingerprint() {
     const text = visibleText(document.body).slice(0, 5000);
     const states = [...document.querySelectorAll(
-      "input:not([type='password']),textarea,select,[aria-selected],[aria-checked],[contenteditable='true']"
+      "input:not([type='password']):not([type='file']),textarea,select,[aria-selected],[aria-checked],[contenteditable='true']"
     )].slice(0, 120).map(element => {
       const state = captureElementState(element);
       return `${state.valueSignature}:${state.selected ? 1 : 0}:${state.checked ? 1 : 0}`;

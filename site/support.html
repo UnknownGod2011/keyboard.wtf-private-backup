@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Install, connect, restart, uninstall, and troubleshoot keyboard.wtf for Windows.">
+  <meta name="theme-color" content="#f4f5f2">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+  <title>Support - keyboard.wtf</title>
+  <style>
+    :root {
+      --ink: #121512;
+      --muted: #626862;
+      --paper: #f4f5f2;
+      --card: #fff;
+      --line: #d9ddd7;
+      --accent: #d47a00;
+      --soft: #fff4df;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 16px/1.65 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: inherit; text-decoration-color: #9ca39c; text-underline-offset: 3px; }
+    nav { border-bottom: 1px solid var(--line); background: rgba(244,245,242,.96); }
+    .shell { width: min(900px, calc(100% - 36px)); margin: 0 auto; }
+    .nav-inner { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+    .brand { font-weight: 800; text-decoration: none; letter-spacing: -.03em; }
+    .nav-link { font-size: 14px; }
+    header { padding: 70px 0 34px; }
+    .eyebrow { color: var(--accent); font-size: 13px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+    h1 { margin: 6px 0 12px; font-size: clamp(42px, 7vw, 72px); line-height: 1; letter-spacing: -.055em; }
+    .lead { max-width: 720px; margin: 0; color: var(--muted); font-size: 19px; }
+    main { padding-bottom: 72px; }
+    section {
+      margin: 18px 0;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--card);
+    }
+    h2 { margin: 0 0 12px; font-size: 24px; letter-spacing: -.02em; }
+    h3 { margin: 24px 0 6px; font-size: 17px; }
+    p, ol, ul { margin-top: 8px; }
+    li + li { margin-top: 7px; }
+    code { padding: 2px 6px; border-radius: 6px; background: #eef0ec; overflow-wrap: anywhere; }
+    .notice { margin-top: 18px; padding: 16px 18px; border-left: 4px solid var(--accent); border-radius: 10px; background: var(--soft); }
+    .contact { display: grid; gap: 8px; }
+    footer { padding: 28px 0 42px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); }
+    @media (max-width: 640px) {
+      header { padding-top: 46px; }
+      section { padding: 22px; border-radius: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="shell nav-inner">
+      <a class="brand" href="/">keyboard.wtf</a>
+      <a class="nav-link" href="/privacy">Privacy</a>
+    </div>
+  </nav>
+
+  <header>
+    <div class="shell">
+      <p class="eyebrow">Support</p>
+      <h1>Help with keyboard.wtf</h1>
+      <p class="lead">Installation, Chrome Helper connection, API setup, restart, uninstall, and practical troubleshooting for the Windows app.</p>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section>
+      <h2>Install or update</h2>
+      <ol>
+        <li>Download the latest Windows installer from the <a href="https://github.com/UnknownGod2011/keyboard.wtf/releases/latest/download/keyboard-wtf-setup.exe">official GitHub Release</a>.</li>
+        <li>Run <code>keyboard-wtf-setup.exe</code>. The per-user installer does not require an administrator account.</li>
+        <li>If Windows SmartScreen appears, confirm that the file came from the official keyboard.wtf GitHub repository before continuing.</li>
+        <li>The installer updates an older keyboard.wtf installation in place, preserves local settings, and registers startup for the current Windows user.</li>
+        <li>On first launch, Settings opens so you can finish Gemini API and speech-model setup.</li>
+      </ol>
+      <div class="notice">The beta installer is not yet code-signed. Download it only from this site or the official GitHub Release.</div>
+    </section>
+
+    <section>
+      <h2>Set up Gemini</h2>
+      <ol>
+        <li>Open keyboard.wtf Settings with <code>Ctrl + Alt + ,</code>.</li>
+        <li>Choose <strong>Set API Key</strong>, get a key from Google AI Studio, paste it into the password-style field, then select <strong>Save &amp; test</strong>.</li>
+        <li>The key is encrypted for the current Windows account. It is not sent to the keyboard.wtf website.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Connect the Chrome Helper</h2>
+      <h3>Recommended: Chrome Web Store</h3>
+      <ol>
+        <li>Install <strong>keyboard.wtf Chrome Helper</strong> from its Chrome Web Store page when the listing becomes available.</li>
+        <li>Keep keyboard.wtf running, open a normal HTTP or HTTPS page, then open Settings &rarr; Browser Automation.</li>
+        <li>Select <strong>Retry / reconnect</strong>, followed by <strong>Check connection status</strong>.</li>
+        <li>Connected and ready means the service worker, page helper, local Native Messaging host, and current tab all agree.</li>
+      </ol>
+      <h3>Fallback: unpacked helper</h3>
+      <p>If Store installation is unavailable, Settings can prepare the included unpacked helper. Open <code>chrome://extensions</code>, enable Developer mode, choose <strong>Load unpacked</strong>, and select the folder opened by keyboard.wtf.</p>
+      <div class="notice"><strong>Do not enable both helpers at once.</strong> The unpacked route is a troubleshooting/development fallback and does not receive normal Chrome Web Store updates. keyboard.wtf deliberately blocks browser commands if both identities are active.</div>
+    </section>
+
+    <section>
+      <h2>Restart keyboard.wtf</h2>
+      <p>Open Settings &rarr; Support &amp; maintenance and select <strong>Restart keyboard.wtf</strong>. The app cancels active work, releases hotkeys and the browser bridge, exits, and launches one fresh instance. Chrome and its tabs remain open.</p>
+      <p>If Settings is unavailable, exit keyboard.wtf from its system-tray icon and launch it again from the Start menu.</p>
+    </section>
+
+    <section>
+      <h2>Uninstall</h2>
+      <p>Use Settings &rarr; Support &amp; maintenance &rarr; <strong>Open Windows uninstaller</strong>, or open Windows Settings &rarr; Apps &rarr; Installed apps &rarr; keyboard.wtf &rarr; Uninstall.</p>
+      <p>The in-app option lets you preserve local settings and memories for reinstall, or request their removal. Windows asks for confirmation before the registered uninstaller proceeds.</p>
+    </section>
+
+    <section>
+      <h2>Troubleshooting</h2>
+      <ul>
+        <li><strong>Shortcut does not respond:</strong> open Settings, check the active-hotkey status, and reset or change any shortcut occupied by another app.</li>
+        <li><strong>Chrome Helper is not ready:</strong> open a normal webpage, disable any duplicate helper, choose Retry / reconnect, then Check connection status.</li>
+        <li><strong>Browser task is stuck:</strong> press <code>Ctrl + Alt + X</code>. Chrome stays open and later actions are cancelled.</li>
+        <li><strong>Manual step required:</strong> complete passwords, OTPs, CAPTCHAs, payment, checkout, banking, or account-security steps yourself, then resume only when safe.</li>
+        <li><strong>Timer or Jarvis appears frozen:</strong> use Restart keyboard.wtf. Active timers and browser tasks are intentionally cancelled during restart.</li>
+        <li><strong>API error:</strong> verify the configured Gemini key, quota, and internet connection in Set API Key.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Contact support</h2>
+      <div class="contact">
+        <a href="mailto:keyboard.wtf@gmail.com">keyboard.wtf@gmail.com</a>
+        <a href="mailto:tanushshah2006@gmail.com">tanushshah2006@gmail.com</a>
+      </div>
+      <p>Please do not email API keys, passwords, OTPs, cookies, session tokens, private screenshots, or sensitive page contents.</p>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell">keyboard.wtf &middot; <a href="/">Home</a> &middot; <a href="/privacy">Privacy</a></div>
+  </footer>
+</body>
+</html>

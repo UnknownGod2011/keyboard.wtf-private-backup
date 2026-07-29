@@ -8,6 +8,7 @@ public sealed class BrowserAutomationStartResult
 {
     public bool Started { get; init; }
     public bool NeedsClarification { get; init; }
+    public bool NeedsConsent { get; init; }
     public string TaskId { get; init; } = "";
     public string Message { get; init; } = "";
     public string RoutingReason { get; init; } = "";
@@ -64,6 +65,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
     private readonly object _sync = new();
     private Runtime _active;
     private BrowserAutomationSnapshot _last = new();
+    private DateTime _lastConsentPromptUtc;
     private bool _disposed;
 
     public BrowserAutomationCoordinator(
@@ -79,6 +81,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
     }
 
     public event Action<BrowserAutomationSnapshot> StatusChanged;
+    public event Action<JarvisLifecycleAnnouncement> AnnouncementRequested;
 
     public BrowserAutomationTaskClassifier Classifier => _classifier;
     public BrowserHelperStatus HelperStatus => _bridge.Status;
@@ -145,15 +148,6 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         AppLog.Info(
             $"Browser routing: decision={classification.Decision} current={classification.RefersToCurrentPage} reason={classification.Reason}");
 
-        if (!_settings.Current.BrowserAutomationEnabled)
-        {
-            return new BrowserAutomationStartResult
-            {
-                Message = "Browser Automation is disabled in Settings.",
-                RoutingReason = classification.Reason,
-            };
-        }
-
         if (classification.Decision == BrowserAutomationDecision.SimpleTool)
         {
             return new BrowserAutomationStartResult
@@ -169,6 +163,31 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             {
                 NeedsClarification = true,
                 Message = "Do you want me to interact with the live webpage, or only open/search it?",
+                RoutingReason = classification.Reason,
+            };
+        }
+
+        if (!_settings.HasBrowserAutomationConsent)
+        {
+            if (DateTime.UtcNow - _lastConsentPromptUtc > TimeSpan.FromSeconds(20))
+            {
+                _lastConsentPromptUtc = DateTime.UtcNow;
+                WebSettingsService.Instance.OpenInBrowser("#browser-automation");
+            }
+            return new BrowserAutomationStartResult
+            {
+                NeedsClarification = true,
+                NeedsConsent = true,
+                Message = "Review and accept the Browser Automation data disclosure in Settings before the first browser task.",
+                RoutingReason = classification.Reason,
+            };
+        }
+
+        if (!_settings.Current.BrowserAutomationEnabled)
+        {
+            return new BrowserAutomationStartResult
+            {
+                Message = "Browser Automation is disabled in Settings.",
                 RoutingReason = classification.Reason,
             };
         }
@@ -973,6 +992,28 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     lastDecision.Action);
                 if (!actionSafety.MayStart)
                 {
+                    if (IsUnrequestedFinalActionRejection(actionSafety))
+                    {
+                        runtime.ConsecutiveRejectedStrategies++;
+                        runtime.History.Add(
+                            $"Unrequested final action rejected: {actionSafety.Reason} "
+                            + "Do not ask the user to approve an action they did not request. "
+                            + "If every requested goal is already satisfied, return done; otherwise choose the next requested grounded action.");
+                        SetState(
+                            runtime,
+                            BrowserTaskState.Planning,
+                            "Skipping an unrequested submit or send action");
+                        if (runtime.ConsecutiveRejectedStrategies >= 3)
+                        {
+                            Fail(
+                                runtime,
+                                BrowserAutomationOutcome.Partial,
+                                "Useful browser progress remains open, but the planner repeatedly proposed a final action that the user did not request.");
+                            return;
+                        }
+                        continue;
+                    }
+
                     SetState(
                         runtime,
                         BrowserTaskState.NeedsUserAction,
@@ -1119,6 +1160,32 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         "Fresh-state verification rejected a transient field write: the page cleared or changed the requested value after the immediate action receipt. "
                         + "Do not alternate between fields or repeat the same format; use a different supported input strategy or ask for the missing information.");
                     continue;
+                }
+
+                // A request containing exactly one explicit control action is
+                // complete once that same grounded action produces verified
+                // fresh-page evidence. Do not ask the planner for an unrelated
+                // follow-up (for example, pressing Enter after a verified icon
+                // click) merely because the model omitted an explicit Done.
+                if (actionVerification.Verified
+                    && IsExplicitSingleControlActionRequest(runtime.Request))
+                {
+                    var terminal = _verifier.VerifyTerminal(
+                        runtime.Request,
+                        lastDecision,
+                        runtime.Page,
+                        runtime.Receipts);
+                    if (terminal.Verified)
+                    {
+                        Complete(
+                            runtime,
+                            BrowserAutomationOutcome.Completed,
+                            string.IsNullOrWhiteSpace(lastDecision.ResultSummary)
+                                ? "The requested control action was completed."
+                                : lastDecision.ResultSummary,
+                            terminal.Evidence);
+                        return;
+                    }
                 }
 
                 // A verified transfer into the requested destination editor is
@@ -1570,8 +1637,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         if (action == null
             || receipt?.Ok != true
             || !receipt.ValueMatches
-            || action.Type is not ("type" or "paste")
-            || receipt.NativeInputUsed)
+            || action.Type is not ("type" or "paste"))
         {
             return true;
         }
@@ -1584,8 +1650,26 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         {
             return EquivalentInputValue(
                 live.Value,
-                action.Text,
+                string.IsNullOrWhiteSpace(receipt.ExpectedValue)
+                    ? action.Text
+                    : receipt.ExpectedValue,
                 allowContainedText: !action.Replace || action.Type == "paste");
+        }
+
+        // Canvas-backed editors can expose only a task-leased active cursor,
+        // not readable document text. A trusted native paste is accepted here
+        // only when its atomic copy/read-back receipt still belongs to that
+        // same live editor lease.
+        if (receipt.NativeInputUsed
+            && action.Type == "paste"
+            && page?.ActiveEditable == true
+            && !string.IsNullOrWhiteSpace(page.ActiveEditorId)
+            && string.Equals(
+                page.ActiveEditorId,
+                receipt.TargetId,
+                StringComparison.Ordinal))
+        {
+            return true;
         }
 
         // Search submission and navigation commonly replace the input itself.
@@ -1691,6 +1775,60 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     && control.Checked));
     }
 
+    internal static bool ShouldNormalizeChoiceTyping(
+        BrowserPlannerAction action,
+        BrowserControl control) =>
+        action?.Type == "type"
+        && control != null
+        && !control.Editable
+        && !string.IsNullOrWhiteSpace(action.Text)
+        && (control.Role.Equals("combobox", StringComparison.OrdinalIgnoreCase)
+            || control.Role.Equals("listbox", StringComparison.OrdinalIgnoreCase));
+
+    internal static bool TryNormalizeNativeDateTyping(
+        BrowserPlannerAction action,
+        BrowserControl control,
+        out string normalized)
+    {
+        normalized = "";
+        if (action?.Type is not ("type" or "paste")
+            || control == null
+            || !control.InputType.Equals("date", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(action.Text))
+        {
+            return false;
+        }
+
+        var explicitDate = Regex.Replace(
+                action.Text.Trim().TrimEnd('.', ',', ';', ':'),
+                @"(?<=\d)(?:st|nd|rd|th)\b",
+                "",
+                RegexOptions.IgnoreCase)
+            .Trim();
+        var formats = new[]
+        {
+            "yyyy-MM-dd",
+            "MMMM d yyyy",
+            "MMMM d, yyyy",
+            "MMM d yyyy",
+            "MMM d, yyyy",
+            "d MMMM yyyy",
+            "d MMM yyyy",
+        };
+        if (!DateTime.TryParseExact(
+                explicitDate,
+                formats,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces,
+                out var date))
+        {
+            return false;
+        }
+
+        normalized = date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        return true;
+    }
+
     private async Task<BrowserActionReceipt> ExecutePlannerActionAsync(
         Runtime runtime,
         BrowserPlannerAction action,
@@ -1706,6 +1844,24 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 "Routed document-editor text entry through trusted native paste and destination read-back.");
         }
 
+        // A native date field is a structured value control, not a clipboard
+        // destination. Normalize explicit human-readable dates before the
+        // generic trusted-paste path so retry strategy changes cannot turn a
+        // valid date into repeated Ctrl+V no-ops.
+        if (action.Type == "paste")
+        {
+            var pasteTarget = FindMatchingControl(runtime.Page, action);
+            if (TryNormalizeNativeDateTyping(action, pasteTarget, out var pastedDate))
+            {
+                action.Type = "type";
+                action.Text = pastedDate;
+                action.Replace = true;
+                action.SubmitAfter = false;
+                runtime.History.Add(
+                    "Normalized a date paste request to the native date control's ISO value action.");
+            }
+        }
+
         if (action.Type == "paste")
         {
             if (string.IsNullOrWhiteSpace(action.Text)
@@ -1715,6 +1871,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 runtime.History.Add("Used the task-scoped prepared result for the destination paste.");
             }
             var pasteReceipt = await ExecuteTrustedPasteAsync(runtime, action, token);
+            AttachExpectedState(pasteReceipt, action);
             LogActionReceipt(runtime.TaskId, pasteReceipt);
             return pasteReceipt;
         }
@@ -1722,6 +1879,23 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         var liveTarget = action.Type == "activate_tab"
             ? null
             : FindMatchingControl(runtime.Page, action);
+        if (ShouldNormalizeChoiceTyping(action, liveTarget))
+        {
+            action.Type = "select_option";
+            action.Option = action.Text;
+            action.Text = "";
+            action.SubmitAfter = false;
+            runtime.History.Add(
+                "Normalized text entry on a non-editable choice control to semantic option selection.");
+        }
+        if (TryNormalizeNativeDateTyping(action, liveTarget, out var normalizedDate))
+        {
+            action.Text = normalizedDate;
+            action.Replace = true;
+            action.SubmitAfter = false;
+            runtime.History.Add(
+                "Normalized an explicit natural-language date to the native date control's ISO value format.");
+        }
         if (IsBroadNonEditorContainerAction(action, liveTarget))
         {
             return new BrowserActionReceipt
@@ -2133,7 +2307,31 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             }
         }
 
+        AttachExpectedState(receipt, action);
         return receipt;
+    }
+
+    internal static void AttachExpectedState(
+        BrowserActionReceipt receipt,
+        BrowserPlannerAction action)
+    {
+        if (receipt == null || action == null)
+            return;
+
+        receipt.ExpectedValue = action.Type switch
+        {
+            "type" or "paste" => action.Text ?? "",
+            "select_option" => string.IsNullOrWhiteSpace(action.Option)
+                ? action.Text ?? ""
+                : action.Option,
+            _ when receipt.SelectedChanged
+                && string.Equals(
+                    receipt.TargetRole,
+                    "option",
+                    StringComparison.OrdinalIgnoreCase) =>
+                receipt.TargetName ?? "",
+            _ => receipt.ExpectedValue ?? "",
+        };
     }
 
     internal static bool ShouldUseTrustedEditorPaste(
@@ -2540,6 +2738,38 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 RegexOptions.IgnoreCase)
             && HasUsableDateConstraint(answer);
     }
+
+    internal static bool IsExplicitSingleControlActionRequest(string request)
+    {
+        var text = NormalizeControlText(request);
+        if (!Regex.IsMatch(
+                text,
+                @"^(?:please\s+)?(?:click|press|choose|select|check|uncheck|open)\b",
+                RegexOptions.IgnoreCase)
+            || Regex.IsMatch(
+                text,
+                @"[,;]|\b(?:and|then|after|before|followed by|also)\b",
+                RegexOptions.IgnoreCase))
+        {
+            return false;
+        }
+
+        return Regex.Matches(
+            text,
+            @"\b(?:click|press|choose|select|check|uncheck|open|type|fill|search|navigate|copy|paste|play|add)\b",
+            RegexOptions.IgnoreCase).Count == 1;
+    }
+
+    internal static bool IsUnrequestedFinalActionRejection(
+        BrowserAutomationSafetyDecision decision) =>
+        decision?.MayStart == false
+        && decision.PauseBeforeSensitiveStep
+        && (decision.Reason.Contains(
+                "not explicitly requested",
+                StringComparison.OrdinalIgnoreCase)
+            || decision.Reason.Contains(
+                "did not explicitly request",
+                StringComparison.OrdinalIgnoreCase));
 
     private static void CapturePreparedDraft(Runtime runtime, BrowserPlannerDecision decision)
     {
@@ -3259,9 +3489,27 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 : "";
         Publish(runtime);
         AnnounceOutcome(runtime, state);
+        ReleaseTaskContent(runtime);
     }
 
-    private static void AnnounceOutcome(Runtime runtime, BrowserTaskState state)
+    private static void ReleaseTaskContent(Runtime runtime)
+    {
+        runtime.PreparedDraft = "";
+        runtime.History.Clear();
+        runtime.VerifiedCheckpoints.Clear();
+        runtime.ActionAttempts.Clear();
+        runtime.SemanticActionAttempts.Clear();
+        runtime.NoProgressActionStates.Clear();
+        runtime.Receipts.Clear();
+        if (runtime.Page != null)
+        {
+            runtime.Page.PageText = "";
+            runtime.Page.SelectedText = "";
+            runtime.Page.Controls = Array.Empty<BrowserControl>();
+        }
+    }
+
+    private void AnnounceOutcome(Runtime runtime, BrowserTaskState state)
     {
         if (runtime.LastAnnouncedState == state)
             return;
@@ -3271,38 +3519,47 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             BrowserTaskState.Completed or BrowserTaskState.CompletedWithNote =>
                 "Okay, the browser task is complete. The result should now be visible in Chrome.",
             BrowserTaskState.NeedsUserAction =>
-                "Browser automation is paused and needs your help. Check the progress window for the required step, then tell me to continue.",
+                "Browser automation is paused and needs your help. Complete the required step in Chrome, then tell me to continue.",
             BrowserTaskState.Partial =>
-                "I completed part of the browser task, but stopped before the full result. Check the progress window for what remains.",
+                "I completed part of the browser task, but stopped before the full result. Chrome is left at the useful stopping point.",
             BrowserTaskState.Blocked =>
-                "The browser task is blocked. I left Chrome at the useful stopping point. Check the progress window for the reason.",
+                "The browser task is blocked. I left Chrome at the useful stopping point.",
             BrowserTaskState.Cancelled =>
                 "Browser automation cancelled.",
             BrowserTaskState.Failed =>
-                "The browser task stopped because it could not complete safely. Check the progress window for the reason.",
+                "The browser task stopped because it could not complete safely.",
             _ => "",
         };
         if (string.IsNullOrWhiteSpace(spoken))
             return;
 
         runtime.LastAnnouncedState = state;
-        var phase = state switch
+        var detail = state is BrowserTaskState.Completed or BrowserTaskState.CompletedWithNote
+            ? runtime.ResultSummary
+            : runtime.LastError;
+        var announcement = new JarvisLifecycleAnnouncement
         {
-            BrowserTaskState.Completed or BrowserTaskState.CompletedWithNote =>
-                KeyboardWtf.Models.VoiceUiPhase.Done,
-            BrowserTaskState.Cancelled =>
-                KeyboardWtf.Models.VoiceUiPhase.Cancelled,
-            BrowserTaskState.NeedsUserAction =>
-                KeyboardWtf.Models.VoiceUiPhase.Thinking,
-            _ => KeyboardWtf.Models.VoiceUiPhase.Error,
+            Source = "browser_automation",
+            State = state.ToString(),
+            Detail = string.IsNullOrWhiteSpace(detail) ? spoken : detail,
+            FallbackSpeech = spoken,
         };
-        KeyboardWtf.Models.KeyboardWtfState.SetUi(
-            phase,
-            KeyboardWtf.Models.KeyboardWtfState.AssistantName,
-            spoken);
-        KeyboardWtf.Services.TtsService.Instance.Speak(
-            spoken,
-            KeyboardWtf.Models.KeyboardWtfState.SelectedLanguage);
+        var handler = AnnouncementRequested;
+        if (handler == null)
+        {
+            KeyboardWtf.Services.TtsService.Instance.Speak(spoken, "en");
+            return;
+        }
+
+        try
+        {
+            handler(announcement);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning(ex, "Browser lifecycle announcement handler failed");
+            KeyboardWtf.Services.TtsService.Instance.Speak(spoken, "en");
+        }
     }
 
     private void SetState(Runtime runtime, BrowserTaskState state, string action)

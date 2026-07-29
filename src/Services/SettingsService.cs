@@ -82,12 +82,15 @@ public sealed class AppSettings
     public JarvisPermissionMode JarvisPermissionMode { get; set; } = JarvisPermissionMode.AlwaysAsk;
     public string PreferredBrowser { get; set; } = "";
     public bool BrowserAutomationEnabled { get; set; }
+    public int BrowserAutomationConsentVersion { get; set; }
     public string BrowserAutomationModel { get; set; } = "gemini-3.1-flash-lite-preview";
     public bool BrowserAutomationMemoryEnabled { get; set; }
 }
 
 public sealed class SettingsService
 {
+    public const int CurrentBrowserAutomationConsentVersion = 1;
+
     public static readonly IReadOnlyDictionary<string, string> GeminiVoices =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -125,6 +128,10 @@ public sealed class SettingsService
     public string SettingsPath { get; }
 
     public AppSettings Current { get; private set; } = new();
+
+    public bool HasBrowserAutomationConsent =>
+        Current.BrowserAutomationConsentVersion
+        >= CurrentBrowserAutomationConsentVersion;
 
     public void Load()
     {
@@ -261,7 +268,16 @@ public sealed class SettingsService
     public void SaveJarvisPermissionMode(JarvisPermissionMode value) { Current.JarvisPermissionMode = value; Save(); }
     public void SaveBrowserAutomationEnabled(bool value)
     {
-        Current.BrowserAutomationEnabled = value;
+        Current.BrowserAutomationEnabled = value && HasBrowserAutomationConsent;
+        Save();
+    }
+    public void SaveBrowserAutomationConsent(bool accepted)
+    {
+        Current.BrowserAutomationConsentVersion = accepted
+            ? CurrentBrowserAutomationConsentVersion
+            : 0;
+        if (!accepted)
+            Current.BrowserAutomationEnabled = false;
         Save();
     }
     public void SaveBrowserAutomationModel(string value)

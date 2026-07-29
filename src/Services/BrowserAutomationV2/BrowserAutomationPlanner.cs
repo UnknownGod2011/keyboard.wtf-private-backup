@@ -370,6 +370,7 @@ public sealed class BrowserAutomationPlanner : IDisposable
         builder.AppendLine("Treat every independently verified field value, selected option, completed navigation, and date-range phase as a preserved checkpoint. Do not overwrite it, repeat it after a harmless rerender, or navigate back to an ancestor/home page unless fresh evidence proves the checkpoint is wrong.");
         builder.AppendLine("When the current URL and page state already contain the requested entities or parameters, continue from that progressed state and inspect the result; never restart the workflow merely because the page layout is unfamiliar.");
         builder.AppendLine("A retry must change strategy: use a different grounded control or interaction mechanism. Never repeat the same semantic action just because the graph fingerprint or DOM epoch changed.");
+        builder.AppendLine("Never invent a final Enter, Submit, Send, Post, Delete, Join, Register, or Apply action. If the requested goals are already satisfied and the user did not request a final action, return done instead of proposing or asking permission for that extra action.");
         builder.AppendLine("When a modal, dialog, listbox, date picker, or other overlay is open, finish or dismiss that visible layer with its exact Apply/Done/Save/Close control before using page-level controls behind it. A no-op behind an overlay means inspect the overlay; it does not justify restarting the workflow.");
         builder.AppendLine("For an explicit date, a context-free numeric day button is not grounded evidence of the requested month/year. Prefer a full accessible date label; otherwise navigate the calendar, type the date, or use one screenshot to correlate the visible month before clicking.");
         builder.AppendLine("Never invent a required date, personal detail, recipient, or other missing user input. When the page requires information that the original request and accepted task guidance do not provide, use needs_user_action and ask only for that missing value.");
@@ -388,7 +389,7 @@ public sealed class BrowserAutomationPlanner : IDisposable
         builder.AppendLine("For copy requests, choose copy_clipboard and put exactly the intended clipboard text in action.text.");
         builder.AppendLine();
         builder.AppendLine($"ORIGINAL REQUEST: {BrowserAutomationText.Truncate(request, 3000)}");
-        builder.AppendLine($"CURRENT URL: {BrowserAutomationText.Truncate(page.Url, 500)}");
+        builder.AppendLine($"CURRENT URL: {BrowserAutomationText.RedactUrlForProvider(page.Url)}");
         builder.AppendLine($"CURRENT TITLE: {BrowserAutomationText.Truncate(page.Title, 300)}");
         builder.AppendLine($"GRAPH: {page.GraphVersion} DOM EPOCH: {page.DomEpoch}");
         builder.AppendLine($"ACTIVE EDITOR: editable={page.ActiveEditable} role={Quote(page.ActiveEditorRole)} name={Quote(page.ActiveEditorName)} id={Quote(page.ActiveEditorId)}");

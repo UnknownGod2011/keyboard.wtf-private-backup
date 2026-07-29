@@ -8,9 +8,9 @@
     <Nullable>disable</Nullable>
     <RootNamespace>KeyboardWtf</RootNamespace>
     <AssemblyName>keyboard.wtf</AssemblyName>
-    <Version>1.2.0</Version>
-    <FileVersion>1.2.0.0</FileVersion>
-    <AssemblyVersion>1.2.0.0</AssemblyVersion>
+    <Version>1.3.0</Version>
+    <FileVersion>1.3.0.0</FileVersion>
+    <AssemblyVersion>1.3.0.0</AssemblyVersion>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationIcon />
@@ -34,9 +34,37 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>tts\voices\%(RecursiveDir)%(Filename)%(Extension)</Link>
     </Content>
-    <Content Include="..\extensions\keyboard-wtf-browser-helper-v2\**\*">
+    <Content Include="..\extensions\keyboard-wtf-browser-helper-v2\manifest.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Link>browser-helper\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <Link>browser-helper\manifest.json</Link>
+    </Content>
+    <Content Include="..\extensions\keyboard-wtf-browser-helper-v2\service-worker.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>browser-helper\service-worker.js</Link>
+    </Content>
+    <Content Include="..\extensions\keyboard-wtf-browser-helper-v2\content-script.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>browser-helper\content-script.js</Link>
+    </Content>
+    <Content Include="..\extensions\keyboard-wtf-browser-helper-v2\popup.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>browser-helper\popup.html</Link>
+    </Content>
+    <Content Include="..\extensions\keyboard-wtf-browser-helper-v2\popup.css">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>browser-helper\popup.css</Link>
+    </Content>
+    <Content Include="..\extensions\keyboard-wtf-browser-helper-v2\popup.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>browser-helper\popup.js</Link>
+    </Content>
+    <Content Include="..\extensions\keyboard-wtf-browser-helper-v2\README.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>browser-helper\README.md</Link>
+    </Content>
+    <Content Include="..\extensions\keyboard-wtf-browser-helper-v2\icons\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>browser-helper\icons\%(RecursiveDir)%(Filename)%(Extension)</Link>
     </Content>
   </ItemGroup>
 

@@ -19,6 +19,7 @@ public sealed class KeyboardWtfApp : IDisposable
     private readonly IntentMemoryService _intentMemory = new();
     private readonly JarvisActionHistoryService _jarvisHistory = new();
     private readonly LearnedMappingService _learnedMappings = new();
+    private readonly BrowserNativeHostInstaller _browserNativeHostInstaller = new();
 
     private NotificationService _notifications;
     private VoiceCaptureService _capture;
@@ -29,12 +30,11 @@ public sealed class KeyboardWtfApp : IDisposable
     private BrowserHelperBridge _browserHelper;
     private BrowserAutomationPlanner _browserPlanner;
     private BrowserAutomationCoordinator _browserAutomation;
-    private BrowserAutomationProgressForm _browserProgress;
     private JarvisTimerService _timers;
-    private TimerProgressForm _timerProgress;
     private System.Windows.Forms.Timer _startupHotkeyRetryTimer;
     private int _startupHotkeyRetryCount;
     private bool _disposed;
+    private int _restartRequested;
 
     public KeyboardWtfApp(NotifyIcon notifyIcon)
     {
@@ -57,6 +57,7 @@ public sealed class KeyboardWtfApp : IDisposable
         _jarvisHistory.Load();
         _learnedMappings.Load();
         SyncStartupRegistration();
+        RegisterBrowserNativeHost();
         ApplySecretEnvironmentOverrides();
         AiProviderRegistry.Initialize(_claudeApi);
         RegisterDestinations();
@@ -72,6 +73,8 @@ public sealed class KeyboardWtfApp : IDisposable
             _browserHelper,
             _browserPlanner);
         _timers = new JarvisTimerService(_notifications, _jarvisHistory);
+        _browserAutomation.AnnouncementRequested += HandleLifecycleAnnouncement;
+        _timers.AnnouncementRequested += HandleLifecycleAnnouncement;
         _jarvisAutomation = new JarvisAutomationService(
             _notifications,
             _settings,
@@ -94,8 +97,6 @@ public sealed class KeyboardWtfApp : IDisposable
         _liveConversation.SetSessionEndingObserver(
             () => _browserAutomation.CancelAsync("Jarvis conversation ended"));
         _overlay = new VoiceOverlayForm(_audioRecorder);
-        _browserProgress = new BrowserAutomationProgressForm(_browserAutomation);
-        _timerProgress = new TimerProgressForm(_timers);
 
         WebSettingsService.Instance.Initialize(
             this,
@@ -176,6 +177,82 @@ public sealed class KeyboardWtfApp : IDisposable
     }
 
     public string StartupExecutablePath => ResolveStartupExecutablePath();
+
+    public bool RequestRestart(out string error)
+    {
+        error = "";
+        if (Interlocked.Exchange(ref _restartRequested, 1) != 0)
+            return true;
+
+        _commands?.CancelCurrent();
+        if (!WindowsAppLifecycleService.StartRestartHelper(out error))
+        {
+            Interlocked.Exchange(ref _restartRequested, 0);
+            return false;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(350);
+            Application.Exit();
+        });
+        return true;
+    }
+
+    private void RegisterBrowserNativeHost()
+    {
+        try
+        {
+            var executable = Environment.ProcessPath ?? Application.ExecutablePath;
+            _browserNativeHostInstaller.Register(executable);
+            AppLog.Info("Chrome Helper native host registration is ready");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error($"Chrome Helper native host registration failed: {ex.Message}");
+        }
+    }
+
+    private void HandleLifecycleAnnouncement(JarvisLifecycleAnnouncement announcement)
+    {
+        if (_disposed || announcement == null)
+            return;
+        _ = DeliverLifecycleAnnouncementAsync(announcement);
+    }
+
+    private async Task DeliverLifecycleAnnouncementAsync(
+        JarvisLifecycleAnnouncement announcement)
+    {
+        var deliveredByJarvis = false;
+        try
+        {
+            deliveredByJarvis = _liveConversation != null
+                && await _liveConversation.TryAnnounceLifecycleAsync(announcement);
+            if (deliveredByJarvis)
+            {
+                AppLog.Info(
+                    $"Lifecycle announcement delivered through Jarvis Live: source={announcement.Source} state={announcement.State}");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning(
+                ex,
+                $"Lifecycle delivery failed: source={announcement.Source} state={announcement.State}");
+        }
+
+        if (!deliveredByJarvis
+            && !_disposed
+            && !string.IsNullOrWhiteSpace(announcement.FallbackSpeech))
+        {
+            // The Live conversation owns normal spoken updates. Local TTS is
+            // retained only so a timer or background task is not silently
+            // lost when Jarvis Live is disconnected.
+            AppLog.Info(
+                $"Lifecycle announcement used local speech fallback: source={announcement.Source} state={announcement.State}");
+            TtsService.Instance.Speak(announcement.FallbackSpeech, "en");
+        }
+    }
 
     public void SyncStartupRegistration() =>
         WindowsStartupService.Sync(_settings.Current.StartWithWindows, StartupExecutablePath);
@@ -357,9 +434,7 @@ public sealed class KeyboardWtfApp : IDisposable
         _speechRecognition.Dispose();
         _claudeApi.Dispose();
         _liveConversation?.Dispose();
-        _timerProgress?.Dispose();
         _timers?.Dispose();
-        _browserProgress?.Dispose();
         _browserAutomation?.Dispose();
         _jarvisAutomation?.Dispose();
         _overlay?.Dispose();

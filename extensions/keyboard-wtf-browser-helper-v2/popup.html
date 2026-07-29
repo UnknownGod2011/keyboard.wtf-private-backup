@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>keyboard.wtf Chrome Helper</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header>
+      <img src="icons/icon-48.png" width="48" height="48" alt="">
+      <div>
+        <h1>Chrome Helper</h1>
+        <p>keyboard.wtf browser automation</p>
+      </div>
+    </header>
+
+    <section class="status-card" aria-live="polite">
+      <div class="status-line">
+        <span id="status-dot" class="status-dot pending"></span>
+        <strong id="status-title">Checking Jarvis…</strong>
+      </div>
+      <p id="status-detail">Connecting to the local keyboard.wtf app.</p>
+    </section>
+
+    <section class="privacy-note">
+      <strong>Private by design</strong>
+      <p>
+        This helper reads or acts on a page only when you ask Jarvis to control a
+        browser task. It communicates with the keyboard.wtf app on this computer.
+        When AI page understanding is required, the app sends a bounded task
+        snapshot to your configured Gemini browser model.
+      </p>
+      <p><a href="https://keyboard-wtf.vercel.app/privacy" target="_blank" rel="noopener noreferrer">Privacy policy</a></p>
+    </section>
+
+    <p class="safety">
+      Passwords, OTPs, CAPTCHAs, payment, checkout, and account-security steps
+      stay under your control.
+    </p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -2,16 +2,14 @@
   "manifest_version": 3,
   "name": "keyboard.wtf Chrome Helper",
   "description": "Lets Jarvis act in the Chrome tabs you explicitly ask it to control.",
-  "version": "2.1.18",
+  "version": "2.1.21",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA8p1QBZDzDwLFeyRtE/LzOOVwuDjXpm9WLqq1inMhN4sx+oI5yqavjmZfg+uyqDi9JjUVSayRtB50upPzDYwaxOzp8gHGgbubET+UCVPetHnXernGyda25LNGlV5fgPQ4BpVyO+aqHcdv6T/VZX5hvMvlLSoXTa4xoKoMjc9blIl6TN5qO/cPrucooO8BxZUGQiiqWJVKwlzwwrtvkw5GRkK6oBdAr6VtuhIhmxBe4cwIitNp6R+CUdUrUVLiNHPgFJwNgcOvIBt3LA5p9A7ibyaO7UCcRkrNGm5DmRv7BEvpulhlbwPQOe3bKdP99BbMliWXXExDMLGF4qAccR431wIDAQAB",
   "permissions": [
     "nativeMessaging",
     "alarms",
     "webNavigation",
     "tabs",
-    "scripting",
-    "storage",
-    "clipboardWrite"
+    "scripting"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -34,6 +32,17 @@
     }
   ],
   "action": {
-    "default_title": "keyboard.wtf Chrome Helper"
+    "default_title": "keyboard.wtf Chrome Helper",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
   }
 }

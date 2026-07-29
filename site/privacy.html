@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Privacy policy for keyboard.wtf and the keyboard.wtf Chrome Helper.">
+  <meta name="theme-color" content="#f4f5f2">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+  <title>Privacy Policy - keyboard.wtf</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #101210;
+      --muted: #626760;
+      --line: #d8dbd5;
+      --paper: #f4f5f2;
+      --white: #fff;
+      --green: #2f7d50;
+      --amber: #b36a08;
+      --soft-green: #e9f3ec;
+      --soft-amber: #fff4e3;
+      --max: 900px;
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--paper); scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 16px/1.65 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: var(--green); text-underline-offset: 3px; }
+    .shell { width: min(calc(100% - 40px), var(--max)); margin: 0 auto; }
+    nav {
+      border-bottom: 1px solid var(--line);
+      background: rgba(244,245,242,.96);
+    }
+    .nav-inner {
+      min-height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+    .brand { color: var(--ink); font-weight: 780; text-decoration: none; }
+    .nav-link { color: var(--muted); font-size: 14px; text-decoration: none; }
+    header { padding: 72px 0 42px; border-bottom: 1px solid var(--line); }
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--green);
+      font-size: 13px;
+      font-weight: 760;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 0; font-size: clamp(44px, 8vw, 78px); line-height: 1; letter-spacing: -.04em; }
+    .lede { max-width: 760px; margin: 22px 0 0; color: var(--muted); font-size: 19px; }
+    .updated { margin: 14px 0 0; color: var(--muted); font-size: 14px; }
+    main { padding: 42px 0 72px; }
+    section { padding: 28px 0; border-bottom: 1px solid var(--line); }
+    section:last-child { border-bottom: 0; }
+    h2 { margin: 0 0 14px; font-size: 28px; line-height: 1.2; letter-spacing: -.02em; }
+    h3 { margin: 24px 0 8px; font-size: 18px; }
+    p { margin: 10px 0; }
+    ul { margin: 10px 0; padding-left: 22px; }
+    li + li { margin-top: 7px; }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0,1fr));
+      gap: 14px;
+      margin: 24px 0 0;
+    }
+    .summary-card, .notice {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--white);
+    }
+    .summary-card strong { display: block; margin-bottom: 5px; }
+    .summary-card span { color: var(--muted); font-size: 14px; }
+    .notice { margin: 18px 0; background: var(--soft-green); border-color: #bcd8c5; }
+    .notice.warning { background: var(--soft-amber); border-color: #edcc9c; }
+    .table-wrap { overflow-x: auto; margin-top: 16px; border: 1px solid var(--line); border-radius: 14px; }
+    table { width: 100%; border-collapse: collapse; background: var(--white); }
+    th, td { padding: 14px 16px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    tr:last-child td { border-bottom: 0; }
+    th { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+    code {
+      padding: 2px 5px;
+      border-radius: 5px;
+      background: #e8ebe6;
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+      overflow-wrap: anywhere;
+    }
+    footer { padding: 28px 0 42px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); }
+    @media (max-width: 680px) {
+      .summary-grid { grid-template-columns: 1fr; }
+      header { padding-top: 48px; }
+      th, td { min-width: 180px; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="shell nav-inner">
+      <a class="brand" href="/">keyboard.wtf</a>
+      <a class="nav-link" href="/support">Support</a>
+    </div>
+  </nav>
+
+  <header>
+    <div class="shell">
+      <p class="eyebrow">Privacy</p>
+      <h1>Privacy Policy</h1>
+      <p class="lede">
+        This policy explains how the keyboard.wtf Windows app and keyboard.wtf Chrome Helper process data when you explicitly ask Jarvis to perform a browser task.
+      </p>
+      <p class="updated">Last updated: July 29, 2026</p>
+      <div class="summary-grid">
+        <div class="summary-card"><strong>Local bridge</strong><span>The extension communicates with the keyboard.wtf app on your Windows computer through Chrome Native Messaging.</span></div>
+        <div class="summary-card"><strong>User initiated</strong><span>Page scanning and actions occur only for a browser task you ask Jarvis to perform.</span></div>
+        <div class="summary-card"><strong>No sale or advertising</strong><span>Browser-task data is not sold or used for ads, creditworthiness, or unrelated profiling.</span></div>
+        <div class="summary-card"><strong>You stay in control</strong><span>Cancel at any time, disable or remove the helper, withdraw consent, and delete local data.</span></div>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section>
+      <h2>1. Scope and single purpose</h2>
+      <p>
+        The keyboard.wtf Chrome Helper has one purpose: to let the locally installed keyboard.wtf Windows assistant understand and act in Chrome tabs that you explicitly ask Jarvis to control. It supports reading the selected page, finding visible controls, clicking or typing when requested, managing task-owned tabs, verifying results, showing a controlled-tab indicator, and cancelling safely.
+      </p>
+      <p>
+        The helper is not an advertising, analytics, tracking, credit, or background-browsing product. It does not act on a page when there is no active Jarvis browser task.
+      </p>
+    </section>
+
+    <section>
+      <h2>2. Information processed for a browser task</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Category</th><th>What the code can process</th><th>Why</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Tab and browsing state</td>
+              <td>The active and controlled tab's full URL and title, tab and window identifiers, navigation state, task-owned tab state, and the current domain.</td>
+              <td>To attach to the correct existing Chrome tab, preserve the logged-in session, avoid duplicate tabs, and verify navigation.</td>
+            </tr>
+            <tr>
+              <td>Website content</td>
+              <td>A bounded snapshot of visible page text, selected text, page title, and fresh page/control fingerprints. A scan is capped in code rather than collecting a raw full-page DOM dump.</td>
+              <td>To answer page questions, summarize requested content, ground actions, detect page changes, and verify results.</td>
+            </tr>
+            <tr>
+              <td>Controls and forms</td>
+              <td>Visible controls such as links, buttons, tabs, inputs, lists, and editors; their role, visible or accessible name, labels, type, enabled/selected/checked state, bounded non-restricted values, safe actions, frame, and on-screen bounds.</td>
+              <td>To choose the correct live control, draw the orange target outline, act on that same control, and confirm the resulting state.</td>
+            </tr>
+            <tr>
+              <td>User request and task content</td>
+              <td>The browser task you gave Jarvis and text you ask it to type, summarize, copy, or paste. This may include personally identifiable information or personal communications when you selected a task involving them.</td>
+              <td>To perform the specific task you requested.</td>
+            </tr>
+            <tr>
+              <td>Interactions and evidence</td>
+              <td>Task status, actions, target identity and bounds, compact before/after fingerprints, URL or state changes, verification outcomes, retries, cancellation, and concise errors.</td>
+              <td>To prevent stale actions, false success, repeated no-ops, and late actions after cancellation.</td>
+            </tr>
+            <tr>
+              <td>Screenshots</td>
+              <td>A screenshot of the controlled tab's visible viewport may be captured when DOM/accessibility information is insufficient, including visual controls, icons, diagrams, or image questions. Optional task evidence may also include a current-viewport capture.</td>
+              <td>For bounded visual recovery and action verification, not continuous recording.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>3. Potentially sensitive categories</h2>
+      <p>
+        The helper has broad HTTP/HTTPS page access because users may ask Jarvis to automate a site of their choice. That means a user-selected page can contain sensitive information even though the helper has no specialized permission for that category.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Category</th><th>Exact behavior</th></tr></thead>
+          <tbody>
+            <tr><td>Health information</td><td>No health-system or health-data permission is used. Health information may be processed only if it is visible in page content or supplied in a browser task you selected.</td></tr>
+            <tr><td>Financial or payment information</td><td>Public prices, product details, cart state, and other visible page content may be read for a requested task. Password, payment-card, banking, checkout, and order-placement steps are blocked for direct user handling.</td></tr>
+            <tr><td>Authentication information</td><td>The page title or visible content may reveal sign-in state, account name, or a login prompt. Passwords, one-time codes, CAPTCHAs, and account-security steps are not automated.</td></tr>
+            <tr><td>Location</td><td>The extension does not request Chrome geolocation. A place, route, address, or other location may be processed when it appears in the page or user request.</td></tr>
+            <tr><td>Password fields</td><td>The helper may identify that a password control exists so it can stop, but password values are redacted, excluded from page-state fingerprints, and cannot be typed or clicked by the automation executor.</td></tr>
+            <tr><td>Cookies</td><td>The extension has no cookies permission and does not call Chrome cookie APIs or <code>document.cookie</code>.</td></tr>
+            <tr><td>Session or authentication tokens</td><td>The extension does not read Chrome authentication storage, local/session storage, or cookie tokens. The full current URL is available locally and a site could place a token in that URL or visible page. Before a URL is sent to the AI provider, common token, key, code, signature, password, and session parameter values are redacted. The app cannot guarantee that a site never renders a secret as ordinary visible text.</td></tr>
+            <tr><td>Files and uploads</td><td>The helper may identify a visible file-input label and type so it can stop. It does not read the selected filename, file path, or file bytes and cannot select or upload a file. File selection remains a manual user step.</td></tr>
+            <tr><td>Personal communications</td><td>Messages, email text, document text, recipients, or similar content may be processed only when they are part of the page task you explicitly selected. Final sending, posting, publishing, or deletion requires an explicit user request and remains subject to safety checks.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>4. How data moves</h2>
+      <h3>Chrome Helper to the local Windows app</h3>
+      <p>
+        Task data moves from the Chrome Helper to the keyboard.wtf desktop app through Chrome Native Messaging. The registered native host is restricted to the permanent Chrome Web Store extension ID and the fixed unpacked troubleshooting ID. The native bridge uses a current-Windows-user named pipe; it is not exposed as a public internet service.
+      </p>
+      <h3>Local app to an AI provider</h3>
+      <p>
+        Browser automation in the current release uses the Gemini API key configured by the user in keyboard.wtf Settings. When AI page understanding is required, the desktop app sends the original task, a bounded page-text snapshot, relevant ranked control metadata, recent task evidence, and the redacted page URL to Google Gemini. A current-viewport image is added only for visual recovery. The extension itself contains no API key and does not contact Gemini directly.
+      </p>
+      <p>
+        If a future release supports another browser-task AI provider, the provider and disclosure must be shown in Settings before that provider is used. The provider's own privacy and retention terms also apply to data sent to it.
+      </p>
+    </section>
+
+    <section>
+      <h2>5. Storage and retention</h2>
+      <ul>
+        <li><strong>Chrome extension:</strong> the helper does not use Chrome storage, local storage, or session storage to keep a browsing history, page dump, screenshot archive, cookie, or credential.</li>
+        <li><strong>Active task memory:</strong> page snapshots, action receipts, prepared text, and screenshots are held in process memory for the active task and are discarded when the task/app lifecycle ends. They are not written as browser workflow memory in this release.</li>
+        <li><strong>Settings:</strong> browser-automation enabled state, model choice, and the consent version are stored locally in <code>%LOCALAPPDATA%\keyboard.wtf\settings.json</code> until changed or local app data is deleted.</li>
+        <li><strong>Diagnostics:</strong> compact app status and error logs are stored locally in <code>%LOCALAPPDATA%\keyboard.wtf\logs\keyboard.wtf.log</code>. Browser entries can include task IDs, states, a bounded target role/name, outcome flags, lengths, and concise errors, but do not intentionally include full page text, screenshots, cookies, credentials, or typed values. The current release does not automatically expire this log; it remains until you delete the log/local app data or remove it during uninstall.</li>
+        <li><strong>Clipboard:</strong> when you request clipboard output, that output remains in the Windows clipboard until you or another application replaces it. Temporary clipboard use for editor paste attempts to restore the prior clipboard after verification.</li>
+        <li><strong>AI provider:</strong> retention by Gemini is controlled by the user's Google account/API terms and Google policies, not by the Chrome extension.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>6. How data is used and not used</h2>
+      <p>Browser-task data is used only to provide, secure, debug, and verify the browser task the user requested. keyboard.wtf does not:</p>
+      <ul>
+        <li>sell browser-task data;</li>
+        <li>use it for personalized advertising;</li>
+        <li>use it to determine creditworthiness or for lending;</li>
+        <li>use it for unrelated profiling, tracking, or purposes unrelated to the Chrome Helper's single purpose; or</li>
+        <li>allow human access except with the user's explicit consent for support, for a necessary security investigation, when legally required, or after data is aggregated and anonymized for internal operations.</li>
+      </ul>
+      <div class="notice">
+        The use and transfer of information received from Google APIs complies with the Chrome Web Store User Data Policy, including its Limited Use requirements.
+      </div>
+    </section>
+
+    <section>
+      <h2>7. Security protections</h2>
+      <ul>
+        <li>Browser automation is disabled by default and requires a prominent disclosure and affirmative consent before the first task.</li>
+        <li>The native host allowlist contains only the permanent Store ID and the verified fixed unpacked fallback ID; arbitrary extensions and wildcard origins are not allowed.</li>
+        <li>If both helpers are enabled, browser commands fail closed until the user disables one.</li>
+        <li>Tasks use task IDs, stable tab ownership, fresh graph/DOM epochs, live semantic re-resolution, serialized mutations, bounded retries, structured evidence, and cancellation checks.</li>
+        <li>Passwords, file inputs, OTPs, CAPTCHAs, payments, checkout, banking, and account-security steps stay under direct user control.</li>
+        <li>API keys are stored by the desktop app encrypted for the current Windows user and are not included in the extension source or command line.</li>
+        <li>The extension executes only packaged code; it does not download or execute remote extension code.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>8. Your consent and controls</h2>
+      <ul>
+        <li>Review and affirm the browser-automation disclosure in keyboard.wtf Settings before the first task.</li>
+        <li>Cancel a task at any time with <strong>Ctrl+Alt+X</strong> or the browser-task Cancel control.</li>
+        <li>Disable Browser Automation or withdraw consent in Settings.</li>
+        <li>Disconnect the helper by disabling or removing it from <code>chrome://extensions</code>.</li>
+        <li>Do not enable both the Store and unpacked fallback helpers at the same time.</li>
+        <li>Delete local diagnostics by closing keyboard.wtf and deleting <code>%LOCALAPPDATA%\keyboard.wtf\logs\keyboard.wtf.log</code>.</li>
+        <li>Delete all local keyboard.wtf settings and memories by closing/uninstalling keyboard.wtf and choosing removal of local data, or by deleting <code>%LOCALAPPDATA%\keyboard.wtf</code>. This also removes the saved browser consent setting.</li>
+      </ul>
+      <p>
+        Removing local keyboard.wtf data does not delete information already processed under the independent retention policy of an AI provider.
+      </p>
+    </section>
+
+    <section>
+      <h2>9. Changes and contact</h2>
+      <p>
+        Material changes to browser-task data collection or use will require an updated disclosure and consent version. Questions, privacy requests, or support requests can be sent to:
+      </p>
+      <ul>
+        <li><a href="mailto:keyboard.wtf@gmail.com">keyboard.wtf@gmail.com</a></li>
+        <li><a href="mailto:tanushshah2006@gmail.com">tanushshah2006@gmail.com</a></li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell">keyboard.wtf &middot; <a href="/">Home</a> &middot; <a href="/support">Support</a></div>
+  </footer>
+</body>
+</html>

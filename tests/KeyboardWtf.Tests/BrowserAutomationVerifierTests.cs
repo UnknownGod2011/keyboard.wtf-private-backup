@@ -48,6 +48,45 @@ public sealed class BrowserAutomationVerifierTests
     }
 
     [Fact]
+    public void Native_input_receipt_does_not_override_missing_fresh_field_value()
+    {
+        var action = new BrowserPlannerAction
+        {
+            Type = "type",
+            TargetId = "name",
+            TargetRole = "textbox",
+            TargetName = "Display name",
+            Text = "Regression User",
+            Replace = true,
+        };
+        var receipt = new BrowserActionReceipt
+        {
+            Ok = true,
+            Action = "type",
+            TargetId = "name",
+            TargetRole = "textbox",
+            TargetName = "Display name",
+            ValueMatches = true,
+            NativeInputUsed = true,
+        };
+        BrowserAutomationCoordinator.AttachExpectedState(receipt, action);
+
+        var persisted = BrowserAutomationCoordinator.FreshStateConfirmsPersistedValue(
+            new BrowserPageSnapshot
+            {
+                Controls =
+                [
+                    Field("name", "textbox", "Display name", ""),
+                ],
+            },
+            action,
+            receipt);
+
+        Assert.Equal("Regression User", receipt.ExpectedValue);
+        Assert.False(persisted);
+    }
+
+    [Fact]
     public void Click_noop_is_not_success()
     {
         var result = _verifier.VerifyAction(
@@ -148,6 +187,99 @@ public sealed class BrowserAutomationVerifierTests
     }
 
     [Fact]
+    public void Multi_action_request_requires_distinct_evidence_for_every_requested_step()
+    {
+        const string request =
+            "Fill Display name, choose Browser automation, choose Speech recognition, and set the date.";
+        var partial = _verifier.VerifyTerminal(
+            request,
+            new BrowserPlannerDecision { Done = true, ResultSummary = "Done" },
+            new BrowserPageSnapshot
+            {
+                PageText = "Practice form",
+                Controls =
+                [
+                    Field("name", "textbox", "Display name", "Regression User"),
+                    Field("topic", "combobox", "Topic", "Browser automation"),
+                    Field("date", "textbox", "Practice date", "2026-07-29"),
+                ],
+            },
+            new[]
+            {
+                Changed("type", "name", "textbox", "Display name", "Regression User", valueMatches: true),
+                Changed("select_option", "topic", "combobox", "Topic", "Browser automation", valueMatches: true, selectedChanged: true),
+                Changed("type", "date", "textbox", "Practice date", "2026-07-29", valueMatches: true),
+            });
+
+        Assert.False(partial.Verified);
+        Assert.Contains("3 of 4", partial.Error);
+
+        var complete = _verifier.VerifyTerminal(
+            request,
+            new BrowserPlannerDecision { Done = true, ResultSummary = "Done" },
+            new BrowserPageSnapshot
+            {
+                PageText = "Practice form",
+                Controls =
+                [
+                    Field("name", "textbox", "Display name", "Regression User"),
+                    Field("topic", "combobox", "Topic", "Browser automation"),
+                    new BrowserControl
+                    {
+                        Id = "custom-topic",
+                        Role = "combobox",
+                        AccessibleName = "Custom topic",
+                        Text = "Speech recognition",
+                        Visible = true,
+                        Enabled = true,
+                    },
+                    Field("date", "textbox", "Practice date", "2026-07-29"),
+                ],
+            },
+            new[]
+            {
+                Changed("type", "name", "textbox", "Display name", "Regression User", valueMatches: true),
+                Changed("select_option", "topic", "combobox", "Topic", "Browser automation", valueMatches: true, selectedChanged: true),
+                Changed(
+                    "select_option",
+                    "custom-topic",
+                    "combobox",
+                    "Custom topic",
+                    "Speech recognition",
+                    valueMatches: true,
+                    selectedChanged: true),
+                Changed("type", "date", "textbox", "Practice date", "2026-07-29", valueMatches: true),
+            });
+
+        Assert.True(complete.Verified);
+
+        var lostEarlierValues = _verifier.VerifyTerminal(
+            request,
+            new BrowserPlannerDecision { Done = true, ResultSummary = "Done" },
+            new BrowserPageSnapshot
+            {
+                PageText = "Practice form",
+                Controls =
+                [
+                    Field("name", "textbox", "Display name", ""),
+                    Field("topic", "combobox", "Topic", ""),
+                    Field("custom-topic", "combobox", "Custom topic", "Speech recognition"),
+                    Field("date", "textbox", "Practice date", "2026-07-29"),
+                ],
+            },
+            new[]
+            {
+                Changed("type", "name", "textbox", "Display name", "Regression User", valueMatches: true),
+                Changed("select_option", "topic", "combobox", "Topic", "Browser automation", valueMatches: true, selectedChanged: true),
+                Changed("select_option", "custom-topic", "combobox", "Custom topic", "Speech recognition", valueMatches: true, selectedChanged: true),
+                Changed("type", "date", "textbox", "Practice date", "2026-07-29", valueMatches: true),
+            });
+
+        Assert.False(lostEarlierValues.Verified);
+        Assert.Contains("2 of 4", lostEarlierValues.Error);
+    }
+
+    [Fact]
     public void Form_completion_rejects_dropdown_opening_without_a_selected_option()
     {
         var result = _verifier.VerifyTerminal(
@@ -175,7 +307,27 @@ public sealed class BrowserAutomationVerifierTests
         var result = _verifier.VerifyTerminal(
             "Fill this quiz and do not submit",
             new BrowserPlannerDecision { Done = true, ResultSummary = "Done" },
-            new BrowserPageSnapshot { PageText = "Practice quiz" },
+            new BrowserPageSnapshot
+            {
+                PageText = "Practice quiz",
+                Controls =
+                [
+                    new BrowserControl
+                    {
+                        Id = "answer-a",
+                        Role = "radio",
+                        AccessibleName = "Answer A",
+                        Checked = true,
+                    },
+                    new BrowserControl
+                    {
+                        Id = "answer-b",
+                        Role = "option",
+                        AccessibleName = "Answer B",
+                        Selected = true,
+                    },
+                ],
+            },
             new[]
             {
                 new BrowserActionReceipt
@@ -359,4 +511,38 @@ public sealed class BrowserAutomationVerifierTests
         Assert.False(result.Verified);
         Assert.Contains("destination editor", result.Error, StringComparison.OrdinalIgnoreCase);
     }
+
+    private static BrowserActionReceipt Changed(
+        string action,
+        string targetId,
+        string role,
+        string name,
+        string expectedValue = "",
+        bool valueMatches = false,
+        bool selectedChanged = false) => new()
+    {
+        Ok = true,
+        Action = action,
+        TargetId = targetId,
+        TargetRole = role,
+        TargetName = name,
+        ExpectedValue = expectedValue,
+        ValueMatches = valueMatches,
+        SelectedChanged = selectedChanged,
+        NoVisibleChange = false,
+    };
+
+    private static BrowserControl Field(
+        string id,
+        string role,
+        string name,
+        string value) => new()
+    {
+        Id = id,
+        Role = role,
+        AccessibleName = name,
+        Value = value,
+        Visible = true,
+        Enabled = true,
+    };
 }

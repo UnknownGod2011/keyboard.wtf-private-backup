@@ -42,7 +42,10 @@ public sealed class JarvisTimerService : IDisposable
         JarvisActionHistoryService history)
         : this(
             (title, message) => notifications.Info(title, message),
-            message => TtsService.Instance.Speak(message, KeyboardWtfState.SelectedLanguage),
+            // Timer lifecycle messages are deterministic English system text.
+            // Do not use "auto", which can retain a previously selected SAPI
+            // voice from another language.
+            message => TtsService.Instance.Speak(message, "en"),
             (kind, detail, ok) => history.Add(kind, detail, ok))
     {
     }
@@ -58,6 +61,7 @@ public sealed class JarvisTimerService : IDisposable
     }
 
     public event Action<JarvisTimerSnapshot> Changed;
+    public event Action<JarvisLifecycleAnnouncement> AnnouncementRequested;
 
     public IReadOnlyList<JarvisTimerSnapshot> ActiveTimers
     {
@@ -139,7 +143,19 @@ public sealed class JarvisTimerService : IDisposable
             Changed?.Invoke(snapshot);
         }
         if (cancelled.Length > 0)
-            _speak(cancelled.Length == 1 ? "Timer cancelled." : "Timers cancelled.");
+        {
+            RequestAnnouncement(new JarvisLifecycleAnnouncement
+            {
+                Source = "timer",
+                State = "cancelled",
+                Detail = cancelled.Length == 1
+                    ? $"{cancelled[0].Snapshot.Label} was cancelled."
+                    : $"{cancelled.Length} timers were cancelled.",
+                FallbackSpeech = cancelled.Length == 1
+                    ? "Timer cancelled."
+                    : "Timers cancelled.",
+            });
+        }
         return cancelled.Length;
     }
 
@@ -156,12 +172,34 @@ public sealed class JarvisTimerService : IDisposable
         var snapshot = Copy(runtime.Snapshot, JarvisTimerState.Completed);
         _notify("Jarvis timer", snapshot.Label);
         _history("timer_finished", snapshot.Label, true);
-        KeyboardWtfState.SetUi(
-            VoiceUiPhase.Done,
-            KeyboardWtfState.AssistantName,
-            $"{snapshot.Label} finished.");
-        _speak($"{snapshot.Label} finished.");
         Changed?.Invoke(snapshot);
+        RequestAnnouncement(new JarvisLifecycleAnnouncement
+        {
+            Source = "timer",
+            State = "completed",
+            Detail = $"{snapshot.Label} finished.",
+            FallbackSpeech = $"{snapshot.Label} finished.",
+        });
+    }
+
+    private void RequestAnnouncement(JarvisLifecycleAnnouncement announcement)
+    {
+        var handler = AnnouncementRequested;
+        if (handler == null)
+        {
+            _speak(announcement.FallbackSpeech);
+            return;
+        }
+
+        try
+        {
+            handler(announcement);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning(ex, "Timer lifecycle announcement handler failed");
+            _speak(announcement.FallbackSpeech);
+        }
     }
 
     public void Dispose()

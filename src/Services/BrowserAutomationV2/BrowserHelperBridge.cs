@@ -17,6 +17,8 @@ public sealed class BrowserHelperBridge : IDisposable
     private readonly ConcurrentQueue<BrowserActionRequest> _commands = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> _pending = new();
     private readonly object _statusLock = new();
+    private readonly Dictionary<string, DateTime> _helperHeartbeats = new(
+        StringComparer.OrdinalIgnoreCase);
     private Task _serverTask;
     private BrowserHelperStatus _status = new();
     private bool _disposed;
@@ -41,6 +43,7 @@ public sealed class BrowserHelperBridge : IDisposable
                     Connected = false,
                     CommandChannelReady = false,
                     ActiveTabFresh = false,
+                    MultipleHelpersDetected = _status.MultipleHelpersDetected,
                     ExpectedVersion = _status.ExpectedVersion,
                     ServiceWorkerVersion = _status.ServiceWorkerVersion,
                     ContentScriptVersion = _status.ContentScriptVersion,
@@ -301,8 +304,9 @@ public sealed class BrowserHelperBridge : IDisposable
         var root = document.RootElement;
         var type = String(root, "type");
 
-        if (type is "hello" or "heartbeat" or "poll")
-            UpdateStatus(root);
+        var helperMayExecute = true;
+        if (type is "hello" or "heartbeat" or "poll" or "command_result")
+            helperMayExecute = UpdateStatus(root);
 
         if (type == "command_result")
         {
@@ -317,7 +321,7 @@ public sealed class BrowserHelperBridge : IDisposable
         }
 
         BrowserActionRequest command = null;
-        if (type == "poll")
+        if (type == "poll" && helperMayExecute)
             _commands.TryDequeue(out command);
 
         return JsonSerializer.Serialize(new
@@ -328,7 +332,7 @@ public sealed class BrowserHelperBridge : IDisposable
         }, JsonOptions);
     }
 
-    private void UpdateStatus(JsonElement root)
+    private bool UpdateStatus(JsonElement root)
     {
         var helper = root.TryGetProperty("helper", out var helperElement)
             ? helperElement
@@ -336,8 +340,10 @@ public sealed class BrowserHelperBridge : IDisposable
         var now = DateTime.UtcNow;
         var serviceWorkerVersion = String(helper, "serviceWorkerVersion");
         var contentScriptVersion = String(helper, "contentScriptVersion");
+        var extensionId = String(helper, "extensionId");
         var activeUrl = String(helper, "activeUrl");
         var heartbeatFresh = Bool(helper, "activeTabFresh");
+        var extensionIdAllowed = BrowserHelperProtocol.IsAllowedExtensionId(extensionId);
         var versionsMatch = string.Equals(
                 serviceWorkerVersion,
                 BrowserHelperProtocol.Version,
@@ -350,43 +356,88 @@ public sealed class BrowserHelperBridge : IDisposable
             String(helper, "lastError"),
             240);
 
-        var next = new BrowserHelperStatus
-        {
-            NativeHostRegistered = true,
-            Connected = true,
-            CommandChannelReady = versionsMatch && heartbeatFresh && Bool(helper, "commandChannelReady"),
-            ActiveTabFresh = heartbeatFresh,
-            ExpectedVersion = BrowserHelperProtocol.Version,
-            ServiceWorkerVersion = serviceWorkerVersion,
-            ContentScriptVersion = contentScriptVersion,
-            ExtensionId = String(helper, "extensionId"),
-            SessionId = String(helper, "sessionId"),
-            WindowId = NullableInt(helper, "windowId"),
-            TabId = NullableInt(helper, "tabId"),
-            ActiveUrl = IsSafePageUrl(activeUrl) ? activeUrl : "",
-            ActiveTitle = BrowserAutomationText.Truncate(String(helper, "activeTitle"), 160),
-            GraphVersion = Long(helper, "graphVersion"),
-            DomEpoch = String(helper, "domEpoch"),
-            ControlCount = Int(helper, "controlCount"),
-            LastHeartbeatUtc = now,
-            LastError = ResolveStatusError(
-                serviceWorkerVersion,
-                contentScriptVersion,
-                activeUrl,
-                helperError),
-        };
-
+        BrowserHelperStatus next;
+        bool multipleHelpersDetected;
         lock (_statusLock)
+        {
+            if (extensionIdAllowed)
+                _helperHeartbeats[extensionId] = now;
+            foreach (var stale in _helperHeartbeats
+                .Where(pair => now - pair.Value > TimeSpan.FromSeconds(4))
+                .Select(pair => pair.Key)
+                .ToArray())
+            {
+                _helperHeartbeats.Remove(stale);
+            }
+            multipleHelpersDetected = HasMultipleFreshExtensionIds(
+                _helperHeartbeats,
+                now);
+
+            var statusError = multipleHelpersDetected
+                ? "Both the Chrome Web Store Helper and unpacked fallback are enabled. Disable the unpacked fallback before browser automation."
+                : ResolveStatusError(
+                    serviceWorkerVersion,
+                    contentScriptVersion,
+                    activeUrl,
+                    helperError,
+                    extensionId);
+            next = new BrowserHelperStatus
+            {
+                NativeHostRegistered = true,
+                Connected = true,
+                CommandChannelReady = extensionIdAllowed
+                    && !multipleHelpersDetected
+                    && versionsMatch
+                    && heartbeatFresh
+                    && Bool(helper, "commandChannelReady"),
+                ActiveTabFresh = heartbeatFresh,
+                MultipleHelpersDetected = multipleHelpersDetected,
+                ExpectedVersion = BrowserHelperProtocol.Version,
+                ServiceWorkerVersion = serviceWorkerVersion,
+                ContentScriptVersion = contentScriptVersion,
+                ExtensionId = extensionId,
+                SessionId = String(helper, "sessionId"),
+                WindowId = NullableInt(helper, "windowId"),
+                TabId = NullableInt(helper, "tabId"),
+                ActiveUrl = IsSafePageUrl(activeUrl) ? activeUrl : "",
+                ActiveTitle = BrowserAutomationText.Truncate(String(helper, "activeTitle"), 160),
+                GraphVersion = Long(helper, "graphVersion"),
+                DomEpoch = String(helper, "domEpoch"),
+                ControlCount = Int(helper, "controlCount"),
+                LastHeartbeatUtc = now,
+                LastError = statusError,
+            };
             _status = next;
+        }
         StatusChanged?.Invoke(next);
+        return extensionIdAllowed && !multipleHelpersDetected;
     }
+
+    internal static bool HasMultipleFreshExtensionIds(
+        IReadOnlyDictionary<string, DateTime> heartbeats,
+        DateTime nowUtc) =>
+        heartbeats
+            .Where(pair =>
+                BrowserHelperProtocol.IsAllowedExtensionId(pair.Key)
+                && nowUtc - pair.Value <= TimeSpan.FromSeconds(4))
+            .Select(pair => pair.Key)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(2)
+            .Count() > 1;
 
     internal static string ResolveStatusError(
         string serviceWorkerVersion,
         string contentScriptVersion,
         string activeUrl,
-        string helperError)
+        string helperError,
+        string extensionId = "")
     {
+        if (!string.IsNullOrWhiteSpace(extensionId)
+            && !BrowserHelperProtocol.IsAllowedExtensionId(extensionId))
+        {
+            return "This Chrome Helper identity is not authorized for keyboard.wtf.";
+        }
+
         if (!string.Equals(
                 serviceWorkerVersion,
                 BrowserHelperProtocol.Version,

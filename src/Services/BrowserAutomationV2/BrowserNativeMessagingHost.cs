@@ -15,9 +15,8 @@ internal static class BrowserNativeMessagingHost
 
         return args.Any(arg =>
             string.Equals(arg, "--browser-native-host", StringComparison.OrdinalIgnoreCase)
-            || arg.StartsWith(
-                $"chrome-extension://{BrowserHelperProtocol.ExtensionId}/",
-                StringComparison.OrdinalIgnoreCase));
+            || BrowserHelperProtocol.AllowedExtensionOrigins.Any(origin =>
+                arg.StartsWith(origin, StringComparison.OrdinalIgnoreCase)));
     }
 
     public static int Run()

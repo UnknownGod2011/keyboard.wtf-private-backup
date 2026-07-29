@@ -1,4 +1,4 @@
-const VERSION = "2.1.18";
+const VERSION = "2.1.21";
 const HOST = "wtf.keyboard.browser";
 const BRIDGE_ALARM = "keyboard-wtf-native-bridge";
 const NATIVE_RESPONSE_TIMEOUT_MS = 5000;
@@ -39,9 +39,22 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.tabs.onActivated.addListener(() => wakeBridge());
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== "helper_content_heartbeat") return false;
-  wakeBridge();
-  sendResponse({ ok: true, version: VERSION });
+  if (message?.type === "helper_content_heartbeat") {
+    wakeBridge();
+    sendResponse({ ok: true, version: VERSION });
+    return false;
+  }
+  if (message?.type === "helper_popup_status") {
+    sendResponse({
+      ok: true,
+      version: VERSION,
+      connected: Boolean(nativePort),
+      activeTasks: taskTabs.size,
+      lastError
+    });
+    wakeBridge();
+    return false;
+  }
   return false;
 });
 

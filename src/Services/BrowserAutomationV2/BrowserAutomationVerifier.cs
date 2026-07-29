@@ -1,5 +1,6 @@
 namespace KeyboardWtf.Services.BrowserAutomationV2;
 
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -136,24 +137,55 @@ public sealed class BrowserAutomationVerifier
                 : Failed("The intended product and changed cart state could not both be verified.");
         }
 
-        if (Regex.IsMatch(text, @"\b(fill|answer)\b.*\b(form|fields|quiz)\b"))
+        var requestedMutationSteps = CountRequestedMutationSteps(text);
+        var destinationEditorTransfer = Regex.IsMatch(
+                text,
+                @"\b(paste|insert|type|write|place|put)\b")
+            && Regex.IsMatch(
+                text,
+                @"\b(google docs|document|docs|doc|editor|textbox|text area)\b");
+        var formLikeMutation = !destinationEditorTransfer
+            && (Regex.IsMatch(
+                text,
+                @"\b(fill|answer)\b.*\b(form|fields|quiz)\b")
+                || (requestedMutationSteps > 1
+                && Regex.IsMatch(
+                    text,
+                    @"\b(fill|type|paste|set|choose|select|check|uncheck)\b")
+                    && receipts.Any(IsFormControlReceipt)));
+        if (formLikeMutation)
         {
-            var typed = receipts.Where(receipt => receipt.Action is "type" or "paste").ToArray();
-            var selected = receipts.Where(receipt =>
-                (receipt.Action is "click" or "select_option" or "check")
-                && receipt.Ok
-                && (receipt.SelectedChanged || receipt.CheckedChanged)).ToArray();
-            return typed.Length + selected.Length > 0
-                && typed.All(receipt => receipt.ValueMatches)
-                ? Passed($"Verified {typed.Length} filled fields and {selected.Length} selections; Submit was not used.")
-                : Failed("No verified form field changes were recorded.");
+            var expectedStates = receipts
+                .Where(HasExpectedFormState)
+                .GroupBy(
+                    receipt => string.Join(
+                        "|",
+                        receipt.TargetId,
+                        receipt.TargetRole,
+                        receipt.TargetName),
+                    StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.Last())
+                .ToArray();
+            var satisfied = expectedStates.Count(receipt =>
+                FinalPageStillSatisfies(page, receipt));
+            var required = Math.Max(1, requestedMutationSteps);
+            if (expectedStates.Length < required)
+            {
+                return Failed(
+                    $"Only {expectedStates.Length} of {required} requested form states have grounded action evidence.");
+            }
+
+            return satisfied >= required
+                ? Passed(
+                    $"The final live page still contains {satisfied} verified form states; Submit was not used.")
+                : Failed(
+                    $"Only {satisfied} of {required} requested form states remain present in the final live page.");
         }
 
         // A source result is not the requested outcome when the user also asked
         // to place it in an editor. Require the destination write to be verified
         // before the generic read/summary branch can declare success.
-        if (Regex.IsMatch(text, @"\b(paste|insert|type|write|place|put)\b")
-            && Regex.IsMatch(text, @"\b(google docs|document|docs|doc|editor|textbox|text area)\b"))
+        if (destinationEditorTransfer)
         {
             var paste = receipts.LastOrDefault(receipt =>
                 receipt.Ok
@@ -173,6 +205,25 @@ public sealed class BrowserAutomationVerifier
                     : Failed("A grounded page summary was not produced.");
         }
 
+        if (requestedMutationSteps > 1)
+        {
+            var verifiedMutations = receipts
+                .Where(IsVerifiedMutationReceipt)
+                .Select(receipt => string.Join(
+                    "|",
+                    receipt.Action,
+                    receipt.TargetId,
+                    receipt.TargetRole,
+                    receipt.TargetName))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count();
+            if (verifiedMutations < requestedMutationSteps)
+            {
+                return Failed(
+                    $"Only {verifiedMutations} of {requestedMutationSteps} explicitly requested browser action steps have distinct verified evidence.");
+            }
+        }
+
         var lastChange = receipts.LastOrDefault(receipt => receipt.Ok && !receipt.NoVisibleChange);
         if (lastChange != null)
         {
@@ -190,6 +241,149 @@ public sealed class BrowserAutomationVerifier
         }
 
         return Failed("No current-task evidence proves the requested outcome.");
+    }
+
+    internal static int CountRequestedMutationSteps(string request)
+    {
+        var text = IntentText(request);
+        return Regex.Matches(
+            text,
+            @"\b(?:click|press|choose|select|check|uncheck|fill|type|paste|set|close|dismiss|replace|search|navigate|open)\b",
+            RegexOptions.IgnoreCase).Count;
+    }
+
+    private static bool IsVerifiedMutationReceipt(BrowserActionReceipt receipt) =>
+        receipt?.Ok == true
+        && receipt.Action is not ("focus" or "scroll")
+        && (receipt.Navigation
+            || receipt.ValueMatches
+            || receipt.SelectedChanged
+            || receipt.CheckedChanged
+            || !receipt.NoVisibleChange);
+
+    private static bool IsFormControlReceipt(BrowserActionReceipt receipt) =>
+        receipt?.Ok == true
+        && receipt.TargetRole is "textbox" or "searchbox" or "combobox"
+            or "listbox" or "option" or "checkbox" or "radio";
+
+    private static bool HasExpectedFormState(BrowserActionReceipt receipt)
+    {
+        if (!IsFormControlReceipt(receipt))
+            return false;
+        if (receipt.Action is "type" or "paste" or "select_option")
+        {
+            return receipt.ValueMatches
+                && !string.IsNullOrWhiteSpace(receipt.ExpectedValue);
+        }
+        if (receipt.Action is "check" or "uncheck")
+            return receipt.CheckedChanged;
+        return (receipt.SelectedChanged || receipt.CheckedChanged)
+            && !string.IsNullOrWhiteSpace(
+                string.IsNullOrWhiteSpace(receipt.ExpectedValue)
+                    ? receipt.TargetName
+                    : receipt.ExpectedValue);
+    }
+
+    private static bool FinalPageStillSatisfies(
+        BrowserPageSnapshot page,
+        BrowserActionReceipt receipt)
+    {
+        var controls = page?.Controls ?? Array.Empty<BrowserControl>();
+        var live = controls.FirstOrDefault(control =>
+                !string.IsNullOrWhiteSpace(receipt.TargetId)
+                && string.Equals(
+                    control.Id,
+                    receipt.TargetId,
+                    StringComparison.Ordinal))
+            ?? controls.FirstOrDefault(control =>
+                string.Equals(
+                    control.Role,
+                    receipt.TargetRole,
+                    StringComparison.OrdinalIgnoreCase)
+                && ControlIdentity(control).Contains(
+                    Normalize(receipt.TargetName),
+                    StringComparison.Ordinal));
+
+        if (receipt.Action is "check" or "uncheck")
+        {
+            return live != null
+                && live.Checked == receipt.Action.Equals(
+                    "check",
+                    StringComparison.OrdinalIgnoreCase);
+        }
+
+        var expected = string.IsNullOrWhiteSpace(receipt.ExpectedValue)
+            ? receipt.TargetName
+            : receipt.ExpectedValue;
+        if (string.IsNullOrWhiteSpace(expected))
+            return false;
+
+        if (receipt.Action is "type" or "paste")
+        {
+            return live != null
+                && EquivalentInputValue(live.Value, expected);
+        }
+
+        if (live != null
+            && (EquivalentInputValue(live.Value, expected)
+                || ((live.Selected || live.Checked)
+                    && ControlIdentity(live).Contains(
+                        Normalize(expected),
+                        StringComparison.Ordinal))))
+        {
+            return true;
+        }
+
+        // A custom option may disappear from the graph after the popup closes.
+        // Verify it from the live selected option or the owning combobox value.
+        return controls.Any(control =>
+            (control.Selected
+                || control.Checked
+                || control.Role.Equals(
+                    "combobox",
+                    StringComparison.OrdinalIgnoreCase))
+            && (EquivalentInputValue(control.Value, expected)
+                || ControlIdentity(control).Contains(
+                    Normalize(expected),
+                    StringComparison.Ordinal)));
+    }
+
+    private static string ControlIdentity(BrowserControl control) =>
+        Normalize(string.Join(
+            " ",
+            control?.Text,
+            control?.AccessibleName,
+            control?.AriaLabel,
+            control?.NearbyLabel));
+
+    private static string Normalize(string value) =>
+        Regex.Replace(
+            (value ?? "").Trim().ToLowerInvariant(),
+            @"\s+",
+            " ");
+
+    private static bool EquivalentInputValue(
+        string observed,
+        string expected)
+    {
+        var actual = Normalize(observed);
+        var wanted = Normalize(expected);
+        if (wanted.Length == 0)
+            return true;
+        if (actual.Equals(wanted, StringComparison.Ordinal))
+            return true;
+
+        return DateTime.TryParse(
+                observed,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces,
+                out var actualDate)
+            && DateTime.TryParse(
+                expected,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces,
+                out var wantedDate)
+            && actualDate.Date == wantedDate.Date;
     }
 
     internal static bool IsLikelyNavigationRegression(string beforeUrl, string afterUrl)

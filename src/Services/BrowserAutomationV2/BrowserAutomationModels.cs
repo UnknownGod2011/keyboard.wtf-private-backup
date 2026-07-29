@@ -75,6 +75,7 @@ public sealed class BrowserHelperStatus
     public bool Connected { get; init; }
     public bool CommandChannelReady { get; init; }
     public bool ActiveTabFresh { get; init; }
+    public bool MultipleHelpersDetected { get; init; }
     public string ExpectedVersion { get; init; } = BrowserHelperProtocol.Version;
     public string ServiceWorkerVersion { get; init; } = "";
     public string ContentScriptVersion { get; init; } = "";
@@ -247,6 +248,11 @@ public sealed class BrowserActionReceipt
     public string TargetId { get; set; } = "";
     public string TargetRole { get; set; } = "";
     public string TargetName { get; set; } = "";
+    // Task-scoped verification metadata supplied by the coordinator. The
+    // extension proves the immediate mutation; this value lets terminal
+    // verification confirm that the requested state still exists after later
+    // form actions or rerenders.
+    public string ExpectedValue { get; set; } = "";
     public string BeforeUrl { get; set; } = "";
     public string AfterUrl { get; set; } = "";
     public string BeforeFingerprint { get; set; } = "";
@@ -266,8 +272,26 @@ public sealed class BrowserActionReceipt
 
 internal static class BrowserHelperProtocol
 {
-    public const string Version = "2.1.18";
-    public const string ExtensionId = "gfndpohemndahmmeealkdobepjacblnf";
+    public const string Version = "2.1.21";
+    public const string StoreExtensionId = "gojdebdikepkpapmnggeljneamjdigbh";
+    public const string DevelopmentExtensionId = "gfndpohemndahmmeealkdobepjacblnf";
+    public const string ExtensionId = StoreExtensionId;
     public const string NativeHostName = "wtf.keyboard.browser";
     public const string PipeName = "keyboard.wtf.browser.v2";
+
+    public static IReadOnlyList<string> AllowedExtensionIds { get; } =
+        new[] { StoreExtensionId, DevelopmentExtensionId };
+
+    public static IReadOnlyList<string> AllowedExtensionOrigins { get; } =
+        AllowedExtensionIds
+            .Select(id => $"chrome-extension://{id}/")
+            .ToArray();
+
+    public static bool IsAllowedExtensionId(string extensionId) =>
+        !string.IsNullOrWhiteSpace(extensionId)
+        && AllowedExtensionIds.Contains(extensionId, StringComparer.OrdinalIgnoreCase);
+
+    public static bool IsAllowedExtensionOrigin(string origin) =>
+        !string.IsNullOrWhiteSpace(origin)
+        && AllowedExtensionOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase);
 }

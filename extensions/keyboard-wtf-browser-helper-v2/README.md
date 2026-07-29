@@ -16,7 +16,15 @@ It exposes compact semantic controls, stable Chrome tab/window IDs, exact target
 rectangles, on-demand screenshots, action receipts, a small controlled-tab badge,
 and temporary orange target highlights.
 
-## Development installation
+## Chrome Web Store installation
+
+Install the production helper from:
+
+`https://chromewebstore.google.com/detail/gojdebdikepkpapmnggeljneamjdigbh`
+
+The permanent Store identity is `gojdebdikepkpapmnggeljneamjdigbh`.
+
+## Development fallback
 
 1. Open `chrome://extensions`.
 2. Enable Developer mode.
@@ -26,4 +34,5 @@ and temporary orange target highlights.
    per-user native messaging host.
 
 Chrome verifies the fixed extension identity
-`gfndpohemndahmmeealkdobepjacblnf` before starting the native host.
+`gfndpohemndahmmeealkdobepjacblnf` before starting the native host. This
+unpacked fallback does not receive automatic Chrome Web Store updates.

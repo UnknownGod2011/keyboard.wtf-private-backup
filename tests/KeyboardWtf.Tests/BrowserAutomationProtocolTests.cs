@@ -61,6 +61,23 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Restricted_inputs_never_expose_values_or_accept_automation()
+    {
+        var root = FindRepositoryRoot();
+        var script = File.ReadAllText(Path.Combine(
+            root,
+            "extensions",
+            "keyboard-wtf-browser-helper-v2",
+            "content-script.js"));
+
+        Assert.Contains("function isRestrictedInput(element)", script);
+        Assert.Contains("\"password\", \"file\"", script);
+        Assert.Contains("Passwords and file uploads require direct user action.", script);
+        Assert.Contains("if (isRestrictedInput(element)) return \"\";", script);
+        Assert.Contains("input:not([type='password']):not([type='file'])", script);
+    }
+
+    [Fact]
     public void Optional_receipt_capture_cannot_block_the_live_action()
     {
         var root = FindRepositoryRoot();
@@ -459,12 +476,92 @@ public sealed class BrowserAutomationProtocolTests
             Assert.Equal(
                 BrowserHelperProtocol.Version,
                 manifest.RootElement.GetProperty("version").GetString());
+            Assert.True(File.Exists(Path.Combine(destination, "popup.html")));
+            Assert.True(File.Exists(Path.Combine(destination, "popup.css")));
+            Assert.True(File.Exists(Path.Combine(destination, "popup.js")));
+            Assert.True(File.Exists(Path.Combine(destination, "icons", "icon-128.png")));
         }
         finally
         {
             if (Directory.Exists(destination))
                 Directory.Delete(destination, recursive: true);
         }
+    }
+
+    [Fact]
+    public void Native_helper_accepts_the_store_and_development_id_only()
+    {
+        Assert.Equal(
+            "gojdebdikepkpapmnggeljneamjdigbh",
+            BrowserHelperProtocol.StoreExtensionId);
+        Assert.Equal(
+            "gfndpohemndahmmeealkdobepjacblnf",
+            BrowserHelperProtocol.DevelopmentExtensionId);
+        Assert.True(BrowserHelperProtocol.IsAllowedExtensionId(
+            BrowserHelperProtocol.StoreExtensionId));
+        Assert.True(BrowserHelperProtocol.IsAllowedExtensionId(
+            BrowserHelperProtocol.DevelopmentExtensionId));
+        Assert.False(BrowserHelperProtocol.IsAllowedExtensionId(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+
+        Assert.True(BrowserNativeMessagingHost.IsNativeHostInvocation(new[]
+        {
+            $"chrome-extension://{BrowserHelperProtocol.StoreExtensionId}/",
+        }));
+        Assert.True(BrowserNativeMessagingHost.IsNativeHostInvocation(new[]
+        {
+            $"chrome-extension://{BrowserHelperProtocol.DevelopmentExtensionId}/",
+        }));
+        Assert.False(BrowserNativeMessagingHost.IsNativeHostInvocation(new[]
+        {
+            "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+        }));
+    }
+
+    [Fact]
+    public void Store_and_development_origins_are_both_registered()
+    {
+        Assert.Equal(new[]
+        {
+            $"chrome-extension://{BrowserHelperProtocol.StoreExtensionId}/",
+            $"chrome-extension://{BrowserHelperProtocol.DevelopmentExtensionId}/",
+        }, BrowserHelperProtocol.AllowedExtensionOrigins);
+        Assert.True(BrowserNativeHostInstaller.HasExactAllowedOrigins(
+            BrowserHelperProtocol.AllowedExtensionOrigins));
+        Assert.False(BrowserNativeHostInstaller.HasExactAllowedOrigins(
+            BrowserHelperProtocol.AllowedExtensionOrigins.Append(
+                "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/")));
+    }
+
+    [Fact]
+    public void Two_fresh_helper_identities_fail_closed()
+    {
+        var now = DateTime.UtcNow;
+        var both = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase)
+        {
+            [BrowserHelperProtocol.StoreExtensionId] = now,
+            [BrowserHelperProtocol.DevelopmentExtensionId] = now,
+        };
+
+        Assert.True(BrowserHelperBridge.HasMultipleFreshExtensionIds(both, now));
+        both[BrowserHelperProtocol.DevelopmentExtensionId] = now.AddSeconds(-5);
+        Assert.False(BrowserHelperBridge.HasMultipleFreshExtensionIds(both, now));
+    }
+
+    [Fact]
+    public void Provider_url_keeps_navigation_context_but_redacts_credentials()
+    {
+        var url =
+            "https://example.test/search?q=keyboard&access_token=secret&api_key=private#session=hidden";
+        var redacted = BrowserAutomationText.RedactUrlForProvider(url);
+
+        Assert.Contains("q=keyboard", redacted);
+        Assert.Contains("access_token=%5Bredacted%5D", redacted);
+        Assert.Contains("api_key=%5Bredacted%5D", redacted);
+        Assert.Contains("session=%5Bredacted%5D", redacted);
+        Assert.DoesNotContain("secret", redacted);
+        Assert.DoesNotContain("private", redacted);
+        Assert.DoesNotContain("hidden", redacted);
     }
 
     [Fact]
@@ -541,6 +638,45 @@ public sealed class BrowserAutomationProtocolTests
         BrowserAutomationPlanner.ValidateDecision(decision);
 
         Assert.True(decision.Done);
+    }
+
+    [Theory]
+    [InlineData("Click Oldest on this page.", true)]
+    [InlineData("Please press the Refresh results icon.", true)]
+    [InlineData("Choose Smart.", true)]
+    [InlineData("Click Oldest and open the first video.", false)]
+    [InlineData("Open Amazon and add a product.", false)]
+    [InlineData("Fill this form.", false)]
+    public void Only_one_explicit_control_action_can_stop_from_local_evidence(
+        string request,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            BrowserAutomationCoordinator.IsExplicitSingleControlActionRequest(request));
+    }
+
+    [Fact]
+    public void Unrequested_final_action_is_replanned_instead_of_becoming_user_guidance()
+    {
+        var decision = new BrowserAutomationSafetyDecision
+        {
+            MayStart = false,
+            PauseBeforeSensitiveStep = true,
+            Reason =
+                "Pressing Enter here could submit or send. The user did not explicitly request the final action.",
+        };
+
+        Assert.True(
+            BrowserAutomationCoordinator.IsUnrequestedFinalActionRejection(decision));
+        Assert.False(
+            BrowserAutomationCoordinator.IsUnrequestedFinalActionRejection(
+                new BrowserAutomationSafetyDecision
+                {
+                    MayStart = false,
+                    PauseBeforeSensitiveStep = true,
+                    Reason = "This password step requires the user.",
+                }));
     }
 
     [Fact]
@@ -694,6 +830,99 @@ public sealed class BrowserAutomationProtocolTests
         Assert.Equal(
             "rock",
             BrowserAutomationCoordinator.FindCustomOptionControl(page, action)?.Id);
+    }
+
+    [Theory]
+    [InlineData("combobox", false, true)]
+    [InlineData("listbox", false, true)]
+    [InlineData("textbox", true, false)]
+    [InlineData("combobox", true, false)]
+    public void Text_for_a_noneditable_choice_uses_option_selection(
+        string role,
+        bool editable,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            BrowserAutomationCoordinator.ShouldNormalizeChoiceTyping(
+                new BrowserPlannerAction
+                {
+                    Type = "type",
+                    Text = "Speech recognition",
+                },
+                new BrowserControl
+                {
+                    Role = role,
+                    Editable = editable,
+                }));
+    }
+
+    [Theory]
+    [InlineData("July 29 2026", "2026-07-29")]
+    [InlineData("July 29 2026.", "2026-07-29")]
+    [InlineData("July 29th, 2026", "2026-07-29")]
+    [InlineData("July 29, 2026", "2026-07-29")]
+    [InlineData("29 Jul 2026", "2026-07-29")]
+    [InlineData("2026-07-29", "2026-07-29")]
+    public void Natural_date_text_is_normalized_for_native_date_controls(
+        string text,
+        string expected)
+    {
+        Assert.True(
+            BrowserAutomationCoordinator.TryNormalizeNativeDateTyping(
+                new BrowserPlannerAction
+                {
+                    Type = "type",
+                    Text = text,
+                },
+                new BrowserControl
+                {
+                    InputType = "date",
+                    Editable = true,
+                },
+                out var normalized));
+        Assert.Equal(expected, normalized);
+    }
+
+    [Fact]
+    public void Native_date_paste_is_normalized_before_clipboard_execution()
+    {
+        Assert.True(
+            BrowserAutomationCoordinator.TryNormalizeNativeDateTyping(
+                new BrowserPlannerAction
+                {
+                    Type = "paste",
+                    Text = "July 29 2026.",
+                },
+                new BrowserControl
+                {
+                    InputType = "date",
+                    Editable = true,
+                },
+                out var normalized));
+        Assert.Equal("2026-07-29", normalized);
+    }
+
+    [Theory]
+    [InlineData("01/02/2026")]
+    [InlineData("tomorrow")]
+    [InlineData("")]
+    public void Ambiguous_or_relative_date_text_is_not_normalized_for_native_date_controls(
+        string text)
+    {
+        Assert.False(
+            BrowserAutomationCoordinator.TryNormalizeNativeDateTyping(
+                new BrowserPlannerAction
+                {
+                    Type = "type",
+                    Text = text,
+                },
+                new BrowserControl
+                {
+                    InputType = "date",
+                    Editable = true,
+                },
+                out _));
     }
 
     [Fact]
@@ -1043,6 +1272,24 @@ public sealed class BrowserAutomationProtocolTests
             Task.CompletedTask,
             TimeSpan.FromSeconds(1),
             CancellationToken.None));
+    }
+
+    [Fact]
+    public void Lifecycle_event_is_marked_as_local_status_data_not_a_new_command()
+    {
+        var text = GeminiLiveConversationService.BuildLifecycleEventText(
+            new JarvisLifecycleAnnouncement
+            {
+                Source = "browser_automation",
+                State = "Completed",
+                Detail = "The requested watch page was verified.",
+            });
+
+        Assert.StartsWith("[KEYBOARD.WTF_BACKGROUND_LIFECYCLE_EVENT]", text);
+        Assert.Contains("\"source\":\"browser_automation\"", text);
+        Assert.Contains("\"state\":\"Completed\"", text);
+        Assert.Contains("Do not call any tool", text);
+        Assert.Contains("no longer running", text);
     }
 
     [Fact]

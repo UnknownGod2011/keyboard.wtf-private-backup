@@ -17,6 +17,7 @@ public sealed class BrowserAutomationSettingsTests
             settings.Load();
 
             Assert.False(settings.Current.BrowserAutomationEnabled);
+            Assert.False(settings.HasBrowserAutomationConsent);
             Assert.False(settings.Current.BrowserAutomationMemoryEnabled);
             Assert.Equal(
                 "gemini-3.1-flash-lite-preview",
@@ -39,13 +40,44 @@ public sealed class BrowserAutomationSettingsTests
         {
             var first = new SettingsService(path);
             first.Load();
+            first.SaveBrowserAutomationConsent(true);
             first.SaveBrowserAutomationEnabled(true);
             first.SaveBrowserAutomationModel("gemini-3-flash-preview");
 
             var second = new SettingsService(path);
             second.Load();
+            Assert.True(second.HasBrowserAutomationConsent);
             Assert.True(second.Current.BrowserAutomationEnabled);
             Assert.Equal("gemini-3-flash-preview", second.Current.BrowserAutomationModel);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Browser_automation_cannot_be_enabled_before_affirmative_consent()
+    {
+        var path = Path.Combine(
+            Path.GetTempPath(),
+            $"keyboard-wtf-browser-consent-{Guid.NewGuid():N}.json");
+        try
+        {
+            var settings = new SettingsService(path);
+            settings.Load();
+            settings.SaveBrowserAutomationEnabled(true);
+            Assert.False(settings.Current.BrowserAutomationEnabled);
+
+            settings.SaveBrowserAutomationConsent(true);
+            settings.SaveBrowserAutomationEnabled(true);
+            Assert.True(settings.HasBrowserAutomationConsent);
+            Assert.True(settings.Current.BrowserAutomationEnabled);
+
+            settings.SaveBrowserAutomationConsent(false);
+            Assert.False(settings.HasBrowserAutomationConsent);
+            Assert.False(settings.Current.BrowserAutomationEnabled);
         }
         finally
         {
