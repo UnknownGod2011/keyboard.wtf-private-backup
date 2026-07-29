@@ -6,6 +6,7 @@ using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using KeyboardWtf.Helpers;
 
@@ -28,9 +29,6 @@ public sealed class JarvisAutomationService : IDisposable
     private readonly AppResolverService _apps;
     private readonly SmartFileSearchService _files;
     private readonly BrowserLauncherService _browsers;
-    private readonly BrowserAutomationTaskClassifier _browserAutomationClassifier = new();
-    private readonly BrowserAutomationMemoryStore _browserAutomationMemory;
-    private readonly IBrowserAutomationProvider _browserAutomationProvider;
     private readonly GeminiScreenGuidanceService _screenGuidance = new();
     private readonly WebcamCaptureService _webcam = new();
     private readonly Action _openSettings;
@@ -55,8 +53,6 @@ public sealed class JarvisAutomationService : IDisposable
         _apps = new AppResolverService(mappings);
         _files = new SmartFileSearchService(mappings);
         _browsers = new BrowserLauncherService(_apps, settings);
-        _browserAutomationMemory = new BrowserAutomationMemoryStore();
-        _browserAutomationProvider = new BrowserUseAutomationProvider(settings, _browserAutomationMemory);
         _openSettings = openSettings;
     }
 
@@ -91,7 +87,6 @@ public sealed class JarvisAutomationService : IDisposable
                 GetString(args, "query"),
                 GetString(args, "engine") ?? GetString(args, "service"),
                 GetString(args, "browser")),
-            "browser_automation_task" => await BrowserAutomationTaskAsync(args, token),
             "get_desktop_context" => GetDesktopContext(),
             "get_clipboard_text" => GetClipboardText(),
             "get_selected_text" => await GetSelectedTextAsync(token),
@@ -165,9 +160,7 @@ public sealed class JarvisAutomationService : IDisposable
     {
         return JarvisPermissionPolicy.RequiresConfirmation(
             toolName,
-            toolName == "browser_automation_task"
-                ? GetString(args, "allowed_action_level") ?? GetString(args, "action")
-                : GetString(args, "action"),
+            GetString(args, "action"),
             toolName == "open_app" ? GetString(args, "app_name") : "",
             _settings.Current.JarvisPermissionMode,
             _executingApprovedAction);
@@ -215,7 +208,6 @@ public sealed class JarvisAutomationService : IDisposable
         "window_action" => $"{GetString(args, "action")} the requested window",
         "browser_action" => $"{GetString(args, "action")} in the active browser",
         "web_search" => $"Search for {GetString(args, "query")}",
-        "browser_automation_task" => $"Run browser automation: {GetString(args, "task")}",
         "replace_selected_text" => "Replace the selected text",
         "type_text" => "Type text into the active field",
         "press_key" => $"Press {GetString(args, "key")}",
@@ -611,7 +603,30 @@ public sealed class JarvisAutomationService : IDisposable
 
     public static string BrowserShortcutForAction(string action)
     {
-        return NormalizeWords(action) switch
+        var normalized = NormalizeWords(action);
+        var numberedTab = Regex.Match(
+            normalized,
+            @"\b(?:switch|go|change|open)?\s*(?:to\s+)?(?:chrome\s+)?(?:the\s+)?(?<tab>1|2|3|4|5|6|7|8|9|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)(?:st|nd|rd|th)?\s+tab\b",
+            RegexOptions.IgnoreCase);
+        if (numberedTab.Success)
+        {
+            var key = numberedTab.Groups["tab"].Value.ToLowerInvariant() switch
+            {
+                "first" => "1",
+                "second" => "2",
+                "third" => "3",
+                "fourth" => "4",
+                "fifth" => "5",
+                "sixth" => "6",
+                "seventh" => "7",
+                "eighth" => "8",
+                "ninth" => "9",
+                var number => number,
+            };
+            return $"^{key}";
+        }
+
+        return normalized switch
         {
             "new tab" => "^t",
             "close tab" or "close this tab" or "close website" or "close this website" => "^w",
@@ -634,104 +649,6 @@ public sealed class JarvisAutomationService : IDisposable
         if (string.IsNullOrWhiteSpace(query))
             return Result(false, "What should I search for?", needsClarification: true);
         return OpenUrl(BrowserLauncherService.BuildSearchUrl(query, engine), browser);
-    }
-
-    private async Task<Dictionary<string, object>> BrowserAutomationTaskAsync(JsonElement args, CancellationToken token)
-    {
-        var task = GetString(args, "task")
-            ?? GetString(args, "request")
-            ?? GetString(args, "instruction");
-        if (string.IsNullOrWhiteSpace(task))
-            return Result(false, "What browser task should I run?", needsClarification: true);
-
-        var classification = _browserAutomationClassifier.Classify(task);
-        if (!classification.ShouldUseBrowserAutomation)
-        {
-            return Result(
-                false,
-                "That looks like a simple browser command. Use the normal browser/search tools instead of experimental smart browser automation.",
-                supported: false,
-                extras: new()
-                {
-                    ["classifier_reason"] = classification.Reason,
-                    ["browser_automation_called"] = false,
-                });
-        }
-
-        if (BrowserAutomationTaskClassifier.IsProtectedFinalAction(classification.ActionLevel))
-        {
-            return Result(
-                false,
-                "That browser task includes checkout, payment, password, OTP, CAPTCHA, or another protected final action. I will not automate that.",
-                supported: false,
-                extras: new()
-                {
-                    ["task_type"] = classification.TaskType,
-                    ["action_level"] = classification.ActionLevel.ToString(),
-                });
-        }
-
-        var allowedLevel = GetString(args, "allowed_action_level");
-        var actionLevel = ParseActionLevel(allowedLevel, classification.ActionLevel);
-        var model = GetString(args, "model") ?? _settings.Current.BrowserAutomationModel;
-        var maxRuntime = GetInt(args, "max_runtime_seconds");
-        if (maxRuntime <= 0)
-            maxRuntime = _settings.Current.BrowserAutomationMaxRuntimeSeconds;
-
-        var configuredProfile = (_settings.Current.BrowserAutomationProfileMode ?? "adaptive").Trim().ToLowerInvariant();
-        var profile = GetString(args, "profile")
-            ?? (configuredProfile == "adaptive" ? classification.Profile : configuredProfile);
-
-        AppLog.Info(
-            $"Browser automation classification: taskType={classification.TaskType}, targetSite={classification.TargetSite}, actionLevel={actionLevel}, enabled={_settings.Current.ExperimentalSmartBrowserAutomation}, profile={profile}, model={model}");
-
-        var request = new BrowserAutomationRequest
-        {
-            TaskText = task,
-            TaskType = classification.TaskType,
-            TargetSite = GetString(args, "target_site") ?? classification.TargetSite,
-            ActionLevel = actionLevel,
-            Profile = profile,
-            Model = string.IsNullOrWhiteSpace(model) ? "gemini-3.1-flash-lite" : model,
-            MaxRuntimeMs = Math.Clamp(maxRuntime, 30, 300) * 1000,
-            CartMutationPreconfirmed = BrowserAutomationTaskClassifier.IsCartMutation(actionLevel) && _executingApprovedAction,
-            UsePersistentSession = _settings.Current.BrowserAutomationPersistentSession,
-            SuccessCriteria = classification.SuccessCriteria,
-            PatternContext = _settings.Current.BrowserAutomationPatternMemory
-                ? _browserAutomationMemory.BuildPromptContext(classification)
-                : "",
-        };
-
-        var result = await _browserAutomationProvider.ExecuteAsync(request, token);
-        _history.Add(
-            "browser_automation",
-            $"{classification.TaskType}: {Limit(task, 120)}",
-            result.Success);
-
-        var message = result.Success
-            ? string.IsNullOrWhiteSpace(result.Message) ? "Browser automation completed." : result.Message
-            : string.IsNullOrWhiteSpace(result.FailureReason) ? "Browser automation failed." : result.FailureReason;
-
-        return Result(
-            result.Success,
-            message,
-            supported: true,
-            extras: new()
-            {
-                ["browser_automation_called"] = true,
-                ["task_type"] = classification.TaskType,
-                ["target_site"] = request.TargetSite,
-                ["action_level"] = request.ActionLevel.ToString(),
-                ["profile"] = result.Profile ?? request.Profile,
-                ["model"] = result.Model ?? request.Model,
-                ["runtime_ms"] = result.RuntimeMs,
-                ["action_count"] = result.ActionCount,
-                ["final_url"] = result.FinalUrl ?? "",
-                ["screenshot_path"] = result.ScreenshotPath ?? "",
-                ["receipt_summary"] = result.ReceiptSummary ?? "",
-                ["receipt_disagrees_with_summary"] = result.ReceiptDisagreesWithSummary,
-                ["memory_path"] = _browserAutomationMemory.MemoryPath,
-            });
     }
 
     private Dictionary<string, object> GetDesktopContext()
@@ -1853,20 +1770,6 @@ public sealed class JarvisAutomationService : IDisposable
         if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number))
             return number;
         return int.TryParse(value.ToString(), out number) ? number : 0;
-    }
-
-    private static BrowserAutomationActionLevel ParseActionLevel(string value, BrowserAutomationActionLevel fallback)
-    {
-        var normalized = NormalizeWords((value ?? "").Replace("-", " "));
-        return normalized switch
-        {
-            "read only" or "readonly" => BrowserAutomationActionLevel.ReadOnly,
-            "navigation" or "navigate" => BrowserAutomationActionLevel.Navigation,
-            "form fill preview" or "form fill" => BrowserAutomationActionLevel.FormFillPreview,
-            "cart mutation after confirmation" or "cart mutation" or "add to cart" => BrowserAutomationActionLevel.CartMutationAfterConfirmation,
-            "protected final action blocked" or "protected final action" or "checkout" or "payment" => BrowserAutomationActionLevel.ProtectedFinalActionBlocked,
-            _ => fallback,
-        };
     }
 
     private static string NormalizeWords(string text) =>

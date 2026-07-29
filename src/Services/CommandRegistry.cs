@@ -2,10 +2,12 @@ namespace KeyboardWtf.Services;
 
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using KeyboardWtf.Destinations;
 using KeyboardWtf.Helpers;
 using KeyboardWtf.Models;
 using System.Windows.Forms;
+using KeyboardWtf.Services.BrowserAutomationV2;
 
 public sealed class CommandRegistry
 {
@@ -17,8 +19,15 @@ public sealed class CommandRegistry
     private readonly GeminiLiveConversationService _liveConversation;
     private readonly JarvisAutomationService _automation;
     private readonly JarvisActionHistoryService _history;
+    private readonly BrowserAutomationCoordinator _browserAutomation;
     private readonly SmartActionPlanner _actionPlanner = new();
+    private readonly object _browserPreRouteLock = new();
     private CancellationTokenSource _actionCts;
+    private string _browserPreRouteTaskId = "";
+    private DateTime _browserPreRouteUtc;
+    private bool _browserPreRouteOwnsCurrentTurn;
+    private string _latestJarvisUserTurn = "";
+    private DateTime _latestJarvisUserTurnUtc;
 
     public CommandRegistry(
         KeyboardWtfApp app,
@@ -28,7 +37,8 @@ public sealed class CommandRegistry
         NotificationService notifications,
         GeminiLiveConversationService liveConversation = null,
         JarvisAutomationService automation = null,
-        JarvisActionHistoryService history = null)
+        JarvisActionHistoryService history = null,
+        BrowserAutomationCoordinator browserAutomation = null)
     {
         _app = app;
         _capture = capture;
@@ -38,6 +48,7 @@ public sealed class CommandRegistry
         _liveConversation = liveConversation;
         _automation = automation;
         _history = history;
+        _browserAutomation = browserAutomation;
     }
 
     public void TogglePushToTalk() => _ = TogglePushToTalkAsync();
@@ -66,7 +77,56 @@ public sealed class CommandRegistry
     public void QuickSendDefault() => _ = _capture.QuickSendAsync(_settings.Current.DefaultDestination ?? "Clipboard");
     public void OpenSettings() => _app.OpenSettings();
     public object PendingSensitiveAction => _automation?.PendingSnapshot();
-    public void ObserveJarvisTranscript(string text) => _automation?.ObserveUserTranscript(text);
+    public void ObserveJarvisTranscript(string text) =>
+        TryPreRouteJarvisTranscript(text);
+
+    public bool TryPreRouteJarvisTranscript(string text)
+    {
+        _automation?.ObserveUserTranscript(text);
+
+        // A newly observed user turn always gets a fresh tool-ownership decision.
+        // This keeps normal Jarvis conversation available while a background
+        // browser task is running, while still preventing one browser request
+        // from also firing generic active-window keyboard or desktop tools.
+        lock (_browserPreRouteLock)
+        {
+            _browserPreRouteOwnsCurrentTurn = false;
+            _latestJarvisUserTurn = BrowserAutomationText.Truncate(text.Trim(), 4000);
+            _latestJarvisUserTurnUtc = DateTime.UtcNow;
+        }
+
+        if (_browserAutomation == null || string.IsNullOrWhiteSpace(text))
+            return false;
+
+        // A running browser task does not own the whole Jarvis conversation.
+        // In particular, normal Chrome/desktop commands must remain normal
+        // commands rather than being injected into the controlled webpage.
+        var active = _browserAutomation.Snapshot();
+        if (active.CanCancel)
+        {
+            AppLog.Info(
+                $"Browser pre-route skipped while task={active.TaskId}: the live conversation decides normal commands; only explicit browser-task guidance is accepted by the coordinator.");
+            return false;
+        }
+
+        var classification = _browserAutomation.Classify(text);
+        if (classification.Decision != BrowserAutomationDecision.BrowserAutomation)
+            return false;
+
+        var result = _browserAutomation.Start(text);
+        if (string.IsNullOrWhiteSpace(result.TaskId))
+            return false;
+
+        lock (_browserPreRouteLock)
+        {
+            _browserPreRouteTaskId = result.TaskId;
+            _browserPreRouteUtc = DateTime.UtcNow;
+            _browserPreRouteOwnsCurrentTurn = true;
+        }
+        AppLog.Info(
+            $"Browser pre-route: task={result.TaskId} started={result.Started} current={classification.RefersToCurrentPage}");
+        return true;
+    }
 
     private async Task TogglePushToTalkAsync()
     {
@@ -96,6 +156,20 @@ public sealed class CommandRegistry
 
         try
         {
+            if (ShouldBlockCompetingToolForPreRoutedBrowserTurn(toolName))
+            {
+                return ToolResult(
+                    false,
+                    "This user turn is already owned by Browser Automation. No generic active-window or desktop action was sent.");
+            }
+
+            if (toolName == "browser_automation")
+                return StartBrowserAutomation(args);
+            if (toolName == "browser_automation_status")
+                return BrowserAutomationStatus();
+            if (toolName == "browser_automation_control")
+                return await ControlBrowserAutomationAsync(args);
+
             return _automation == null
                 ? ToolResult(false, $"{toolName} is not a supported keyboard.wtf action yet.", supported: false)
                 : await _automation.ExecuteAsync(toolName, args, token);
@@ -111,6 +185,21 @@ public sealed class CommandRegistry
             return ToolResult(false, ex.Message);
         }
     }
+
+    private bool ShouldBlockCompetingToolForPreRoutedBrowserTurn(string toolName)
+    {
+        lock (_browserPreRouteLock)
+        {
+            return _browserPreRouteOwnsCurrentTurn
+                && !IsBrowserTaskLifecycleTool(toolName);
+        }
+    }
+
+    internal static bool IsBrowserTaskLifecycleTool(string toolName) =>
+        (toolName ?? "").Trim() is
+            "browser_automation"
+            or "browser_automation_status"
+            or "browser_automation_control";
 
     public async Task HandleVoiceCommandAsync(string transcript)
     {
@@ -653,9 +742,171 @@ public sealed class CommandRegistry
     {
         _actionCts?.Cancel();
         _capture.Cancel();
+        if (_browserAutomation != null)
+            await _browserAutomation.CancelAsync("Global Ctrl+Alt+X cancellation");
         _automation?.ObserveUserTranscript("cancel");
         if (_liveConversation?.IsActive == true)
             await _liveConversation.StopAsync();
+    }
+
+    private Dictionary<string, object> StartBrowserAutomation(JsonElement args)
+    {
+        if (_browserAutomation == null)
+            return ToolResult(false, "Browser Automation is unavailable.", supported: false);
+
+        var request = ResolveBrowserAutomationTask(
+            GetString(args, "task"),
+            RecentJarvisUserTurn());
+        var recent = RecentPreRoutedBrowserTask();
+        if (recent != null)
+        {
+            return new Dictionary<string, object>
+            {
+                ["ok"] = true,
+                ["started"] = false,
+                ["supported"] = true,
+                ["needs_clarification"] = false,
+                ["task_id"] = recent.TaskId,
+                ["message"] = recent.State is BrowserTaskState.Completed or BrowserTaskState.CompletedWithNote
+                    ? recent.ResultSummary
+                    : "This browser request is already being handled in the existing Chrome session.",
+                ["routing_reason"] = "The local transcript classifier already routed this user turn.",
+                ["lifecycle_note"] = "The local coordinator remains authoritative for current task state.",
+            };
+        }
+
+        var result = _browserAutomation.Start(request);
+        return new Dictionary<string, object>
+        {
+            ["ok"] = result.Started,
+            ["started"] = result.Started,
+            ["supported"] = true,
+            ["needs_clarification"] = result.NeedsClarification,
+            ["task_id"] = result.TaskId,
+            ["message"] = result.Message,
+            ["routing_reason"] = result.RoutingReason,
+            ["lifecycle_note"] = "This response describes only this invocation. For any later browser request, call browser_automation again; do not assume this task is still active.",
+        };
+    }
+
+    private string RecentJarvisUserTurn()
+    {
+        lock (_browserPreRouteLock)
+        {
+            return DateTime.UtcNow - _latestJarvisUserTurnUtc <= TimeSpan.FromSeconds(60)
+                ? _latestJarvisUserTurn
+                : "";
+        }
+    }
+
+    internal static string ResolveBrowserAutomationTask(
+        string modelTask,
+        string latestUserTurn)
+    {
+        var model = BrowserAutomationText.Truncate((modelTask ?? "").Trim(), 4000);
+        var user = BrowserAutomationText.Truncate((latestUserTurn ?? "").Trim(), 4000);
+        if (user.Length == 0)
+            return model;
+
+        // The raw user turn is the authoritative task contract. Gemini may
+        // summarize a tool argument, and generic summaries such as "Browser
+        // automation" lose entities, dates, constraints, and terminal intent.
+        // A short context-only acknowledgement is the exception: in that case
+        // the model must resolve the referenced task from the conversation.
+        if (Regex.IsMatch(
+            user,
+            @"^\s*(?:yes[, ]*)?(?:please\s+)?(?:do (?:it|that)|go ahead|proceed|continue|resume|same as before|try again)\s*[.!?]*\s*$",
+            RegexOptions.IgnoreCase))
+        {
+            return model;
+        }
+
+        return user;
+    }
+
+    private BrowserAutomationSnapshot RecentPreRoutedBrowserTask()
+    {
+        string taskId;
+        DateTime startedUtc;
+        lock (_browserPreRouteLock)
+        {
+            taskId = _browserPreRouteTaskId;
+            startedUtc = _browserPreRouteUtc;
+        }
+
+        if (string.IsNullOrWhiteSpace(taskId)
+            || DateTime.UtcNow - startedUtc > TimeSpan.FromSeconds(8))
+        {
+            return null;
+        }
+
+        var snapshot = _browserAutomation.Snapshot();
+        return string.Equals(snapshot.TaskId, taskId, StringComparison.Ordinal)
+            ? snapshot
+            : null;
+    }
+
+    private Dictionary<string, object> BrowserAutomationStatus()
+    {
+        if (_browserAutomation == null)
+            return ToolResult(false, "Browser Automation is unavailable.", supported: false);
+
+        var status = _browserAutomation.Snapshot();
+        var helper = _browserAutomation.HelperStatus;
+        return new Dictionary<string, object>
+        {
+            ["ok"] = true,
+            ["task_id"] = status.TaskId,
+            ["state"] = status.State.ToString(),
+            ["current_action"] = status.CurrentAction,
+            ["current_domain"] = status.CurrentDomain,
+            ["current_tab_title"] = status.CurrentTabTitle,
+            ["elapsed_seconds"] = status.StartedUtc == default
+                ? 0
+                : Math.Max(0, (int)(DateTime.UtcNow - status.StartedUtc).TotalSeconds),
+            ["can_pause"] = status.CanPause,
+            ["can_resume"] = status.CanResume,
+            ["can_cancel"] = status.CanCancel,
+            ["vision_recovery"] = status.VisionRecovery,
+            ["result"] = status.ResultSummary,
+            ["last_error"] = status.LastError,
+            ["helper_connected"] = helper.CommandChannelReady,
+        };
+    }
+
+    private async Task<Dictionary<string, object>> ControlBrowserAutomationAsync(JsonElement args)
+    {
+        if (_browserAutomation == null)
+            return ToolResult(false, "Browser Automation is unavailable.", supported: false);
+
+        var action = (GetString(args, "action") ?? "").Trim().ToLowerInvariant();
+        var guidance = GetString(args, "guidance");
+        var ok = action switch
+        {
+            "pause" => _browserAutomation.Pause(),
+            "resume" => _browserAutomation.Resume(),
+            "cancel" => await _browserAutomation.CancelAsync(),
+            "guide" => AddGuidance(guidance),
+            _ => false,
+        };
+        return new Dictionary<string, object>
+        {
+            ["ok"] = ok,
+            ["message"] = ok
+                ? $"Browser automation {action} accepted."
+                : "No active browser task accepted that control command.",
+            ["status"] = BrowserAutomationStatus(),
+        };
+    }
+
+    private bool AddGuidance(string guidance)
+    {
+        if (string.IsNullOrWhiteSpace(guidance))
+            return false;
+        var accepted = _browserAutomation.TryAddTaskGuidance(guidance, out var reason);
+        if (!accepted)
+            AppLog.Info($"Browser task guidance rejected: {reason}");
+        return accepted;
     }
 
     private void ResetActionCancellation()
@@ -733,6 +984,9 @@ public sealed class CommandRegistry
         "open_path" => "Opening file or folder",
         "window_action" => "Controlling window",
         "browser_action" => "Controlling browser",
+        "browser_automation" => "Starting browser automation",
+        "browser_automation_status" => "Checking browser automation",
+        "browser_automation_control" => "Controlling browser automation",
         "web_search" => "Searching the web",
         "get_desktop_context" => "Reading desktop context",
         "get_clipboard_text" => "Reading clipboard",

@@ -11,10 +11,15 @@ public sealed class NotificationService
     public void Info(string title, string message) => Show(title, message, ToolTipIcon.Info);
     public void Warning(string title, string message) => Show(title, message, ToolTipIcon.Warning);
     public void Error(string title, string message) => Show(title, message, ToolTipIcon.Error);
+    // Browser results may contain page-derived text. Keep the user-facing notification,
+    // but do not copy that text into the persistent application log.
+    public void InfoTransient(string title, string message) => Show(title, message, ToolTipIcon.Info, writeLog: false);
+    public void WarningTransient(string title, string message) => Show(title, message, ToolTipIcon.Warning, writeLog: false);
 
-    private void Show(string title, string message, ToolTipIcon icon)
+    private void Show(string title, string message, ToolTipIcon icon, bool writeLog = true)
     {
-        AppLog.Info($"{title}: {message}");
+        if (writeLog)
+            AppLog.Info($"{title}: {message}");
         try
         {
             _notifyIcon.BalloonTipTitle = title;

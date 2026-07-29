@@ -4,14 +4,21 @@ using System.Drawing;
 using System.Windows.Forms;
 using KeyboardWtf.Destinations;
 using KeyboardWtf.Services;
+using KeyboardWtf.Services.BrowserAutomationV2;
 
 internal static class Program
 {
     private static FileStream _instanceLock;
 
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
+        if (BrowserNativeMessagingHost.IsNativeHostInvocation(args))
+        {
+            Environment.ExitCode = BrowserNativeMessagingHost.Run();
+            return;
+        }
+
         if (!TryAcquireInstanceLock())
             return;
 

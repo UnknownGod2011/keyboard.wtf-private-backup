@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using KeyboardWtf.Models;
+using KeyboardWtf.Services.BrowserAutomationV2;
 using NAudio.Wave;
 
 public sealed class WebSettingsService : IDisposable
@@ -29,6 +30,8 @@ public sealed class WebSettingsService : IDisposable
     private JarvisActionHistoryService _jarvisHistory;
     private LearnedMappingService _learnedMappings;
     private JarvisAutomationService _jarvisAutomation;
+    private BrowserAutomationCoordinator _browserAutomation;
+    private readonly BrowserNativeHostInstaller _browserNativeHostInstaller = new();
     private string _settingsHtml;
 
     // Live microphone meter state
@@ -63,7 +66,8 @@ public sealed class WebSettingsService : IDisposable
         IntentMemoryService intentMemory,
         JarvisActionHistoryService jarvisHistory,
         LearnedMappingService learnedMappings,
-        JarvisAutomationService jarvisAutomation)
+        JarvisAutomationService jarvisAutomation,
+        BrowserAutomationCoordinator browserAutomation)
     {
         _app = app;
         _settings = settings;
@@ -72,6 +76,7 @@ public sealed class WebSettingsService : IDisposable
         _jarvisHistory = jarvisHistory;
         _learnedMappings = learnedMappings;
         _jarvisAutomation = jarvisAutomation;
+        _browserAutomation = browserAutomation;
         _settingsHtml = LoadSettingsHtml();
     }
 
@@ -157,6 +162,10 @@ public sealed class WebSettingsService : IDisposable
             {
                 await ServeHtml(resp);
             }
+            else if (path == "/browser-automation-fixture" && method == "GET")
+            {
+                await ServeEmbeddedHtml(resp, "web/browser-automation-fixture.html");
+            }
             else if (path == "/api/settings" && method == "GET")
             {
                 await ServeSettings(resp);
@@ -206,6 +215,50 @@ public sealed class WebSettingsService : IDisposable
             {
                 _app?.Commands?.CancelCurrent();
                 await WriteJson(resp, new { ok = true });
+            }
+            else if (path == "/api/jarvis/text-turn" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Settings action header required." });
+                    return;
+                }
+                await SendJarvisTextTurn(req, resp);
+            }
+            else if (path == "/api/browser-automation/status" && method == "GET")
+            {
+                await ServeBrowserAutomationStatus(resp);
+            }
+            else if (path == "/api/browser-helper/connect" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Settings action header required." });
+                    return;
+                }
+                await ConnectBrowserHelper(resp);
+            }
+            else if (path == "/api/browser-helper/test" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Settings action header required." });
+                    return;
+                }
+                await TestBrowserHelper(resp);
+            }
+            else if (path == "/api/browser-automation/control" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Settings action header required." });
+                    return;
+                }
+                await ControlBrowserAutomation(req, resp);
             }
             else if (path == "/api/microphones" && method == "GET")
             {
@@ -264,16 +317,6 @@ public sealed class WebSettingsService : IDisposable
                     return;
                 }
                 await RunScreenGuidanceTest(resp);
-            }
-            else if (path == "/api/browser-automation-test" && method == "POST")
-            {
-                if (!HasSettingsActionHeader(req))
-                {
-                    resp.StatusCode = 403;
-                    await WriteJson(resp, JsonSerializer.Serialize(new { ok = false, error = "Settings action header required." }));
-                    return;
-                }
-                await RunBrowserAutomationTest(resp);
             }
             else if (path == "/api/download-models" && method == "POST")
             {
@@ -348,9 +391,6 @@ public sealed class WebSettingsService : IDisposable
     {
         // TTS info is Windows-only (SAPI/Piper); give null on non-Windows to keep the API shape.
         var ttsBackend = OperatingSystem.IsWindows() ? TtsService.Instance.ActiveBackend.ToString() : "None";
-
-        var browserAutomationAvailability = BrowserUseAutomationProvider.GetAvailability(
-            _settings?.Current.ExperimentalSmartBrowserAutomation == true);
 
         var settings = new
         {
@@ -434,15 +474,8 @@ public sealed class WebSettingsService : IDisposable
             jarvisActionHistory = _jarvisHistory?.Snapshot() ?? Array.Empty<JarvisActionEntry>(),
             pendingSensitiveAction = _app?.Commands?.PendingSensitiveAction,
             preferredBrowser = _settings?.Current.PreferredBrowser ?? "",
-            experimentalSmartBrowserAutomation = _settings?.Current.ExperimentalSmartBrowserAutomation ?? false,
-            browserAutomationModel = _settings?.Current.BrowserAutomationModel ?? "gemini-3.1-flash-lite",
-            browserAutomationProfileMode = _settings?.Current.BrowserAutomationProfileMode ?? "adaptive",
-            browserAutomationMaxRuntimeSeconds = _settings?.Current.BrowserAutomationMaxRuntimeSeconds ?? 180,
-            browserAutomationPatternMemory = _settings?.Current.BrowserAutomationPatternMemory ?? true,
-            browserAutomationPersistentSession = _settings?.Current.BrowserAutomationPersistentSession ?? true,
-            browserAutomationBackend = "browser-use + Gemini",
-            browserAutomationAvailability,
             learnedMappings = _learnedMappings?.Snapshot() ?? Array.Empty<LearnedMappingEntry>(),
+            browserAutomation = BrowserAutomationSettingsSnapshot(),
             featureStatus = new
             {
                 smartAppSearch = "Available",
@@ -460,9 +493,6 @@ public sealed class WebSettingsService : IDisposable
                     ? "Live partial transcript available"
                     : "Final transcript available; Vosk enables live preview",
                 routineMemory = "Saved trigger phrases available",
-                smartBrowserAutomation = browserAutomationAvailability.Ready
-                    ? "Ready: browser-use + Gemini"
-                    : browserAutomationAvailability.Message,
             }
         };
 
@@ -612,18 +642,12 @@ public sealed class WebSettingsService : IDisposable
             _settings?.SaveJarvisPermissionMode(permissionMode);
         if (root.TryGetProperty("preferredBrowser", out var preferredBrowserEl))
             _settings?.SavePreferredBrowser(preferredBrowserEl.GetString() ?? "");
-        if (root.TryGetProperty("experimentalSmartBrowserAutomation", out var smartBrowserEl))
-            _settings?.SaveExperimentalSmartBrowserAutomation(smartBrowserEl.GetBoolean());
+        if (root.TryGetProperty("browserAutomationEnabled", out var browserEnabledEl))
+            _settings?.SaveBrowserAutomationEnabled(browserEnabledEl.GetBoolean());
         if (root.TryGetProperty("browserAutomationModel", out var browserModelEl))
-            _settings?.SaveBrowserAutomationModel(browserModelEl.GetString() ?? "gemini-3.1-flash-lite");
-        if (root.TryGetProperty("browserAutomationProfileMode", out var browserProfileEl))
-            _settings?.SaveBrowserAutomationProfileMode(browserProfileEl.GetString() ?? "adaptive");
-        if (root.TryGetProperty("browserAutomationMaxRuntimeSeconds", out var browserRuntimeEl))
-            _settings?.SaveBrowserAutomationMaxRuntimeSeconds(browserRuntimeEl.GetInt32());
-        if (root.TryGetProperty("browserAutomationPatternMemory", out var browserMemoryEl))
-            _settings?.SaveBrowserAutomationPatternMemory(browserMemoryEl.GetBoolean());
-        if (root.TryGetProperty("browserAutomationPersistentSession", out var browserPersistentEl))
-            _settings?.SaveBrowserAutomationPersistentSession(browserPersistentEl.GetBoolean());
+            _settings?.SaveBrowserAutomationModel(browserModelEl.GetString());
+        if (root.TryGetProperty("browserAutomationMemoryEnabled", out var browserMemoryEl))
+            _settings?.SaveBrowserAutomationMemoryEnabled(browserMemoryEl.GetBoolean());
 
         if (root.TryGetProperty("jarvisWorkflow", out var workflowEl))
         {
@@ -1190,39 +1214,6 @@ public sealed class WebSettingsService : IDisposable
         }
     }
 
-    private async Task RunBrowserAutomationTest(HttpListenerResponse resp)
-    {
-        if (_jarvisAutomation == null)
-        {
-            await WriteJson(resp, JsonSerializer.Serialize(new { ok = false, error = "Jarvis automation service is unavailable." }));
-            return;
-        }
-
-        try
-        {
-            var args = JsonSerializer.SerializeToElement(new
-            {
-                task = "Open YouTube and play the most recent MKBHD video.",
-                allowed_action_level = "navigation",
-                max_runtime_seconds = 120
-            });
-            var result = await _jarvisAutomation.ExecuteAsync(
-                "browser_automation_task",
-                args,
-                _cts?.Token ?? CancellationToken.None);
-            await WriteJson(resp, JsonSerializer.Serialize(result));
-        }
-        catch (OperationCanceledException)
-        {
-            await WriteJson(resp, JsonSerializer.Serialize(new { ok = false, error = "Browser automation test cancelled." }));
-        }
-        catch (Exception ex)
-        {
-            AppLog.Error(ex, "Browser automation settings test failed");
-            await WriteJson(resp, JsonSerializer.Serialize(new { ok = false, error = ex.Message }));
-        }
-    }
-
     private void StopLiveMicInternal()
     {
         lock (_liveMicLock)
@@ -1244,6 +1235,201 @@ public sealed class WebSettingsService : IDisposable
                 _liveMicPeak = 0;
             }
         }
+    }
+
+    private object BrowserAutomationSettingsSnapshot()
+    {
+        var helper = _browserAutomation?.HelperStatus ?? new BrowserHelperStatus();
+        var task = _browserAutomation?.Snapshot() ?? new BrowserAutomationSnapshot();
+        var executable = Environment.ProcessPath ?? _app?.StartupExecutablePath ?? "";
+        return new
+        {
+            enabled = _settings?.Current.BrowserAutomationEnabled ?? false,
+            model = _settings?.Current.BrowserAutomationModel ?? "gemini-3.1-flash-lite-preview",
+            memoryEnabled = _settings?.Current.BrowserAutomationMemoryEnabled ?? false,
+            memoryAvailable = false,
+            helperConnected = helper.Connected,
+            currentTabAutomationAvailable = helper.CommandChannelReady,
+            nativeHostRegistered = !string.IsNullOrWhiteSpace(executable)
+                && _browserNativeHostInstaller.IsRegistered(executable),
+            expectedVersion = BrowserHelperProtocol.Version,
+            serviceWorkerVersion = helper.ServiceWorkerVersion,
+            contentScriptVersion = helper.ContentScriptVersion,
+            extensionId = BrowserHelperProtocol.ExtensionId,
+            bridgeReachable = helper.Connected,
+            activeTabFresh = helper.ActiveTabFresh,
+            activeTabUrl = helper.ActiveUrl,
+            activeTabTitle = helper.ActiveTitle,
+            activeWindowId = helper.WindowId,
+            activeTabId = helper.TabId,
+            graphVersion = helper.GraphVersion,
+            controlCount = helper.ControlCount,
+            lastHeartbeatUtc = helper.LastHeartbeatUtc,
+            lastError = helper.LastError,
+            extensionFolder = _browserNativeHostInstaller.ResolveExtensionSourceDirectory(),
+            task = new
+            {
+                taskId = task.TaskId,
+                request = task.Request,
+                state = task.State.ToString(),
+                currentAction = task.CurrentAction,
+                currentDomain = task.CurrentDomain,
+                currentTabTitle = task.CurrentTabTitle,
+                windowId = task.WindowId,
+                tabId = task.TabId,
+                controlledTabIds = task.ControlledTabIds,
+                startedUtc = task.StartedUtc,
+                updatedUtc = task.UpdatedUtc,
+                canPause = task.CanPause,
+                canResume = task.CanResume,
+                canCancel = task.CanCancel,
+                visionRecovery = task.VisionRecovery,
+                lastError = task.LastError,
+                outcome = task.Outcome?.ToString(),
+                resultSummary = task.ResultSummary,
+            },
+        };
+    }
+
+    private async Task SendJarvisTextTurn(
+        HttpListenerRequest req,
+        HttpListenerResponse resp)
+    {
+        try
+        {
+            using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+            using var document = JsonDocument.Parse(await reader.ReadToEndAsync());
+            var text = GetJsonString(document.RootElement, "text");
+            await (_app?.SendJarvisTextTurnAsync(text)
+                ?? Task.FromException(new InvalidOperationException("Jarvis is unavailable.")));
+            await WriteJson(resp, new
+            {
+                ok = true,
+                accepted = true,
+                message = "The text command was sent through the normal Jarvis Gemini Live route.",
+            });
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning(ex, "Jarvis text turn failed");
+            resp.StatusCode = 400;
+            await WriteJson(resp, new
+            {
+                ok = false,
+                error = ex.Message,
+            });
+        }
+    }
+
+    private async Task ServeBrowserAutomationStatus(HttpListenerResponse resp) =>
+        await WriteJson(resp, BrowserAutomationSettingsSnapshot());
+
+    private static async Task ServeEmbeddedHtml(HttpListenerResponse resp, string resourceName)
+    {
+        var assembly = typeof(WebSettingsService).Assembly;
+        await using var stream = assembly.GetManifestResourceStream(resourceName)
+            ?? throw new FileNotFoundException($"Embedded web resource not found: {resourceName}");
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        var html = await reader.ReadToEndAsync();
+        var buffer = Encoding.UTF8.GetBytes(html);
+        resp.ContentType = "text/html; charset=utf-8";
+        resp.ContentLength64 = buffer.Length;
+        await resp.OutputStream.WriteAsync(buffer);
+        resp.Close();
+    }
+
+    private async Task ConnectBrowserHelper(HttpListenerResponse resp)
+    {
+        try
+        {
+            var executable = Environment.ProcessPath ?? _app?.StartupExecutablePath;
+            if (string.IsNullOrWhiteSpace(executable))
+                throw new InvalidOperationException("The keyboard.wtf executable path is unavailable.");
+            _browserNativeHostInstaller.Register(executable);
+            var extensionFolder = _browserNativeHostInstaller.InstallExtension();
+            if (Directory.Exists(extensionFolder))
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = extensionFolder,
+                    UseShellExecute = true,
+                });
+            }
+
+            await WriteJson(resp, new
+            {
+                ok = true,
+                extensionFolder,
+                extensionId = BrowserHelperProtocol.ExtensionId,
+                expectedVersion = BrowserHelperProtocol.Version,
+                message = "Native messaging is registered. Load or reload the unpacked helper once in Chrome, then return here and use Test current tab.",
+            });
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning(ex, "Chrome Helper registration failed");
+            await WriteJson(resp, new
+            {
+                ok = false,
+                error = ex.Message,
+            });
+        }
+    }
+
+    private async Task TestBrowserHelper(HttpListenerResponse resp)
+    {
+        var helper = _browserAutomation?.HelperStatus ?? new BrowserHelperStatus();
+        await WriteJson(resp, new
+        {
+            ok = helper.CommandChannelReady,
+            connected = helper.Connected,
+            activeTabFresh = helper.ActiveTabFresh,
+            commandChannelReady = helper.CommandChannelReady,
+            activeUrl = helper.ActiveUrl,
+            activeTitle = helper.ActiveTitle,
+            windowId = helper.WindowId,
+            tabId = helper.TabId,
+            graphVersion = helper.GraphVersion,
+            controlCount = helper.ControlCount,
+            serviceWorkerVersion = helper.ServiceWorkerVersion,
+            contentScriptVersion = helper.ContentScriptVersion,
+            expectedVersion = BrowserHelperProtocol.Version,
+            error = helper.CommandChannelReady
+                ? ""
+                : (string.IsNullOrWhiteSpace(helper.LastError)
+                    ? "Existing Chrome Helper not connected."
+                    : helper.LastError),
+        });
+    }
+
+    private async Task ControlBrowserAutomation(
+        HttpListenerRequest req,
+        HttpListenerResponse resp)
+    {
+        using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+        using var document = JsonDocument.Parse(await reader.ReadToEndAsync());
+        var root = document.RootElement;
+        var action = GetJsonString(root, "action").Trim().ToLowerInvariant();
+        var guidance = GetJsonString(root, "guidance");
+        var ok = action switch
+        {
+            "pause" => _browserAutomation?.Pause() == true,
+            "resume" => _browserAutomation?.Resume() == true,
+            "cancel" => _browserAutomation != null
+                && await _browserAutomation.CancelAsync(),
+            "guide" when !string.IsNullOrWhiteSpace(guidance) => AddBrowserGuidance(guidance),
+            _ => false,
+        };
+        await WriteJson(resp, new
+        {
+            ok,
+            task = _browserAutomation?.Snapshot(),
+        });
+    }
+
+    private bool AddBrowserGuidance(string guidance)
+    {
+        return _browserAutomation?.TryAddTaskGuidance(guidance, out _) == true;
     }
 
     private static async Task WriteJson(HttpListenerResponse resp, string json)

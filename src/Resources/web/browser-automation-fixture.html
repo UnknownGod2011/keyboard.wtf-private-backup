@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>keyboard.wtf Browser Automation Fixture</title>
+  <style>
+    :root{color-scheme:dark;font:16px/1.5 system-ui;background:#101014;color:#f7f7f8}
+    body{max-width:920px;margin:32px auto;padding:0 20px}
+    section{border:1px solid #363640;border-radius:14px;padding:18px;margin:18px 0;background:#19191f}
+    button,input,select,textarea,[contenteditable]{font:inherit;margin:6px;padding:9px 12px;border-radius:8px;border:1px solid #555;background:#25252d;color:#fff}
+    button[aria-selected="true"]{background:#f59e0b;color:#151515}
+    label{display:block;margin:8px 0}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    #popup{position:fixed;right:24px;bottom:24px;width:280px;box-shadow:0 8px 32px #0008}
+    .muted{color:#aaa}.result{min-height:24px;color:#fbbf24}
+  </style>
+</head>
+<body>
+  <h1>Safe Browser Automation Fixture</h1>
+  <p id="article">This deterministic local page tests current-tab reading, semantic controls, forms, rerenders, popups, and cancellation without sending data anywhere.</p>
+
+  <section aria-labelledby="search-heading">
+    <h2 id="search-heading">Search fixture</h2>
+    <form id="search-form" role="search">
+      <label for="fixture-search">Search the fixture</label>
+      <input id="fixture-search" name="q" type="search" placeholder="Search fixture">
+      <button type="submit" aria-label="Search fixture">Search</button>
+    </form>
+    <div id="search-result" class="result" aria-live="polite"></div>
+  </section>
+
+  <section aria-labelledby="sort-heading">
+    <h2 id="sort-heading">Named tabs and icon controls</h2>
+    <div class="row" role="tablist" aria-label="Item order">
+      <button role="tab" aria-selected="true">Latest</button>
+      <button role="tab" aria-selected="false">Popular</button>
+      <button role="tab" aria-selected="false">Oldest</button>
+      <button id="refresh-icon" title="Refresh results" aria-label="Refresh results">↻</button>
+    </div>
+    <div id="sort-result" class="result">Latest selected</div>
+  </section>
+
+  <section aria-labelledby="form-heading">
+    <h2 id="form-heading">Practice form (never submitted)</h2>
+    <form id="practice-form">
+      <label for="name">Display name</label>
+      <input id="name" name="name" autocomplete="off">
+      <label for="topic">Topic</label>
+      <select id="topic" name="topic">
+        <option value="">Choose one</option>
+        <option>Browser automation</option>
+        <option>Speech recognition</option>
+      </select>
+      <label id="custom-topic-label">Custom topic</label>
+      <div
+        id="custom-topic"
+        role="combobox"
+        tabindex="0"
+        aria-labelledby="custom-topic-label"
+        aria-controls="custom-topic-options"
+        aria-expanded="false">Choose one</div>
+      <div id="custom-topic-options" role="listbox" aria-labelledby="custom-topic-label" hidden>
+        <button type="button" role="option" aria-selected="false">Browser automation</button>
+        <button type="button" role="option" aria-selected="false">Speech recognition</button>
+      </div>
+      <label><input type="checkbox" name="updates"> Enable harmless fixture updates</label>
+      <fieldset>
+        <legend>Preferred mode</legend>
+        <label><input type="radio" name="mode" value="fast"> Fast</label>
+        <label><input type="radio" name="mode" value="smart"> Smart</label>
+      </fieldset>
+      <label for="date">Practice date</label>
+      <input id="date" name="date" type="date">
+      <label for="editor">Draft editor</label>
+      <div id="editor" role="textbox" aria-label="Draft editor" contenteditable="true"></div>
+      <button type="submit">Submit practice form</button>
+    </form>
+    <div id="form-result" class="result">Not submitted</div>
+  </section>
+
+  <section aria-labelledby="dynamic-heading">
+    <h2 id="dynamic-heading">Dynamic rerender</h2>
+    <button id="rerender">Replace the dynamic control</button>
+    <div id="dynamic-host"><button aria-label="Dynamic action">Dynamic action v1</button></div>
+    <div id="dynamic-result" class="result"></div>
+  </section>
+
+  <section id="popup" role="dialog" aria-modal="true" aria-label="Harmless test popup">
+    <strong>Harmless test popup</strong>
+    <p class="muted">This popup exists only to test modal dismissal.</p>
+    <button id="close-popup" aria-label="Close harmless test popup">Close</button>
+  </section>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    $('search-form').addEventListener('submit', event => {
+      event.preventDefault();
+      $('search-result').textContent = `Searched for: ${$('fixture-search').value}`;
+    });
+    document.querySelector('[role="tablist"]').addEventListener('click', event => {
+      const tab = event.target.closest('[role="tab"]');
+      if (!tab) return;
+      document.querySelectorAll('[role="tab"]').forEach(item => item.setAttribute('aria-selected', String(item === tab)));
+      $('sort-result').textContent = `${tab.textContent.trim()} selected`;
+    });
+    $('refresh-icon').addEventListener('click', () => $('sort-result').textContent = 'Results refreshed');
+    const customTopic = $('custom-topic');
+    const customOptions = $('custom-topic-options');
+    let customTypeAhead = '';
+    const openCustomTopic = () => {
+      customTopic.setAttribute('aria-expanded', 'true');
+      customOptions.hidden = false;
+    };
+    const selectCustomTopic = option => {
+      customOptions.querySelectorAll('[role="option"]').forEach(item =>
+        item.setAttribute('aria-selected', String(item === option)));
+      customTopic.textContent = option.textContent.trim();
+      customTopic.setAttribute('aria-expanded', 'false');
+      customOptions.hidden = true;
+      customTypeAhead = '';
+    };
+    customTopic.addEventListener('click', openCustomTopic);
+    customTopic.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && customTypeAhead) {
+        const match = [...customOptions.querySelectorAll('[role="option"]')]
+          .find(option => option.textContent.trim().toLowerCase().startsWith(customTypeAhead));
+        if (match) selectCustomTopic(match);
+        event.preventDefault();
+        return;
+      }
+      if (event.key === 'Enter' || event.key === ' ' || (event.altKey && event.key === 'ArrowDown')) {
+        event.preventDefault();
+        openCustomTopic();
+        return;
+      }
+      if (event.key.length === 1 && /\S/.test(event.key)) {
+        customTypeAhead += event.key.toLowerCase();
+        openCustomTopic();
+        return;
+      }
+    });
+    customOptions.addEventListener('click', event => {
+      const option = event.target.closest('[role="option"]');
+      if (option) selectCustomTopic(option);
+    });
+    $('practice-form').addEventListener('submit', event => {
+      event.preventDefault();
+      $('form-result').textContent = 'Submit was blocked by the safe fixture';
+    });
+    $('rerender').addEventListener('click', () => {
+      $('dynamic-host').innerHTML = '<button aria-label="Dynamic action">Dynamic action v2</button>';
+      $('dynamic-host').querySelector('button').addEventListener('click', () => $('dynamic-result').textContent = 'Dynamic action completed');
+    });
+    $('dynamic-host').querySelector('button').addEventListener('click', () => $('dynamic-result').textContent = 'Dynamic action completed');
+    $('close-popup').addEventListener('click', () => $('popup').remove());
+  </script>
+</body>
+</html>

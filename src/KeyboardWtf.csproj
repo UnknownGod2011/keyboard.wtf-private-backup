@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Resources\web\settings.html" LogicalName="web/settings.html" />
+    <EmbeddedResource Include="Resources\web\browser-automation-fixture.html" LogicalName="web/browser-automation-fixture.html" />
     <EmbeddedResource Include="Resources\icons\actions\*.svg" LogicalName="icons/actions/%(Filename)%(Extension)" />
     <EmbeddedResource Include="Resources\icons\modes\*.svg" LogicalName="icons/modes/%(Filename)%(Extension)" />
   </ItemGroup>
@@ -33,9 +34,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>tts\voices\%(RecursiveDir)%(Filename)%(Extension)</Link>
     </Content>
-    <Content Include="Services\BrowserAutomation\BrowserUseSidecar\browser_use_runtime.py">
+    <Content Include="..\extensions\keyboard-wtf-browser-helper-v2\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Link>BrowserAutomation\browser_use_runtime.py</Link>
+      <Link>browser-helper\%(RecursiveDir)%(Filename)%(Extension)</Link>
     </Content>
   </ItemGroup>
 

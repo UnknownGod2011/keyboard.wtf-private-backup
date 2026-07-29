@@ -10,12 +10,15 @@ public sealed class GeminiLiveConversationService : IDisposable
 {
     private const string Model = "gemini-3.1-flash-live-preview";
     private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private readonly SemaphoreSlim _textTurnLock = new(1, 1);
+    private readonly object _turnStateLock = new();
     private readonly NotificationService _notifications;
     private readonly SettingsService _settings;
     private readonly IntentMemoryService _memory;
 
     private Func<string, JsonElement, CancellationToken, Task<Dictionary<string, object>>> _toolExecutor;
     private Action<string> _userTranscriptObserver;
+    private Func<Task> _sessionEndingObserver;
     private ClientWebSocket _socket;
     private CancellationTokenSource _sessionCts;
     private WaveInEvent _microphone;
@@ -23,6 +26,7 @@ public sealed class GeminiLiveConversationService : IDisposable
     private BufferedWaveProvider _playbackBuffer;
     private Task _receiveTask;
     private TaskCompletionSource<bool> _setupReady;
+    private TaskCompletionSource<bool> _turnComplete = CompletedTurn();
     private bool _autoEnding;
     private bool _disposed;
 
@@ -43,6 +47,9 @@ public sealed class GeminiLiveConversationService : IDisposable
 
     public void SetUserTranscriptObserver(Action<string> observer) =>
         _userTranscriptObserver = observer;
+
+    public void SetSessionEndingObserver(Func<Task> observer) =>
+        _sessionEndingObserver = observer;
 
     public async Task ToggleAsync()
     {
@@ -68,6 +75,7 @@ public sealed class GeminiLiveConversationService : IDisposable
         _sessionCts = new CancellationTokenSource();
         var token = _sessionCts.Token;
         _setupReady = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        MarkTurnCompleted();
         _autoEnding = false;
 
         try
@@ -139,7 +147,13 @@ public sealed class GeminiLiveConversationService : IDisposable
 
     public async Task StopAsync(bool showDone = true)
     {
+        if (_sessionEndingObserver != null)
+        {
+            try { await _sessionEndingObserver(); }
+            catch (Exception ex) { AppLog.Warning(ex, "Jarvis session-end cleanup failed"); }
+        }
         _sessionCts?.Cancel();
+        MarkTurnCompleted();
         StopMicrophone();
         StopPlayback();
 
@@ -168,21 +182,51 @@ public sealed class GeminiLiveConversationService : IDisposable
         if (string.IsNullOrWhiteSpace(text))
             return;
 
-        await SendJsonAsync(new
+        await _textTurnLock.WaitAsync(token);
+        try
         {
-            clientContent = new
+            Task pending;
+            lock (_turnStateLock)
+                pending = _turnComplete.Task;
+            try
             {
-                turns = new[]
+                await pending.WaitAsync(TimeSpan.FromSeconds(20), token);
+            }
+            catch (TimeoutException)
+            {
+                throw new InvalidOperationException(
+                    "Jarvis is still finishing the previous request. Try again in a moment.");
+            }
+
+            MarkTurnStarted();
+            try
+            {
+                await SendJsonAsync(new
                 {
-                    new
+                    clientContent = new
                     {
-                        role = "user",
-                        parts = new[] { new { text } },
+                        turns = new[]
+                        {
+                            new
+                            {
+                                role = "user",
+                                parts = new[] { new { text } },
+                            },
+                        },
+                        turnComplete = true,
                     },
-                },
-                turnComplete = true,
-            },
-        }, token);
+                }, token);
+            }
+            catch
+            {
+                MarkTurnCompleted();
+                throw;
+            }
+        }
+        finally
+        {
+            _textTurnLock.Release();
+        }
     }
 
     private void StartMicrophone()
@@ -293,6 +337,7 @@ public sealed class GeminiLiveConversationService : IDisposable
                 ? errorMessage.GetString()
                 : error.ToString();
             AppLog.Warning($"Jarvis server error: {message}");
+            MarkTurnCompleted();
             _setupReady?.TrySetException(new InvalidOperationException(message));
             return;
         }
@@ -328,6 +373,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             && !string.IsNullOrWhiteSpace(inputText.GetString()))
         {
             var text = inputText.GetString();
+            MarkTurnStarted();
             KeyboardWtfState.SetUi(VoiceUiPhase.Listening, "You", text);
             _userTranscriptObserver?.Invoke(text);
             if (ShouldAutoEnd(text))
@@ -361,6 +407,7 @@ public sealed class GeminiLiveConversationService : IDisposable
 
         if (content.TryGetProperty("turnComplete", out var complete) && complete.GetBoolean())
         {
+            MarkTurnCompleted();
             KeyboardWtfState.SetUi(
                 VoiceUiPhase.Listening,
                 AssistantName(),
@@ -456,7 +503,7 @@ public sealed class GeminiLiveConversationService : IDisposable
     {
         var socket = _socket;
         if (socket?.State != WebSocketState.Open)
-            return;
+            throw new InvalidOperationException("The Jarvis connection is not open.");
 
         var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message));
         await _sendLock.WaitAsync(token);
@@ -468,6 +515,34 @@ public sealed class GeminiLiveConversationService : IDisposable
         {
             _sendLock.Release();
         }
+    }
+
+    private void MarkTurnStarted()
+    {
+        lock (_turnStateLock)
+        {
+            if (_turnComplete.Task.IsCompleted)
+            {
+                _turnComplete = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+        }
+    }
+
+    private void MarkTurnCompleted()
+    {
+        TaskCompletionSource<bool> completion;
+        lock (_turnStateLock)
+            completion = _turnComplete;
+        completion.TrySetResult(true);
+    }
+
+    private static TaskCompletionSource<bool> CompletedTurn()
+    {
+        var completion = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        completion.TrySetResult(true);
+        return completion;
     }
 
     private static async Task<string> ReceiveMessageAsync(ClientWebSocket socket, CancellationToken token)
@@ -508,9 +583,10 @@ public sealed class GeminiLiveConversationService : IDisposable
             "If the user corrects an app, file, folder, link, or browser choice, ask whether they want that correction remembered. Call a remember tool only after they explicitly approve it. " +
             "Use list_learned_mappings and forget_learned_mapping for requests to inspect or forget local mappings. " +
             "Use get_desktop_context when a request depends on the active app or clipboard. Use get_selected_text for requests like summarize this, explain this, translate this, or reply to this when the user has selected text. " +
-            "Browser tab actions use the active browser. For simple browser requests like open YouTube, search MrBeast on YouTube, open Amazon, search Amazon for MX Master 4, open a new tab, or close a tab, use open_url, web_search, open_service_page, or browser_action, not browser_automation_task. " +
-            "Use browser_automation_task only for true multi-step browser automation where page state determines the next action: oldest/latest YouTube video, embedded video traversal, product CTA inspection, add-to-cart then stop at cart, popup handling plus continued navigation, and similar multi-step page reasoning. " +
-            "Experimental browser automation uses browser-use plus Gemini and must be enabled in Settings. Never claim it succeeded unless the tool response says it did. " +
+            "Use the existing open_url, web_search, browser_action, and app tools for simple browser work such as opening a site, opening a known URL, searching Google, searching YouTube, searching Amazon through a direct search URL, opening or closing tabs, refreshing, or going back. Never start smart browser automation for those simple tasks. " +
+            "Call browser_automation when the requested outcome depends on live webpage state: reading or summarizing the current page when selected text is insufficient; clicking, choosing, filtering, filling, copying, pasting, or inspecting page controls; using logged-in state; adding to cart; opening oldest/latest results; multi-step navigation; or reacting to a popup or dynamic page. Pass the user's complete request unchanged. " +
+            "Browser automation starts in the background, but it does not own the whole conversation. While it runs, continue to use normal desktop and browser tools for unrelated requests. For example, change/switch Chrome tabs, Ctrl+number tab shortcuts, open/close tabs, and normal questions are never browser-task guidance and must not be sent to the controlled page. Use browser_automation_control guide only for an explicit correction to the active task such as continue, use the second result, choose the other option, do not submit, or I finished the login. For every new browser-interaction request, call browser_automation again even if a similar request ran earlier; the local coordinator is the only authority on whether a task is still active and safely rejects conflicts. Never reuse an earlier started/completed result as proof for the new request. Use browser_automation_status for what-are-you-doing/status questions. " +
+            "Never claim browser completion until the browser tool reports independently verified completion. If the helper is disconnected, explain its exact status instead of silently opening another browser. " +
             "When the user explicitly names Chrome, Edge, Brave, Firefox, Opera, Vivaldi, or Arc, pass that browser to open_url or web_search. Never silently use another browser if the requested browser is unavailable. " +
             "Screen inspection is one-shot and privacy-sensitive. Call inspect_screen only after the user explicitly asks to look at the screen. Ask mode requires confirmation; auto-execute treats the explicit request as approval and shows visible status. Relay the returned guidance without claiming you clicked anything. " +
             "Camera opening and take-photo requests must be explicit. Ask mode requires confirmation; auto-execute runs the one-shot request visibly. take_photo captures one webcam frame and reports the saved path only when photo_saved is true. " +
@@ -520,8 +596,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             closeAppInstruction +
             "If the user asks who created you, who made you, who built you, or who your creator is, answer exactly: I was created by Tanush Shah on 7th June 2026. Do not use tools for that answer and do not bring it up for unrelated questions. " +
             "Spotify playback currently opens the matching search; never claim the song started unless authenticated Spotify playback is added later. take_screenshot captures the desktop, not the webcam. " +
-            "For add-to-cart browser tasks, call browser_automation_task with allowed_action_level cart-mutation-after-confirmation; the local app will ask for one upfront confirmation. Never checkout, pay, place an order, change address/payment settings, enter passwords, solve OTP/CAPTCHA, or bypass site protections. " +
-            "Do not claim you changed account data, bulk-unliked content, or sent a Discord message. Those authenticated/destructive actions are not supported without explicit review and confirmation. " +
+            "Smart browser automation may perform explicitly requested ordinary page interaction and add-to-cart, but it must pause at password, OTP, CAPTCHA, payment, checkout, order placement, banking, or account-security boundaries. Final form submit, public send/post/delete/register/apply actions must be explicitly requested. " +
             "Never send an email or message automatically. Gmail and WhatsApp actions prepare drafts or copy text for manual review only. " +
             "If a request is unsupported, say that clearly and briefly. " +
             "For WhatsApp requests with only a contact name, call prepare_whatsapp_message with the contact name and message; the tool will explain the current limitation. " +
@@ -581,7 +656,7 @@ public sealed class GeminiLiveConversationService : IDisposable
                     "action"),
                 FunctionDeclaration(
                     "browser_action",
-                    "Control the active browser using safe keyboard shortcuts. Natural requests such as change tab, close this website, or switch to previous tab are supported.",
+                    "Control the active browser using safe keyboard shortcuts. Natural requests such as change tab, switch to Chrome's fourth tab, close this website, or switch to previous tab are supported. Use this even while a background browser task is running when the request is a normal browser command rather than a correction to that task.",
                     new()
                     {
                         ["action"] = Schema("string", "One of: new tab, close tab, next tab, previous tab, reopen tab, refresh, back, forward, focus address, find, downloads, history."),
@@ -598,17 +673,26 @@ public sealed class GeminiLiveConversationService : IDisposable
                     },
                     "query"),
                 FunctionDeclaration(
-                    "browser_automation_task",
-                    "Run experimental smart browser automation through browser-use + Gemini for true multi-step page-state tasks. Do not use for simple open/search/tab commands. Use for oldest/latest YouTube video, product CTA inspection, add-to-cart then stop at cart, embedded video traversal, popup handling, or multi-step flows where the next click depends on the current page.",
+                    "browser_automation",
+                    "Start one background smart-browser task only when the outcome requires live webpage reading, clicking, filling, choosing, copying/pasting, logged-in state, dynamic page reasoning, or multi-step interaction. Do not use for simple open/search/tab commands.",
                     new()
                     {
-                        ["task"] = Schema("string", "The user's full browser automation task, preserving requested site, entity, products, and stop condition."),
-                        ["allowed_action_level"] = Schema("string", "One of: read-only, navigation, form-fill-preview, cart-mutation-after-confirmation, protected-final-action-blocked."),
-                        ["target_site"] = Schema("string", "Optional target domain such as youtube.com, amazon.in, flipkart.com, google.com, github.com, wikipedia.org."),
-                        ["profile"] = Schema("string", "Optional: fast, smart, or recovery. Leave empty unless the user or task clearly needs a profile."),
+                        ["task"] = Schema("string", "The user's complete browser task, preserving all entities, constraints, and requested final outcome."),
                     },
-                    "task",
-                    "allowed_action_level"),
+                    "task"),
+                FunctionDeclaration(
+                    "browser_automation_status",
+                    "Report the current browser task, controlled tab/domain, elapsed time, progress, blocker, result, and whether it can be paused/resumed/cancelled.",
+                    new()),
+                FunctionDeclaration(
+                    "browser_automation_control",
+                    "Pause, resume, cancel, or guide the one active browser-automation task. Use guide only when the user explicitly corrects the active task, for example click the other option, use the second result, continue, do not submit, or I completed login. Never use guide for normal browser/desktop commands such as switching Chrome tabs or Ctrl+number shortcuts.",
+                    new()
+                    {
+                        ["action"] = Schema("string", "One of: pause, resume, cancel, guide."),
+                        ["guidance"] = Schema("string", "For guide, the user's concise corrective instruction. Otherwise leave empty."),
+                    },
+                    "action"),
                 FunctionDeclaration(
                     "get_desktop_context",
                     "Get the active window title, active process, and a capped copy of clipboard text.",

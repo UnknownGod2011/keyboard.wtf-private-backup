@@ -9,6 +9,8 @@ public sealed class JarvisShortcutTests
     [InlineData("new tab", "^t")]
     [InlineData("close this website", "^w")]
     [InlineData("go to the next tab", "^{TAB}")]
+    [InlineData("switch to Chrome's fourth tab using Ctrl+4", "^4")]
+    [InlineData("go to the 7th tab", "^7")]
     [InlineData("go to the previous tab", "^+{TAB}")]
     [InlineData("reopen closed tab", "^+t")]
     [InlineData("refresh", "^r")]
