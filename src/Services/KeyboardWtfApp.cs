@@ -30,6 +30,8 @@ public sealed class KeyboardWtfApp : IDisposable
     private BrowserAutomationPlanner _browserPlanner;
     private BrowserAutomationCoordinator _browserAutomation;
     private BrowserAutomationProgressForm _browserProgress;
+    private JarvisTimerService _timers;
+    private TimerProgressForm _timerProgress;
     private System.Windows.Forms.Timer _startupHotkeyRetryTimer;
     private int _startupHotkeyRetryCount;
     private bool _disposed;
@@ -69,12 +71,14 @@ public sealed class KeyboardWtfApp : IDisposable
             _notifications,
             _browserHelper,
             _browserPlanner);
+        _timers = new JarvisTimerService(_notifications, _jarvisHistory);
         _jarvisAutomation = new JarvisAutomationService(
             _notifications,
             _settings,
             _jarvisHistory,
             _learnedMappings,
-            OpenSettings);
+            OpenSettings,
+            _timers);
         _commands = new CommandRegistry(
             this,
             _capture,
@@ -91,6 +95,7 @@ public sealed class KeyboardWtfApp : IDisposable
             () => _browserAutomation.CancelAsync("Jarvis conversation ended"));
         _overlay = new VoiceOverlayForm(_audioRecorder);
         _browserProgress = new BrowserAutomationProgressForm(_browserAutomation);
+        _timerProgress = new TimerProgressForm(_timers);
 
         WebSettingsService.Instance.Initialize(
             this,
@@ -352,6 +357,8 @@ public sealed class KeyboardWtfApp : IDisposable
         _speechRecognition.Dispose();
         _claudeApi.Dispose();
         _liveConversation?.Dispose();
+        _timerProgress?.Dispose();
+        _timers?.Dispose();
         _browserProgress?.Dispose();
         _browserAutomation?.Dispose();
         _jarvisAutomation?.Dispose();

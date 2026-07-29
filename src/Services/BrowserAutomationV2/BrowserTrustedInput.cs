@@ -24,6 +24,8 @@ internal static class BrowserTrustedInput
 
     internal static int NativeInputSize => Marshal.SizeOf<Input>();
     internal static uint CurrentThreadId => GetCurrentThreadId();
+    internal static void FocusChromeWindowForAutomation(string expectedWindowTitle = "") =>
+        FocusChromeWindow(expectedWindowTitle);
 
     public static void PressEnter(string expectedWindowTitle = "") => Send(
         expectedWindowTitle,

@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using KeyboardWtf.Helpers;
+using KeyboardWtf.Services.BrowserAutomationV2;
 
 public sealed class JarvisAutomationService : IDisposable
 {
@@ -33,7 +34,8 @@ public sealed class JarvisAutomationService : IDisposable
     private readonly WebcamCaptureService _webcam = new();
     private readonly Action _openSettings;
     private readonly object _pendingLock = new();
-    private readonly Dictionary<string, System.Threading.Timer> _timers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly JarvisTimerService _timerService;
+    private readonly bool _ownsTimerService;
     private readonly string _todosPath = Path.Combine(SettingsService.AppDataDir, "jarvis-todos.json");
     private PendingJarvisAction _pending;
     private bool _executingApprovedAction;
@@ -44,7 +46,8 @@ public sealed class JarvisAutomationService : IDisposable
         SettingsService settings,
         JarvisActionHistoryService history,
         LearnedMappingService mappings,
-        Action openSettings)
+        Action openSettings,
+        JarvisTimerService timerService = null)
     {
         _notifications = notifications;
         _settings = settings;
@@ -54,6 +57,8 @@ public sealed class JarvisAutomationService : IDisposable
         _files = new SmartFileSearchService(mappings);
         _browsers = new BrowserLauncherService(_apps, settings);
         _openSettings = openSettings;
+        _timerService = timerService ?? new JarvisTimerService(notifications, history);
+        _ownsTimerService = timerService == null;
     }
 
     public async Task<Dictionary<string, object>> ExecuteAsync(
@@ -101,7 +106,12 @@ public sealed class JarvisAutomationService : IDisposable
             "add_todo" => AddTodo(GetString(args, "text")),
             "list_todos" => ListTodos(),
             "complete_todo" => CompleteTodo(GetString(args, "query")),
-            "set_timer" => SetTimer(GetInt(args, "minutes"), GetString(args, "label")),
+            "set_timer" => SetTimer(
+                GetInt(args, "minutes"),
+                GetInt(args, "seconds"),
+                GetString(args, "label")),
+            "cancel_timer" => CancelTimer(GetString(args, "query")),
+            "list_timers" => ListTimers(),
             "system_control" => SystemControl(GetString(args, "action"), GetInt(args, "value")),
             "system_status" => SystemStatus(),
             "play_media" => PlayMedia(GetString(args, "query"), GetString(args, "service")),
@@ -215,6 +225,7 @@ public sealed class JarvisAutomationService : IDisposable
         "add_todo" => "Add a local to-do",
         "complete_todo" => "Complete a local to-do",
         "set_timer" => "Start a timer",
+        "cancel_timer" => "Cancel a timer",
         "system_control" => $"{GetString(args, "action")}",
         "play_media" => $"Open {GetString(args, "query")} on {GetString(args, "service")}",
         "open_service_page" => $"Open {GetString(args, "page")} on {GetString(args, "service")}",
@@ -578,60 +589,198 @@ public sealed class JarvisAutomationService : IDisposable
         }
     }
 
+    internal Dictionary<string, object> ExecuteBrowserShortcut(string action) =>
+        BrowserAction(action);
+
+    internal static bool IsDirectBrowserShortcutRequest(string request) =>
+        TryGetBrowserTabSelection(request, out _, out _)
+        || BrowserShortcutForAction(request) != null;
+
+    internal static bool TryGetBrowserTabSelection(
+        string request,
+        out string selection,
+        out string description)
+    {
+        selection = "";
+        description = "";
+        var normalized = NormalizePhraseText(request);
+        if (normalized.StartsWith("please ", StringComparison.Ordinal))
+            normalized = normalized["please ".Length..];
+
+        var numberedTab = Regex.Match(
+            normalized,
+            @"^(?:(?:switch|go|change|open)\s+)?(?:to\s+)?(?:chrome(?:'s)?\s+)?(?:the\s+)?(?<tab>1|2|3|4|5|6|7|8|9|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)(?:st|nd|rd|th)?\s+tab(?:\s+using\s+(?:ctrl|control)\s*[1-9])?$",
+            RegexOptions.IgnoreCase);
+        if (numberedTab.Success)
+        {
+            var index = numberedTab.Groups["tab"].Value.ToLowerInvariant() switch
+            {
+                "first" => 1,
+                "second" => 2,
+                "third" => 3,
+                "fourth" => 4,
+                "fifth" => 5,
+                "sixth" => 6,
+                "seventh" => 7,
+                "eighth" => 8,
+                "ninth" => 9,
+                var number when int.TryParse(number, out var parsed) => parsed,
+                _ => 0,
+            };
+            if (index > 0)
+            {
+                selection = $"index:{index}";
+                description = $"tab {index}";
+                return true;
+            }
+        }
+
+        if (Regex.IsMatch(
+            normalized,
+            @"^(?:(?:switch|go|change|open)\s+(?:to\s+)?)?(?:the\s+)?second(?:\s+to)?\s+last\s+tab$",
+            RegexOptions.IgnoreCase))
+        {
+            selection = "from_end:2";
+            description = "the second-last tab";
+            return true;
+        }
+
+        if (Regex.IsMatch(
+            normalized,
+            @"^(?:(?:switch|go|change|open)\s+(?:to\s+)?)?(?:the\s+)?last\s+tab$",
+            RegexOptions.IgnoreCase))
+        {
+            selection = "from_end:1";
+            description = "the last tab";
+            return true;
+        }
+
+        if (normalized is "next tab" or "go to next tab" or "go to the next tab"
+            or "switch to next tab" or "switch to the next tab" or "change tab" or "switch tab")
+        {
+            selection = "next";
+            description = "the next tab";
+            return true;
+        }
+
+        if (normalized is "previous tab" or "go to previous tab" or "go to the previous tab"
+            or "switch to previous tab" or "switch to the previous tab")
+        {
+            selection = "previous";
+            description = "the previous tab";
+            return true;
+        }
+
+        return false;
+    }
+
     private Dictionary<string, object> BrowserAction(string action)
     {
-        var activeProcess = GetProcessName(GetForegroundWindow());
-        if (!IsBrowserProcess(activeProcess))
-            return Result(
-                false,
-                "A supported browser must be the active window before I can control its tabs.",
-                supported: false,
-                needsClarification: true,
-                extras: new() { ["active_process"] = activeProcess });
-
         var keys = BrowserShortcutForAction(action);
         if (keys == null)
             return Result(false, "That browser action is not supported yet.", supported: false);
-        SendKeysOnUiThread(keys);
+
+        var activeWindow = GetForegroundWindow();
+        var activeProcess = GetProcessName(activeWindow);
+        var foregroundedBrowser = false;
+        if (!IsBrowserProcess(activeProcess))
+        {
+            var browser = EnumerateWindows()
+                .FirstOrDefault(window => IsBrowserProcess(window.ProcessName));
+            if (browser == null)
+            {
+                return Result(
+                    false,
+                    "I could not find an open supported browser window.",
+                    supported: false,
+                    needsClarification: true,
+                    extras: new() { ["active_process"] = activeProcess });
+            }
+
+            if (string.Equals(
+                browser.ProcessName,
+                "chrome",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    BrowserTrustedInput.FocusChromeWindowForAutomation(browser.Title);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Result(
+                        false,
+                        ex.Message,
+                        supported: false,
+                        needsClarification: true,
+                        extras: new() { ["active_process"] = activeProcess });
+                }
+            }
+            else
+            {
+                ShowWindow(browser.Handle, SwRestore);
+                SetForegroundWindow(browser.Handle);
+            }
+            Thread.Sleep(120);
+            activeWindow = GetForegroundWindow();
+            activeProcess = GetProcessName(activeWindow);
+            foregroundedBrowser = IsBrowserProcess(activeProcess);
+            if (!foregroundedBrowser)
+            {
+                return Result(
+                    false,
+                    "Windows did not allow me to focus the open browser for that shortcut.",
+                    supported: false,
+                    needsClarification: true,
+                    extras: new() { ["active_process"] = activeProcess });
+            }
+        }
+
+        try
+        {
+            if (string.Equals(keys, "^9^+{TAB}", StringComparison.Ordinal))
+            {
+                SendKeysOnUiThread("^9");
+                Thread.Sleep(80);
+                SendKeysOnUiThread("^+{TAB}");
+            }
+            else
+            {
+                SendKeysOnUiThread(keys);
+            }
+        }
+        catch (Exception ex)
+        {
+            return Result(
+                false,
+                $"The browser shortcut could not be sent: {ex.Message}",
+                supported: false);
+        }
         return Logged(
             "browser_action",
             action,
             true,
             $"Sent the browser shortcut for {action}.",
-            extras: new() { ["shortcut_sent"] = true, ["verified_browser_state"] = false });
+            extras: new()
+            {
+                ["shortcut_sent"] = true,
+                ["foregrounded_browser"] = foregroundedBrowser,
+                ["verified_browser_state"] = false,
+            });
     }
 
     public static string BrowserShortcutForAction(string action)
     {
-        var normalized = NormalizeWords(action);
-        var numberedTab = Regex.Match(
-            normalized,
-            @"\b(?:switch|go|change|open)?\s*(?:to\s+)?(?:chrome\s+)?(?:the\s+)?(?<tab>1|2|3|4|5|6|7|8|9|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)(?:st|nd|rd|th)?\s+tab\b",
-            RegexOptions.IgnoreCase);
-        if (numberedTab.Success)
-        {
-            var key = numberedTab.Groups["tab"].Value.ToLowerInvariant() switch
-            {
-                "first" => "1",
-                "second" => "2",
-                "third" => "3",
-                "fourth" => "4",
-                "fifth" => "5",
-                "sixth" => "6",
-                "seventh" => "7",
-                "eighth" => "8",
-                "ninth" => "9",
-                var number => number,
-            };
-            return $"^{key}";
-        }
+        var normalized = NormalizePhraseText(action);
+        if (normalized.StartsWith("please ", StringComparison.Ordinal))
+            normalized = normalized["please ".Length..];
+        if (TryGetBrowserTabSelection(normalized, out _, out _))
+            return null;
 
         return normalized switch
         {
             "new tab" => "^t",
             "close tab" or "close this tab" or "close website" or "close this website" => "^w",
-            "next tab" or "change tab" or "switch tab" or "go to next tab" or "go to the next tab" => "^{TAB}",
-            "previous tab" or "switch to previous tab" or "go to previous tab" or "go to the previous tab" => "^+{TAB}",
             "reopen tab" or "reopen closed tab" => "^+t",
             "refresh" or "reload" => "^r",
             "back" => "%{LEFT}",
@@ -838,24 +987,69 @@ public sealed class JarvisAutomationService : IDisposable
         return Logged("complete_todo", todo.Text, true, "Marked the to-do complete.");
     }
 
-    private Dictionary<string, object> SetTimer(int minutes, string label)
+    private Dictionary<string, object> SetTimer(int minutes, int seconds, string label)
     {
-        minutes = Math.Clamp(minutes, 1, 1440);
-        var timerLabel = string.IsNullOrWhiteSpace(label) ? $"{minutes} minute timer" : Limit(label, 80);
-        var id = Guid.NewGuid().ToString("N");
-        var timer = new System.Threading.Timer(_ =>
-        {
-            _notifications.Info("Jarvis timer", timerLabel);
-            _history.Add("timer_finished", timerLabel, true);
-            lock (_timers)
+        var duration = seconds > 0
+            ? TimeSpan.FromSeconds(seconds)
+            : TimeSpan.FromMinutes(Math.Clamp(minutes, 1, 1440));
+        var timer = _timerService.Start(duration, label);
+        return Result(
+            true,
+            $"Timer set for {FormatTimerDuration(duration)}.",
+            extras: new()
             {
-                if (_timers.Remove(id, out var completed))
-                    completed.Dispose();
-            }
-        }, null, TimeSpan.FromMinutes(minutes), Timeout.InfiniteTimeSpan);
-        lock (_timers)
-            _timers[id] = timer;
-        return Logged("set_timer", $"{minutes} minutes: {timerLabel}", true, $"Timer set for {minutes} minutes.");
+                ["timer_id"] = timer.Id,
+                ["label"] = timer.Label,
+                ["due_at"] = timer.DueAt.ToString("O"),
+            });
+    }
+
+    private Dictionary<string, object> CancelTimer(string query)
+    {
+        var count = _timerService.Cancel(query);
+        return Result(
+            count > 0,
+            count switch
+            {
+                0 => "I could not find a matching active timer.",
+                1 => "Timer cancelled.",
+                _ => $"{count} timers cancelled.",
+            },
+            supported: count > 0,
+            needsClarification: count == 0);
+    }
+
+    private Dictionary<string, object> ListTimers()
+    {
+        var timers = _timerService.ActiveTimers;
+        return Result(
+            true,
+            timers.Count == 0
+                ? "There are no active timers."
+                : timers.Count == 1
+                    ? "There is 1 active timer."
+                    : $"There are {timers.Count} active timers.",
+            extras: new()
+            {
+                ["timers"] = timers.Select(timer => new
+                {
+                    timer.Id,
+                    timer.Label,
+                    due_at = timer.DueAt,
+                    remaining_seconds = Math.Max(0, (int)Math.Ceiling(timer.Remaining.TotalSeconds)),
+                }).ToArray(),
+            });
+    }
+
+    private static string FormatTimerDuration(TimeSpan duration)
+    {
+        if (duration.TotalMinutes >= 1 && duration.TotalSeconds % 60 == 0)
+        {
+            var minutes = (int)duration.TotalMinutes;
+            return $"{minutes} minute{(minutes == 1 ? "" : "s")}";
+        }
+        var seconds = Math.Max(1, (int)Math.Round(duration.TotalSeconds));
+        return $"{seconds} second{(seconds == 1 ? "" : "s")}";
     }
 
     private Dictionary<string, object> SystemControl(string action, int value)
@@ -1953,12 +2147,8 @@ public sealed class JarvisAutomationService : IDisposable
         if (_disposed)
             return;
         _disposed = true;
-        lock (_timers)
-        {
-            foreach (var timer in _timers.Values)
-                timer.Dispose();
-            _timers.Clear();
-        }
+        if (_ownsTimerService)
+            _timerService.Dispose();
         _screenGuidance.Dispose();
     }
 

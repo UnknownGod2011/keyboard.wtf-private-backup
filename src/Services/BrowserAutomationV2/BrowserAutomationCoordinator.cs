@@ -15,6 +15,8 @@ public sealed class BrowserAutomationStartResult
 
 public sealed class BrowserAutomationCoordinator : IDisposable
 {
+    private static readonly TimeSpan MaximumTaskRuntime = TimeSpan.FromMinutes(5);
+
     private sealed class Runtime
     {
         public string TaskId { get; init; } = Guid.NewGuid().ToString("N");
@@ -47,6 +49,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         public int RecoveryAttempts { get; set; }
         public int ConsecutiveRejectedStrategies { get; set; }
         public bool UserPaused { get; set; }
+        public string CancellationReason { get; set; } = "";
+        public BrowserTaskState? LastAnnouncedState { get; set; }
         public Task Execution { get; set; }
     }
 
@@ -87,6 +91,27 @@ public sealed class BrowserAutomationCoordinator : IDisposable
 
     public BrowserClassification Classify(string request) => _classifier.Classify(request);
 
+    public async Task<BrowserActionReceipt> ActivateExistingTabAsync(
+        string selection,
+        CancellationToken token = default)
+    {
+        var status = _bridge.Status;
+        if (!status.Connected
+            || !string.Equals(
+                status.ServiceWorkerVersion,
+                BrowserHelperProtocol.Version,
+                StringComparison.Ordinal)
+            || status.WindowId is not int windowId)
+        {
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(status.LastError)
+                    ? "Existing Chrome Helper is not connected."
+                    : status.LastError);
+        }
+
+        return await _bridge.ActivateExistingTabAsync(windowId, selection, token);
+    }
+
     public bool TryAddTaskGuidance(string guidance, out string reason)
     {
         reason = "";
@@ -98,7 +123,9 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 return false;
             }
 
-            if (!IsClearlyTaskRelevantGuidance(guidance))
+            if (!IsClearlyTaskRelevantGuidance(guidance)
+                && !(_active.State == BrowserTaskState.NeedsUserAction
+                    && IsRelevantManualAnswer(_active.CurrentAction, guidance)))
             {
                 reason = "That is a separate Jarvis or browser command, not guidance for the active browser task.";
                 return false;
@@ -161,6 +188,17 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         Runtime runtime;
         lock (_sync)
         {
+            if (_active != null
+                && !IsTerminal(_active.State)
+                && _active.Execution?.IsCompleted == true)
+            {
+                SetTerminal(
+                    _active,
+                    BrowserTaskState.Failed,
+                    BrowserAutomationOutcome.Failed,
+                    "The previous browser task ended without terminal cleanup.",
+                    "");
+            }
             if (_active != null && !IsTerminal(_active.State))
             {
                 return new BrowserAutomationStartResult
@@ -179,6 +217,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 CurrentAction = "Queued",
             };
             _active = runtime;
+            _planner.BeginTask(runtime.TaskId);
+            runtime.Cancellation.CancelAfter(MaximumTaskRuntime);
             Publish(runtime);
             runtime.Execution = Task.Run(
                 () => ExecuteAsync(runtime, classification.RefersToCurrentPage),
@@ -229,6 +269,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             if (runtime == null || IsTerminal(runtime.State))
                 return false;
             runtime.UserPaused = false;
+            runtime.CancellationReason = reason;
             SetState(runtime, BrowserTaskState.Cancelling, reason);
             runtime.Cancellation.Cancel();
             runtime.PauseGate.Resume();
@@ -801,6 +842,31 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 var groundedControl = GroundActionIdentity(
                     runtime.Page,
                     lastDecision.Action);
+                if (TryGetMissingRequiredDate(
+                    BuildUserConstraintContext(runtime),
+                    lastDecision.NextGoal,
+                    lastDecision.Action,
+                    groundedControl,
+                    out var missingDate))
+                {
+                    SetState(
+                        runtime,
+                        BrowserTaskState.NeedsUserAction,
+                        missingDate);
+                    _notifications.WarningTransient(
+                        "Browser automation needs you",
+                        missingDate);
+                    runtime.PauseGate.Pause();
+                    await runtime.PauseGate.WaitAsync(token);
+                    token.ThrowIfCancellationRequested();
+                    runtime.Page = await _bridge.ObserveAsync(
+                        runtime.TaskId,
+                        runtime.Page.TabId,
+                        token);
+                    runtime.History.Add(
+                        "User supplied the requested missing date information; the live page was refreshed before continuing.");
+                    continue;
+                }
                 if (TryGetAmbiguousExplicitDateTarget(
                     lastDecision.NextGoal,
                     lastDecision.Action,
@@ -985,15 +1051,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 runtime.History.Add(actionVerification.Verified
                     ? $"Action verified: {actionVerification.Evidence}"
                     : $"Action not verified: {actionVerification.Error}");
-                if (actionVerification.Verified
-                    && HasStrongCheckpointEvidence(receipt))
-                {
-                    RememberVerifiedCheckpoint(
-                        runtime.VerifiedCheckpoints,
-                        lastDecision.Action,
-                        lastDecision.NextGoal,
-                        receipt);
-                }
+                var hasStrongCheckpoint = actionVerification.Verified
+                    && HasStrongCheckpointEvidence(receipt);
 
                 if (!actionVerification.Verified)
                 {
@@ -1037,6 +1096,30 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     receipt.TabId ?? runtime.Page.TabId,
                     token);
                 AddControlledTab(runtime, runtime.Page);
+                var persistedInFreshState = FreshStateConfirmsPersistedValue(
+                    runtime.Page,
+                    lastDecision.Action,
+                    receipt);
+                if (hasStrongCheckpoint && persistedInFreshState)
+                {
+                    RememberVerifiedCheckpoint(
+                        runtime.VerifiedCheckpoints,
+                        lastDecision.Action,
+                        lastDecision.NextGoal,
+                        receipt);
+                }
+                else if (actionVerification.Verified && !persistedInFreshState)
+                {
+                    runtime.RecoveryAttempts++;
+                    RememberNoProgressStrategy(
+                        runtime.NoProgressActionStates,
+                        runtime.Page,
+                        lastDecision.Action);
+                    runtime.History.Add(
+                        "Fresh-state verification rejected a transient field write: the page cleared or changed the requested value after the immediate action receipt. "
+                        + "Do not alternate between fields or repeat the same format; use a different supported input strategy or ask for the missing information.");
+                    continue;
+                }
 
                 // A verified transfer into the requested destination editor is
                 // terminal evidence. Do not wait for another planner turn that
@@ -1070,13 +1153,24 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         }
         catch (OperationCanceledException)
         {
-            SetTerminal(
-                runtime,
-                BrowserTaskState.Cancelled,
-                BrowserAutomationOutcome.Cancelled,
-                "Browser automation cancelled.",
-                "");
-            AppLog.Info($"Browser automation final status cancelled: task={runtime.TaskId}");
+            if (string.IsNullOrWhiteSpace(runtime.CancellationReason))
+            {
+                Fail(
+                    runtime,
+                    BrowserAutomationOutcome.Failed,
+                    "The browser task reached its five-minute safety timeout. Chrome and its tabs were left open.");
+                AppLog.Warning($"Browser automation timed out: task={runtime.TaskId}");
+            }
+            else
+            {
+                SetTerminal(
+                    runtime,
+                    BrowserTaskState.Cancelled,
+                    BrowserAutomationOutcome.Cancelled,
+                    "Browser automation cancelled.",
+                    "");
+                AppLog.Info($"Browser automation final status cancelled: task={runtime.TaskId}");
+            }
         }
         catch (Exception ex)
         {
@@ -1391,6 +1485,74 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         return true;
     }
 
+    internal static bool TryGetMissingRequiredDate(
+        string userConstraintContext,
+        string immediateGoal,
+        BrowserPlannerAction action,
+        BrowserControl control,
+        out string reason)
+    {
+        reason = "";
+        if (action == null || HasUsableDateConstraint(userConstraintContext))
+            return false;
+
+        var target = NormalizeControlText(string.Join(
+            " ",
+            action.TargetRole,
+            action.TargetName,
+            control == null ? "" : ControlName(control),
+            control?.NearbyLabel,
+            control?.Placeholder));
+        var proposal = NormalizeControlText(string.Join(
+            " ",
+            immediateGoal,
+            action.Text,
+            action.Option,
+            action.Url));
+        var dateTarget = Regex.IsMatch(
+            $"{target} {proposal}",
+            @"\b(?:date|departure|depart|return|arrival|arrive|check[- ]?in|check[- ]?out|calendar|day|month)\b",
+            RegexOptions.IgnoreCase);
+        if (!dateTarget || !ContainsConcreteDateValue(proposal))
+            return false;
+
+        reason =
+            "This task requires a date that was not provided. Tell me the needed date or range (for example, “use August 1 to August 8”), and I’ll continue from this page.";
+        return true;
+    }
+
+    internal static bool HasUsableDateConstraint(string text)
+    {
+        var normalized = NormalizeControlText(text);
+        if (normalized.Length == 0)
+            return false;
+        return Regex.IsMatch(
+            normalized,
+            @"\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\b"
+            + @"|\b20\d{2}[-/][01]?\d[-/][0-3]?\d\b"
+            + @"|\b[0-3]?\d[-/][01]?\d(?:[-/](?:20)?\d{2})?\b"
+            + @"|\b(?:today|tomorrow|tonight|this weekend|next (?:day|week|weekend|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b"
+            + @"|\bin \d{1,3} (?:day|days|week|weeks|month|months)\b",
+            RegexOptions.IgnoreCase);
+    }
+
+    private static bool ContainsConcreteDateValue(string text) =>
+        Regex.IsMatch(
+            text ?? "",
+            @"\b20\d{2}[-/][01]?\d[-/][0-3]?\d\b"
+            + @"|\b[0-3]?\d[-/][01]?\d(?:[-/](?:20)?\d{2})?\b"
+            + @"|\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+[0-3]?\d(?:st|nd|rd|th)?\b",
+            RegexOptions.IgnoreCase);
+
+    private static string BuildUserConstraintContext(Runtime runtime)
+    {
+        var guidance = runtime.History
+            .Where(item => item.StartsWith(
+                "User guidance:",
+                StringComparison.OrdinalIgnoreCase));
+        return string.Join("\n", new[] { runtime.Request }.Concat(guidance));
+    }
+
     internal static bool HasStrongCheckpointEvidence(BrowserActionReceipt receipt) =>
         receipt?.Ok == true
         && !receipt.Stale
@@ -1399,6 +1561,71 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             || receipt.SelectedChanged
             || receipt.CheckedChanged
             || receipt.Navigation);
+
+    internal static bool FreshStateConfirmsPersistedValue(
+        BrowserPageSnapshot page,
+        BrowserPlannerAction action,
+        BrowserActionReceipt receipt)
+    {
+        if (action == null
+            || receipt?.Ok != true
+            || !receipt.ValueMatches
+            || action.Type is not ("type" or "paste")
+            || receipt.NativeInputUsed)
+        {
+            return true;
+        }
+
+        var live = (page?.Controls ?? Array.Empty<BrowserControl>())
+            .FirstOrDefault(control =>
+                string.Equals(control.Id, receipt.TargetId, StringComparison.Ordinal))
+            ?? FindMatchingControl(page, action);
+        if (live != null)
+        {
+            return EquivalentInputValue(
+                live.Value,
+                action.Text,
+                allowContainedText: !action.Replace || action.Type == "paste");
+        }
+
+        // Search submission and navigation commonly replace the input itself.
+        // That is a durable state transition, unlike a field that remains live
+        // but silently clears after an unsupported format.
+        return receipt.Navigation
+            || !string.Equals(
+                receipt.AfterUrl,
+                page?.Url,
+                StringComparison.Ordinal);
+    }
+
+    private static bool EquivalentInputValue(
+        string observed,
+        string expected,
+        bool allowContainedText)
+    {
+        var actual = NormalizeControlText(observed);
+        var wanted = NormalizeControlText(expected);
+        if (wanted.Length == 0)
+            return true;
+        if (actual.Equals(wanted, StringComparison.Ordinal)
+            || (allowContainedText
+                && actual.Contains(wanted, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        return DateTime.TryParse(
+                observed,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces,
+                out var actualDate)
+            && DateTime.TryParse(
+                expected,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces,
+                out var wantedDate)
+            && actualDate.Date == wantedDate.Date;
+    }
 
     internal static void RememberVerifiedCheckpoint(
         IList<string> checkpoints,
@@ -2286,7 +2513,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         // A normal Chrome/Jarvis command must never become input for a live
         // webpage just because a browser task happens to be running.
         if (Regex.IsMatch(text, @"\b(?:ctrl|control)\s*\+?\s*\d\b")
-            || Regex.IsMatch(text, @"\b(?:switch|go|change)\b.{0,40}\b(?:chrome )?(?:first|second|third|fourth|fifth|\d+(?:st|nd|rd|th)?)\s+tab\b")
+            || Regex.IsMatch(text, @"\b(?:switch|go|change)\b.{0,40}\b(?:chrome )?(?:first|second|third|fourth|fifth|last|second[- ]to[- ]last|second last|\d+(?:st|nd|rd|th)?)\s+tab\b")
             || Regex.IsMatch(text, @"\b(?:new|close|next|previous|reopen)\s+tab\b"))
         {
             return false;
@@ -2296,6 +2523,22 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             text,
             @"^(?:please )?(?:continue|resume|pause|cancel|stop|wait|do(?: not|n't) submit|i (?:have )?(?:completed|finished|signed in|logged in)|use (?:the )?(?:first|second|third|other|different) (?:result|option)|click (?:the )?(?:first|second|third|other|different) (?:result|option)|try (?:the )?(?:other|different)|keep .{0,120} open|stop before .{0,120})\b",
             RegexOptions.IgnoreCase);
+    }
+
+    internal static bool IsRelevantManualAnswer(
+        string requestedUserAction,
+        string guidance)
+    {
+        var request = NormalizeControlText(requestedUserAction);
+        var answer = NormalizeControlText(guidance);
+        if (request.Length == 0 || answer.Length == 0)
+            return false;
+
+        return Regex.IsMatch(
+                request,
+                @"\b(?:date|departure|depart|return|arrival|arrive|check[- ]?in|check[- ]?out|calendar)\b",
+                RegexOptions.IgnoreCase)
+            && HasUsableDateConstraint(answer);
     }
 
     private static void CapturePreparedDraft(Runtime runtime, BrowserPlannerDecision decision)
@@ -3015,6 +3258,51 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 ? action
                 : "";
         Publish(runtime);
+        AnnounceOutcome(runtime, state);
+    }
+
+    private static void AnnounceOutcome(Runtime runtime, BrowserTaskState state)
+    {
+        if (runtime.LastAnnouncedState == state)
+            return;
+
+        var spoken = state switch
+        {
+            BrowserTaskState.Completed or BrowserTaskState.CompletedWithNote =>
+                "Okay, the browser task is complete. The result should now be visible in Chrome.",
+            BrowserTaskState.NeedsUserAction =>
+                "Browser automation is paused and needs your help. Check the progress window for the required step, then tell me to continue.",
+            BrowserTaskState.Partial =>
+                "I completed part of the browser task, but stopped before the full result. Check the progress window for what remains.",
+            BrowserTaskState.Blocked =>
+                "The browser task is blocked. I left Chrome at the useful stopping point. Check the progress window for the reason.",
+            BrowserTaskState.Cancelled =>
+                "Browser automation cancelled.",
+            BrowserTaskState.Failed =>
+                "The browser task stopped because it could not complete safely. Check the progress window for the reason.",
+            _ => "",
+        };
+        if (string.IsNullOrWhiteSpace(spoken))
+            return;
+
+        runtime.LastAnnouncedState = state;
+        var phase = state switch
+        {
+            BrowserTaskState.Completed or BrowserTaskState.CompletedWithNote =>
+                KeyboardWtf.Models.VoiceUiPhase.Done,
+            BrowserTaskState.Cancelled =>
+                KeyboardWtf.Models.VoiceUiPhase.Cancelled,
+            BrowserTaskState.NeedsUserAction =>
+                KeyboardWtf.Models.VoiceUiPhase.Thinking,
+            _ => KeyboardWtf.Models.VoiceUiPhase.Error,
+        };
+        KeyboardWtf.Models.KeyboardWtfState.SetUi(
+            phase,
+            KeyboardWtf.Models.KeyboardWtfState.AssistantName,
+            spoken);
+        KeyboardWtf.Services.TtsService.Instance.Speak(
+            spoken,
+            KeyboardWtf.Models.KeyboardWtfState.SelectedLanguage);
     }
 
     private void SetState(Runtime runtime, BrowserTaskState state, string action)
@@ -3039,6 +3327,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         runtime.State = state;
         runtime.CurrentAction = action;
         Publish(runtime);
+        if (state == BrowserTaskState.NeedsUserAction)
+            AnnounceOutcome(runtime, state);
         AppLog.Info(
             $"Browser task state: task={runtime.TaskId} state={state} action={Short(action, 180)}");
     }

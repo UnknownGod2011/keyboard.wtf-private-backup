@@ -107,6 +107,26 @@ public sealed class BrowserHelperBridge : IDisposable
         return DeserializeResult<BrowserActionReceipt>(result, "The Chrome Helper returned no action receipt.");
     }
 
+    public async Task<BrowserActionReceipt> ActivateExistingTabAsync(
+        int windowId,
+        string selection,
+        CancellationToken token)
+    {
+        var result = await SendAsync(
+            new BrowserActionRequest
+            {
+                TaskId = $"tab-selection-{Guid.NewGuid():N}",
+                Type = "activate_existing_tab",
+                WindowId = windowId,
+                Text = selection,
+            },
+            token,
+            TimeSpan.FromSeconds(5));
+        return DeserializeResult<BrowserActionReceipt>(
+            result,
+            "The Chrome Helper did not confirm the selected tab.");
+    }
+
     public async Task EndTaskAsync(string taskId, CancellationToken token = default)
     {
         try
@@ -157,6 +177,7 @@ public sealed class BrowserHelperBridge : IDisposable
     {
         var commandTimeout = timeout ?? TimeSpan.FromSeconds(35);
         await WaitForCommandChannelAsync(
+            action.Type == "activate_existing_tab",
             token,
             commandTimeout < TimeSpan.FromSeconds(10)
                 ? commandTimeout
@@ -181,6 +202,7 @@ public sealed class BrowserHelperBridge : IDisposable
     }
 
     private async Task WaitForCommandChannelAsync(
+        bool serviceWorkerOnly,
         CancellationToken token,
         TimeSpan maximumWait)
     {
@@ -189,7 +211,13 @@ public sealed class BrowserHelperBridge : IDisposable
         {
             token.ThrowIfCancellationRequested();
             var status = Status;
-            if (status.CommandChannelReady)
+            if (status.CommandChannelReady
+                || (serviceWorkerOnly
+                    && status.Connected
+                    && string.Equals(
+                        status.ServiceWorkerVersion,
+                        BrowserHelperProtocol.Version,
+                        StringComparison.Ordinal)))
                 return;
 
             if (DateTime.UtcNow >= deadline)

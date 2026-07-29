@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using KeyboardWtf.Services;
 using KeyboardWtf.Services.BrowserAutomationV2;
 using Xunit;
 
@@ -993,6 +994,230 @@ public sealed class BrowserAutomationProtocolTests
         bool expected)
     {
         Assert.Equal(expected, BrowserAutomationCoordinator.IsClearlyTaskRelevantGuidance(utterance));
+    }
+
+    [Theory]
+    [InlineData("Switch to the last tab.", false)]
+    [InlineData("Go to the second last tab.", false)]
+    [InlineData("Switch to the second-to-last tab.", false)]
+    [InlineData("Use August 1 to August 8.", true)]
+    public void Tab_commands_stay_out_of_the_active_page_task(
+        string utterance,
+        bool expected)
+    {
+        var accepted = BrowserAutomationCoordinator.IsClearlyTaskRelevantGuidance(utterance)
+            || BrowserAutomationCoordinator.IsRelevantManualAnswer(
+                "Tell me the required departure and return dates.",
+                utterance);
+
+        Assert.Equal(expected, accepted);
+    }
+
+    [Fact]
+    public void Planner_provider_health_is_scoped_to_one_browser_task()
+    {
+        using var planner = new BrowserAutomationPlanner();
+        planner.BeginTask("task-a");
+        planner.RecordModelFailure(
+            "gemini-3-flash",
+            new HttpRequestException("429 quota exhausted"));
+
+        Assert.Equal(1, planner.UnhealthyModelCount);
+
+        planner.BeginTask("task-b");
+
+        Assert.Equal(0, planner.UnhealthyModelCount);
+    }
+
+    [Fact]
+    public async Task A_missing_live_turn_complete_is_recoverable_for_the_next_request()
+    {
+        var stale = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Assert.False(await GeminiLiveConversationService.WaitForPriorTurnAsync(
+            stale.Task,
+            TimeSpan.FromMilliseconds(10),
+            CancellationToken.None));
+        Assert.True(await GeminiLiveConversationService.WaitForPriorTurnAsync(
+            Task.CompletedTask,
+            TimeSpan.FromSeconds(1),
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public void Missing_date_is_requested_instead_of_invented()
+    {
+        var action = new BrowserPlannerAction
+        {
+            Type = "type",
+            TargetRole = "textbox",
+            TargetName = "Departure",
+            Text = "2025-08-01",
+            Replace = true,
+        };
+        var control = new BrowserControl
+        {
+            Id = "departure",
+            Role = "textbox",
+            AccessibleName = "Departure",
+            NearbyLabel = "Departure date",
+            Visible = true,
+            Enabled = true,
+            Editable = true,
+        };
+
+        Assert.True(BrowserAutomationCoordinator.TryGetMissingRequiredDate(
+            "Find flights from Mumbai to Japan.",
+            "Enter the departure date.",
+            action,
+            control,
+            out var reason));
+        Assert.Contains("not provided", reason, StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(BrowserAutomationCoordinator.TryGetMissingRequiredDate(
+            "Find flights from Mumbai to Japan in September 2026 for one week.",
+            "Enter the departure date.",
+            action,
+            control,
+            out _));
+    }
+
+    [Theory]
+    [InlineData("September 2026")]
+    [InlineData("2026-09-07")]
+    [InlineData("7/9/2026")]
+    [InlineData("next weekend")]
+    [InlineData("in 2 weeks")]
+    public void Natural_date_constraints_are_recognized(string guidance)
+    {
+        Assert.True(BrowserAutomationCoordinator.HasUsableDateConstraint(guidance));
+        Assert.True(BrowserAutomationCoordinator.IsRelevantManualAnswer(
+            "Tell me the required travel date or range.",
+            guidance));
+    }
+
+    [Fact]
+    public void Immediate_field_receipt_is_rejected_when_fresh_page_clears_the_value()
+    {
+        var action = new BrowserPlannerAction
+        {
+            Type = "type",
+            TargetId = "departure",
+            TargetName = "Departure",
+            Text = "2026-09-07",
+            Replace = true,
+        };
+        var receipt = new BrowserActionReceipt
+        {
+            Ok = true,
+            Action = "type",
+            TargetId = "departure",
+            TargetName = "Departure",
+            ValueMatches = true,
+        };
+        var cleared = new BrowserPageSnapshot
+        {
+            Controls = new[]
+            {
+                new BrowserControl
+                {
+                    Id = "departure",
+                    Role = "textbox",
+                    AccessibleName = "Departure",
+                    Value = "",
+                    Visible = true,
+                    Enabled = true,
+                    Editable = true,
+                },
+            },
+        };
+
+        Assert.False(BrowserAutomationCoordinator.FreshStateConfirmsPersistedValue(
+            cleared,
+            action,
+            receipt));
+
+        cleared.Controls[0].Value = "09/07/2026";
+        Assert.True(BrowserAutomationCoordinator.FreshStateConfirmsPersistedValue(
+            cleared,
+            action,
+            receipt));
+    }
+
+    [Fact]
+    public void Planner_prompt_forbids_invented_inputs_and_transient_field_success()
+    {
+        var prompt = BrowserAutomationPlanner.BuildPrompt(
+            "Find flights from Mumbai to Japan.",
+            new BrowserPageSnapshot(),
+            Array.Empty<string>(),
+            Array.Empty<BrowserControl>());
+
+        Assert.Contains("Never invent a required date", prompt);
+        Assert.Contains("field write is provisional", prompt);
+        Assert.Contains("do not alternate between fields", prompt);
+    }
+
+    [Fact]
+    public void Helper_keeps_dom_actions_in_the_leased_background_tab()
+    {
+        var root = FindRepositoryRoot();
+        var worker = File.ReadAllText(Path.Combine(
+            root,
+            "extensions",
+            "keyboard-wtf-browser-helper-v2",
+            "service-worker.js"));
+
+        Assert.Contains("if (requiresForeground(command))", worker);
+        Assert.Contains("captureTaskTab", worker);
+        Assert.Contains("await chrome.tabs.update(restoreTabId, { active: true })", worker);
+        Assert.DoesNotContain(
+            "await chrome.windows.update(beforeTab.windowId, { focused: true });\n  await chrome.tabs.update(tabId, { active: true });",
+            worker);
+    }
+
+    [Fact]
+    public void Tab_selection_uses_the_exact_existing_window_without_foreground_keys()
+    {
+        var root = FindRepositoryRoot();
+        var worker = File.ReadAllText(Path.Combine(
+            root,
+            "extensions",
+            "keyboard-wtf-browser-helper-v2",
+            "service-worker.js"));
+        var start = worker.IndexOf(
+            "async function activateExistingTab(command)",
+            StringComparison.Ordinal);
+        var end = worker.IndexOf(
+            "async function navigate(command)",
+            start,
+            StringComparison.Ordinal);
+        var implementation = worker[start..end];
+
+        Assert.Contains("chrome.tabs.query({ windowId: requestedWindowId })", implementation);
+        Assert.Contains("await chrome.tabs.update(target.id, { active: true })", implementation);
+        Assert.DoesNotContain("chrome.windows.update", implementation);
+        Assert.DoesNotContain("SendKeys", implementation, StringComparison.OrdinalIgnoreCase);
+
+        var bridge = File.ReadAllText(Path.Combine(
+            root,
+            "src",
+            "Services",
+            "BrowserAutomationV2",
+            "BrowserHelperBridge.cs"));
+        Assert.Contains("action.Type == \"activate_existing_tab\"", bridge);
+        Assert.Contains("status.Connected", bridge);
+        Assert.Contains(
+            "Service-worker-only commands such as exact tab activation remain safe",
+            worker);
+        Assert.Contains("chrome.tabs.onActivated.addListener(() => wakeBridge())", worker);
+        Assert.Contains("helper_content_heartbeat", worker);
+        Assert.Contains("helper_content_heartbeat", File.ReadAllText(Path.Combine(
+            root,
+            "extensions",
+            "keyboard-wtf-browser-helper-v2",
+            "content-script.js")));
     }
 
     [Fact]

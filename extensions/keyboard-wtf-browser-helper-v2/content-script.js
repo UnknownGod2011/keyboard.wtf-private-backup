@@ -2,7 +2,7 @@
   if (globalThis.__keyboardWtfBrowserHelperV2) return;
   globalThis.__keyboardWtfBrowserHelperV2 = true;
 
-  const VERSION = "2.1.14";
+const VERSION = "2.1.18";
   const MAX_CONTROLS = 350;
   const MAX_PAGE_TEXT = 14000;
   const controlSelectors = [
@@ -34,6 +34,16 @@
   let prepared = null;
   let indicator = null;
   let highlight = null;
+  const bridgeHeartbeatTimer = setInterval(() => {
+    chrome.runtime.sendMessage({
+      type: "helper_content_heartbeat",
+      version: VERSION
+    }).catch(() => {});
+  }, 2500);
+  chrome.runtime.sendMessage({
+    type: "helper_content_heartbeat",
+    version: VERSION
+  }).catch(() => {});
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     Promise.resolve(handleMessage(message))
@@ -876,6 +886,7 @@
   }
 
   function cleanup() {
+    clearInterval(bridgeHeartbeatTimer);
     activeTaskId = "";
     controlsById.clear();
     prepared = null;

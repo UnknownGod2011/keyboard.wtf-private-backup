@@ -266,7 +266,7 @@ public sealed class BrowserActionReceipt
 
 internal static class BrowserHelperProtocol
 {
-    public const string Version = "2.1.14";
+    public const string Version = "2.1.18";
     public const string ExtensionId = "gfndpohemndahmmeealkdobepjacblnf";
     public const string NativeHostName = "wtf.keyboard.browser";
     public const string PipeName = "keyboard.wtf.browser.v2";

@@ -148,11 +148,62 @@ public sealed class BrowserAutomationPlanner : IDisposable
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(28) };
     private readonly BrowserSemanticControlRanker _ranker = new();
+    private readonly object _healthLock = new();
     private readonly Dictionary<string, DateTime> _unhealthyUntil = new(
         StringComparer.OrdinalIgnoreCase);
+    private string _healthTaskId = "";
     private string _lastModel = "";
 
     public string LastModel => _lastModel;
+
+    /// <summary>
+    /// Provider health is deliberately scoped to one browser task. A malformed
+    /// response or temporary quota error can make a fallback model preferable
+    /// for the rest of that task, but it must never poison an unrelated request.
+    /// </summary>
+    internal void BeginTask(string taskId)
+    {
+        lock (_healthLock)
+        {
+            if (string.Equals(_healthTaskId, taskId, StringComparison.Ordinal))
+                return;
+            _healthTaskId = taskId ?? "";
+            _unhealthyUntil.Clear();
+            _lastModel = "";
+        }
+    }
+
+    internal int UnhealthyModelCount
+    {
+        get
+        {
+            lock (_healthLock)
+                return _unhealthyUntil.Count;
+        }
+    }
+
+    internal void RecordModelFailure(
+        string model,
+        Exception error,
+        DateTime? nowUtc = null)
+    {
+        if (string.IsNullOrWhiteSpace(model))
+            return;
+        var cooldown = error?.Message.Contains(
+                "429",
+                StringComparison.OrdinalIgnoreCase) == true
+            ? TimeSpan.FromMinutes(10)
+            : TimeSpan.FromMinutes(2);
+        lock (_healthLock)
+            _unhealthyUntil[model] = (nowUtc ?? DateTime.UtcNow).Add(cooldown);
+    }
+
+    private bool IsCoolingDown(string model)
+    {
+        lock (_healthLock)
+            return _unhealthyUntil.TryGetValue(model, out var until)
+                && until > DateTime.UtcNow;
+    }
 
     public async Task<BrowserPlannerDecision> PlanAsync(
         string request,
@@ -172,7 +223,7 @@ public sealed class BrowserAutomationPlanner : IDisposable
         Exception lastError = null;
         foreach (var model in ModelCandidates(configuredModel))
         {
-            if (_unhealthyUntil.TryGetValue(model, out var until) && until > DateTime.UtcNow)
+            if (IsCoolingDown(model))
                 continue;
 
             try
@@ -185,8 +236,7 @@ public sealed class BrowserAutomationPlanner : IDisposable
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 lastError = ex;
-                _unhealthyUntil[model] = DateTime.UtcNow.AddMinutes(
-                    ex.Message.Contains("429", StringComparison.OrdinalIgnoreCase) ? 10 : 2);
+                RecordModelFailure(model, ex);
                 AppLog.Warning(ex, $"Browser planner model failed: {model}");
             }
         }
@@ -217,7 +267,7 @@ public sealed class BrowserAutomationPlanner : IDisposable
         Exception lastError = null;
         foreach (var model in ModelCandidates(configuredModel))
         {
-            if (_unhealthyUntil.TryGetValue(model, out var until) && until > DateTime.UtcNow)
+            if (IsCoolingDown(model))
                 continue;
             try
             {
@@ -233,8 +283,7 @@ public sealed class BrowserAutomationPlanner : IDisposable
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 lastError = ex;
-                _unhealthyUntil[model] = DateTime.UtcNow.AddMinutes(
-                    ex.Message.Contains("429", StringComparison.OrdinalIgnoreCase) ? 10 : 2);
+                RecordModelFailure(model, ex);
                 AppLog.Warning(ex, $"Browser vision model failed: {model}");
             }
         }
@@ -323,6 +372,8 @@ public sealed class BrowserAutomationPlanner : IDisposable
         builder.AppendLine("A retry must change strategy: use a different grounded control or interaction mechanism. Never repeat the same semantic action just because the graph fingerprint or DOM epoch changed.");
         builder.AppendLine("When a modal, dialog, listbox, date picker, or other overlay is open, finish or dismiss that visible layer with its exact Apply/Done/Save/Close control before using page-level controls behind it. A no-op behind an overlay means inspect the overlay; it does not justify restarting the workflow.");
         builder.AppendLine("For an explicit date, a context-free numeric day button is not grounded evidence of the requested month/year. Prefer a full accessible date label; otherwise navigate the calendar, type the date, or use one screenshot to correlate the visible month before clicking.");
+        builder.AppendLine("Never invent a required date, personal detail, recipient, or other missing user input. When the page requires information that the original request and accepted task guidance do not provide, use needs_user_action and ask only for that missing value.");
+        builder.AppendLine("A field write is provisional until the next fresh page observation still contains the requested value. If a date or other controlled input clears or reformats away after the page reacts, do not alternate between fields or repeat the same format; choose a different supported input mechanism or ask for the smallest necessary user action.");
         builder.AppendLine("For a multi-step source-to-document task, once a grounded summary/result is ready, put the task-scoped draft text in completionValue before navigating away. It is ephemeral for this one task only. A later paste action may leave action.text empty to use that draft. Do not mark done until the destination editor verifies insertion.");
         builder.AppendLine("copy_clipboard is terminal only when the user's requested destination is the clipboard. In a source-to-editor workflow it may prepare the draft, but you must then activate the recorded destination tab and paste into its verified editor.");
         builder.AppendLine("For a native select control whose actions include select_option, use select_option on that control and put the exact desired visible option in action.option.");

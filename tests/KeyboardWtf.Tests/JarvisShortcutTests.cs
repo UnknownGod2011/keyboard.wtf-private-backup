@@ -8,10 +8,6 @@ public sealed class JarvisShortcutTests
     [Theory]
     [InlineData("new tab", "^t")]
     [InlineData("close this website", "^w")]
-    [InlineData("go to the next tab", "^{TAB}")]
-    [InlineData("switch to Chrome's fourth tab using Ctrl+4", "^4")]
-    [InlineData("go to the 7th tab", "^7")]
-    [InlineData("go to the previous tab", "^+{TAB}")]
     [InlineData("reopen closed tab", "^+t")]
     [InlineData("refresh", "^r")]
     [InlineData("back", "%{LEFT}")]
@@ -22,6 +18,42 @@ public sealed class JarvisShortcutTests
     public void BrowserActionsMapOnlyToAllowlistedShortcuts(string action, string expected)
     {
         Assert.Equal(expected, JarvisAutomationService.BrowserShortcutForAction(action));
+    }
+
+    [Theory]
+    [InlineData("switch to Chrome's fourth tab using Ctrl+4", "index:4")]
+    [InlineData("go to the 7th tab", "index:7")]
+    [InlineData("switch to last tab", "from_end:1")]
+    [InlineData("Switch to the last tab.", "from_end:1")]
+    [InlineData("go to the second last tab", "from_end:2")]
+    [InlineData("switch to second-to-last tab", "from_end:2")]
+    [InlineData("go to the next tab", "next")]
+    [InlineData("go to the previous tab", "previous")]
+    public void Tab_selection_uses_exact_helper_tab_ids_instead_of_OS_keys(
+        string request,
+        string expectedSelection)
+    {
+        Assert.True(
+            JarvisAutomationService.TryGetBrowserTabSelection(
+                request,
+                out var selection,
+                out _));
+        Assert.Equal(expectedSelection, selection);
+        Assert.Null(JarvisAutomationService.BrowserShortcutForAction(request));
+    }
+
+    [Theory]
+    [InlineData("Switch to the second-to-last tab.", true)]
+    [InlineData("Please refresh.", true)]
+    [InlineData("Write this text and then switch to the second tab.", false)]
+    [InlineData("Open YouTube and use the third tab.", false)]
+    public void Only_a_whole_direct_browser_command_uses_the_shortcut_pre_route(
+        string request,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            JarvisAutomationService.IsDirectBrowserShortcutRequest(request));
     }
 
     [Theory]

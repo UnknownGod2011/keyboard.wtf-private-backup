@@ -1,4 +1,4 @@
-const VERSION = "2.1.14";
+const VERSION = "2.1.18";
 const HOST = "wtf.keyboard.browser";
 const BRIDGE_ALARM = "keyboard-wtf-native-bridge";
 const NATIVE_RESPONSE_TIMEOUT_MS = 5000;
@@ -26,13 +26,7 @@ chrome.runtime.onStartup.addListener(() => {
 
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name !== BRIDGE_ALARM) return;
-  if (nativePort && pollBusy && Date.now() - lastNativeResponseAt > NATIVE_RESPONSE_TIMEOUT_MS) {
-    // A response can be lost while the port itself is still reported as open.
-    // Resetting the port and poll lease here makes recovery deterministic.
-    try { nativePort.disconnect(); } catch (_) {}
-  }
-  connectNative();
-  if (!pollBusy) schedulePoll(0);
+  wakeBridge();
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -40,6 +34,15 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   for (const [taskId, activeTab] of taskActiveTab.entries()) {
     if (activeTab === tabId) taskActiveTab.delete(taskId);
   }
+});
+
+chrome.tabs.onActivated.addListener(() => wakeBridge());
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== "helper_content_heartbeat") return false;
+  wakeBridge();
+  sendResponse({ ok: true, version: VERSION });
+  return false;
 });
 
 function connectNative() {
@@ -52,6 +55,7 @@ function connectNative() {
     lastError = "";
     port.onMessage.addListener(handleNativeResponse);
     port.onDisconnect.addListener(() => {
+      if (nativePort !== port) return;
       nativePort = null;
       const message = chrome.runtime.lastError?.message;
       lastError = message || "Keyboard.wtf native bridge disconnected.";
@@ -72,6 +76,31 @@ function connectNative() {
     lastError = String(error?.message || error);
     scheduleReconnect();
   }
+}
+
+function wakeBridge() {
+  ensureBridgeAlarm();
+  if (nativePort
+      && pendingNative.length > 0
+      && Date.now() - lastNativeResponseAt > NATIVE_RESPONSE_TIMEOUT_MS) {
+    resetNativePort("Keyboard.wtf native bridge heartbeat was stale.");
+  }
+  connectNative();
+  if (nativePort && !pollBusy) schedulePoll(0);
+}
+
+function resetNativePort(reason) {
+  const stalePort = nativePort;
+  nativePort = null;
+  lastError = reason || "Keyboard.wtf native bridge disconnected.";
+  while (pendingNative.length) {
+    const pending = pendingNative.shift();
+    clearTimeout(pending.timer);
+    pending.reject(new Error(lastError));
+  }
+  pollBusy = false;
+  clearTimeout(pollTimer);
+  try { stalePort?.disconnect(); } catch (_) {}
 }
 
 function scheduleReconnect() {
@@ -169,15 +198,22 @@ function baseHelperState() {
 async function collectHelperState() {
   const state = baseHelperState();
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  if (!tab?.id || !isNormalPage(tab.url)) {
-    state.lastError = lastError || "Open a normal http/https page to use current-tab automation.";
+  if (!tab?.id) {
+    state.lastError = lastError || "Chrome has no active tab.";
     return state;
   }
 
+  // Service-worker-only commands such as exact tab activation remain safe and
+  // useful even when the active tab is a protected chrome:// page. Page
+  // automation remains unavailable until a normal http/https tab is active.
   state.windowId = tab.windowId;
   state.tabId = tab.id;
-  state.activeUrl = tab.url;
+  state.activeUrl = tab.url || "";
   state.activeTitle = tab.title || "";
+  if (!isNormalPage(tab.url)) {
+    state.lastError = lastError || "Open a normal http/https page to use current-tab automation.";
+    return state;
+  }
 
   let status = await sendToTab(tab.id, { type: "helper_status" }, false);
   if (!status?.ok) {
@@ -210,6 +246,8 @@ async function executeCommand(command) {
         return await openTab(command);
       case "activate_tab":
         return await activateTab(command);
+      case "activate_existing_tab":
+        return await activateExistingTab(command);
       case "navigate":
         return await navigate(command);
       case "capture_screenshot":
@@ -292,7 +330,6 @@ async function openTab(command) {
 async function activateTab(command) {
   const tabId = resolveTaskTab(command);
   const tab = await chrome.tabs.get(tabId);
-  await chrome.windows.update(tab.windowId, { focused: true });
   await chrome.tabs.update(tabId, { active: true });
   taskActiveTab.set(command.taskId, tabId);
   return {
@@ -305,10 +342,58 @@ async function activateTab(command) {
   };
 }
 
+async function activateExistingTab(command) {
+  const requestedWindowId = Number(command.windowId || 0);
+  if (!requestedWindowId) {
+    throw new Error("The Chrome window ID is unavailable.");
+  }
+
+  const tabs = (await chrome.tabs.query({ windowId: requestedWindowId }))
+    .filter(tab => Number.isInteger(tab.id))
+    .sort((left, right) => (left.index || 0) - (right.index || 0));
+  if (tabs.length === 0) {
+    throw new Error("The selected Chrome window has no tabs.");
+  }
+
+  const activeIndex = Math.max(0, tabs.findIndex(tab => tab.active));
+  const selection = String(command.text || "").trim().toLowerCase();
+  let targetIndex = -1;
+  if (selection === "next") {
+    targetIndex = (activeIndex + 1) % tabs.length;
+  } else if (selection === "previous") {
+    targetIndex = (activeIndex - 1 + tabs.length) % tabs.length;
+  } else if (selection.startsWith("index:")) {
+    targetIndex = Number(selection.slice("index:".length)) - 1;
+  } else if (selection.startsWith("from_end:")) {
+    targetIndex = tabs.length - Number(selection.slice("from_end:".length));
+  }
+
+  if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= tabs.length) {
+    throw new Error(`That Chrome window has ${tabs.length} tabs, so the requested tab does not exist.`);
+  }
+
+  const before = tabs[activeIndex] || null;
+  const target = tabs[targetIndex];
+  await chrome.tabs.update(target.id, { active: true });
+  return {
+    commandId: command.commandId || "",
+    taskId: command.taskId || "",
+    ok: true,
+    action: "activate_existing_tab",
+    beforeUrl: before?.url || "",
+    afterUrl: target.url || "",
+    navigation: false,
+    noVisibleChange: before?.id === target.id,
+    windowId: target.windowId,
+    tabId: target.id,
+    tabCount: tabs.length
+  };
+}
+
 async function navigate(command) {
   const tabId = resolveTaskTab(command);
   const before = await chrome.tabs.get(tabId);
-  await chrome.tabs.update(tabId, { url: command.url, active: true });
+  await chrome.tabs.update(tabId, { url: command.url });
   await waitForTab(tabId);
   await beginTaskFrames(command.taskId, tabId, "Reading page");
   const snapshot = await scanTab(command.taskId, tabId);
@@ -330,12 +415,7 @@ async function navigate(command) {
 async function captureScreenshot(command) {
   const tabId = resolveTaskTab(command);
   const tab = await chrome.tabs.get(tabId);
-  await chrome.windows.update(tab.windowId, { focused: true });
-  await chrome.tabs.update(tabId, { active: true });
-  const screenshotDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-    format: "jpeg",
-    quality: 72
-  });
+  const screenshotDataUrl = await captureTaskTab(tabId, tab.windowId, 72);
   return {
     commandId: command.commandId,
     taskId: command.taskId,
@@ -353,8 +433,13 @@ async function executePageAction(command) {
   const frameId = frame.frameId;
   const frameCommand = frame.command;
   const beforeTab = await chrome.tabs.get(tabId);
-  await chrome.windows.update(beforeTab.windowId, { focused: true });
-  await chrome.tabs.update(tabId, { active: true });
+  // DOM/accessibility actions are addressed to the leased tab ID and do not
+  // need Chrome to own the Windows foreground. Only native keyboard fallbacks
+  // explicitly focus the tab first via a focus/focus_active_cursor command.
+  if (requiresForeground(command)) {
+    await chrome.windows.update(beforeTab.windowId, { focused: true });
+    await chrome.tabs.update(tabId, { active: true });
+  }
   await ensureContentScript(tabId, frameId);
   // Navigation may finish after the preceding observation. Reassert the lease
   // at the mutation boundary so a newly created content-script world can only
@@ -373,11 +458,7 @@ async function executePageAction(command) {
   let screenshotDataUrl = "";
   if (command.captureBeforeAction) {
     try {
-      const tab = await chrome.tabs.get(tabId);
-      screenshotDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-        format: "jpeg",
-        quality: 70
-      });
+      screenshotDataUrl = await captureTaskTab(tabId, beforeTab.windowId, 70);
     } catch {
       // This receipt image is optional. A transient permission or capture
       // failure must never prevent the already-grounded live action.
@@ -421,6 +502,29 @@ async function executePageAction(command) {
   }
   if (receipt && screenshotDataUrl) receipt.screenshotDataUrl = screenshotDataUrl;
   return receipt || failureReceipt(command, { error: "The content script returned no action receipt." });
+}
+
+function requiresForeground(command) {
+  return command?.type === "focus"
+    || command?.type === "focus_active_cursor";
+}
+
+async function captureTaskTab(tabId, windowId, quality) {
+  const [previous] = await chrome.tabs.query({ active: true, windowId });
+  const restoreTabId = previous?.id && previous.id !== tabId
+    ? previous.id
+    : 0;
+  if (restoreTabId) await chrome.tabs.update(tabId, { active: true });
+  try {
+    return await chrome.tabs.captureVisibleTab(windowId, {
+      format: "jpeg",
+      quality
+    });
+  } finally {
+    if (restoreTabId) {
+      try { await chrome.tabs.update(restoreTabId, { active: true }); } catch {}
+    }
+  }
 }
 
 async function endTask(command) {
@@ -699,4 +803,4 @@ function delay(ms) {
 }
 
 ensureBridgeAlarm();
-connectNative();
+wakeBridge();

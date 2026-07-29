@@ -9,6 +9,7 @@ using NAudio.Wave;
 public sealed class GeminiLiveConversationService : IDisposable
 {
     private const string Model = "gemini-3.1-flash-live-preview";
+    private static readonly TimeSpan PreviousTurnGracePeriod = TimeSpan.FromSeconds(8);
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly SemaphoreSlim _textTurnLock = new(1, 1);
     private readonly object _turnStateLock = new();
@@ -188,14 +189,18 @@ public sealed class GeminiLiveConversationService : IDisposable
             Task pending;
             lock (_turnStateLock)
                 pending = _turnComplete.Task;
-            try
+            if (!await WaitForPriorTurnAsync(
+                pending,
+                PreviousTurnGracePeriod,
+                token))
             {
-                await pending.WaitAsync(TimeSpan.FromSeconds(20), token);
-            }
-            catch (TimeoutException)
-            {
-                throw new InvalidOperationException(
-                    "Jarvis is still finishing the previous request. Try again in a moment.");
+                // A Live response can occasionally omit turnComplete after a
+                // successful tool call. A fresh explicit user turn is an
+                // interruption signal; do not make the user restart Jarvis.
+                AppLog.Warning(
+                    "Jarvis recovered a stale previous-turn lease before accepting a new request.");
+                _playbackBuffer?.ClearBuffer();
+                MarkTurnCompleted();
             }
 
             MarkTurnStarted();
@@ -517,6 +522,22 @@ public sealed class GeminiLiveConversationService : IDisposable
         }
     }
 
+    internal static async Task<bool> WaitForPriorTurnAsync(
+        Task pending,
+        TimeSpan gracePeriod,
+        CancellationToken token)
+    {
+        try
+        {
+            await (pending ?? Task.CompletedTask).WaitAsync(gracePeriod, token);
+            return true;
+        }
+        catch (TimeoutException)
+        {
+            return false;
+        }
+    }
+
     private void MarkTurnStarted()
     {
         lock (_turnStateLock)
@@ -781,13 +802,27 @@ public sealed class GeminiLiveConversationService : IDisposable
                     "query"),
                 FunctionDeclaration(
                     "set_timer",
-                    "Set an in-app timer from 1 to 1440 minutes. The app must remain running.",
+                    "Set an in-app timer. Prefer minutes for normal use; seconds is available for timers under one minute. The keyboard.wtf tray app must remain running.",
                     new()
                     {
                         ["minutes"] = Schema("integer", "Timer length in whole minutes."),
+                        ["seconds"] = Schema("integer", "Optional timer length in seconds when under one minute."),
                         ["label"] = Schema("string", "Short timer label."),
-                    },
-                    "minutes"),
+                    }),
+                FunctionDeclaration(
+                    "cancel_timer",
+                    "Cancel the most recent active timer, all timers, or a timer matching a label.",
+                    new()
+                    {
+                        ["query"] = Schema("string", "Optional timer label, timer ID prefix, or all. Omit to cancel the most recent active timer."),
+                    }),
+                FunctionDeclaration(
+                    "list_timers",
+                    "List active in-app timers and their remaining time.",
+                    new()
+                    {
+                        ["include_active"] = Schema("boolean", "Set true to list active timers."),
+                    }),
                 FunctionDeclaration(
                     "system_control",
                     "Perform a safe direct system control or open a Windows settings page.",

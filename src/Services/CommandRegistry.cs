@@ -95,6 +95,75 @@ public sealed class CommandRegistry
             _latestJarvisUserTurnUtc = DateTime.UtcNow;
         }
 
+        if (_browserAutomation != null
+            && JarvisAutomationService.TryGetBrowserTabSelection(
+                text,
+                out var tabSelection,
+                out var tabDescription))
+        {
+            var ok = false;
+            var message = "";
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+                var receipt = _browserAutomation
+                    .ActivateExistingTabAsync(tabSelection, timeout.Token)
+                    .GetAwaiter()
+                    .GetResult();
+                ok = receipt.Ok;
+                message = receipt.Ok
+                    ? $"Switched to {tabDescription} in the existing Chrome window."
+                    : string.IsNullOrWhiteSpace(receipt.Error)
+                        ? "Chrome did not confirm the requested tab."
+                        : receipt.Error;
+            }
+            catch (Exception ex)
+            {
+                message = ex is OperationCanceledException
+                    ? "Chrome did not confirm the tab switch in time."
+                    : ex.Message;
+            }
+
+            lock (_browserPreRouteLock)
+            {
+                _browserPreRouteTaskId = "";
+                _browserPreRouteUtc = DateTime.UtcNow;
+                _browserPreRouteOwnsCurrentTurn = true;
+            }
+            if (ok)
+                _notifications.InfoTransient("Browser", message);
+            else
+                _notifications.WarningTransient("Browser", message);
+            AppLog.Info(
+                $"Chrome Helper tab selection: ok={ok} selection={tabSelection} request={BrowserAutomationText.Truncate(text, 120)}");
+            return true;
+        }
+
+        if (_automation != null
+            && JarvisAutomationService.IsDirectBrowserShortcutRequest(text))
+        {
+            var shortcut = _automation.ExecuteBrowserShortcut(text);
+            var ok = shortcut.TryGetValue("ok", out var value)
+                && value is bool success
+                && success;
+            var message = shortcut.TryGetValue("message", out var detail)
+                ? detail?.ToString() ?? ""
+                : "";
+            lock (_browserPreRouteLock)
+            {
+                _browserPreRouteTaskId = "";
+                _browserPreRouteUtc = DateTime.UtcNow;
+                _browserPreRouteOwnsCurrentTurn = true;
+            }
+            if (ok)
+                _notifications.InfoTransient("Browser", message);
+            else
+                _notifications.WarningTransient("Browser", message);
+            AppLog.Info(
+                $"Deterministic browser shortcut pre-route: ok={ok} request={BrowserAutomationText.Truncate(text, 120)}");
+            return true;
+        }
+
         if (_browserAutomation == null || string.IsNullOrWhiteSpace(text))
             return false;
 
@@ -169,6 +238,22 @@ public sealed class CommandRegistry
                 return BrowserAutomationStatus();
             if (toolName == "browser_automation_control")
                 return await ControlBrowserAutomationAsync(args);
+            if (toolName == "browser_action"
+                && _browserAutomation != null
+                && JarvisAutomationService.TryGetBrowserTabSelection(
+                    GetString(args, "action"),
+                    out var tabSelection,
+                    out var tabDescription))
+            {
+                var receipt = await _browserAutomation.ActivateExistingTabAsync(tabSelection, token);
+                return ToolResult(
+                    receipt.Ok,
+                    receipt.Ok
+                        ? $"Switched to {tabDescription} in the existing Chrome window."
+                        : string.IsNullOrWhiteSpace(receipt.Error)
+                            ? "Chrome did not confirm the requested tab."
+                            : receipt.Error);
+            }
 
             return _automation == null
                 ? ToolResult(false, $"{toolName} is not a supported keyboard.wtf action yet.", supported: false)
@@ -1000,6 +1085,8 @@ public sealed class CommandRegistry
         "list_todos" => "Reading to-do list",
         "complete_todo" => "Completing to-do",
         "set_timer" => "Setting timer",
+        "cancel_timer" => "Cancelling timer",
+        "list_timers" => "Checking timers",
         "system_control" => "Changing system setting",
         "system_status" => "Checking system status",
         "play_media" => "Opening media",

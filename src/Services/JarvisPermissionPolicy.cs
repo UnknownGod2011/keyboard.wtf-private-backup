@@ -5,14 +5,14 @@ public static class JarvisPermissionPolicy
     private static readonly HashSet<string> ReadOnlyTools = new(StringComparer.Ordinal)
     {
         "get_desktop_context", "get_clipboard_text", "get_selected_text", "search_files",
-        "list_todos", "list_workflows", "system_status", "list_learned_mappings",
+        "list_todos", "list_timers", "list_workflows", "system_status", "list_learned_mappings",
     };
 
     private static readonly HashSet<string> SideEffectingTools = new(StringComparer.Ordinal)
     {
         "open_app", "open_url", "open_folder", "open_path", "window_action", "browser_action",
         "web_search", "replace_selected_text", "type_text", "press_key", "save_note", "add_todo",
-        "complete_todo", "set_timer", "system_control", "play_media", "open_service_page",
+        "complete_todo", "set_timer", "cancel_timer", "system_control", "play_media", "open_service_page",
         "open_camera", "take_photo", "take_screenshot", "inspect_screen", "virtual_desktop_action",
         "windows_recording_action",
         "open_gmail_draft", "prepare_whatsapp_message", "copy_text", "create_workflow",

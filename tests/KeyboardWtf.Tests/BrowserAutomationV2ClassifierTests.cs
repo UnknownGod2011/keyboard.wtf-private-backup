@@ -16,6 +16,9 @@ public sealed class BrowserAutomationV2ClassifierTests
     [InlineData("Open YouTube")]
     [InlineData("Switch to Chrome's fourth tab using Ctrl+4")]
     [InlineData("Go to the third browser tab")]
+    [InlineData("Switch to the last tab")]
+    [InlineData("Go to the second last tab")]
+    [InlineData("Switch to the second-to-last tab")]
     public void Simple_open_and_search_commands_stay_on_fast_tools(string request)
     {
         var result = _classifier.Classify(request);
