@@ -17,7 +17,7 @@ public sealed class BrowserAutomationTaskClassifier
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex DirectCurrentControl = new(
-        @"^\s*(?:please\s+)?(?:(?:continue|resume)\s+)?(?:click|press|choose|select|unselect|check|uncheck|fill(?:ing)?|answer(?:ing)?|solv(?:e|ing)|type|enter|paste|write|insert|place|put|scroll|dismiss|close\s+(?:the\s+)?(?:popup|banner|modal))\b",
+        @"^\s*(?:please\s+)?(?:(?:continue|resume)\s+)?(?:click|press|choose|select|unselect|check|uncheck|fill(?:ing)?|type|enter|paste|write|insert|place|put|scroll|dismiss|close\s+(?:the\s+)?(?:popup|banner|modal))\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex PageInteraction = new(
@@ -33,7 +33,11 @@ public sealed class BrowserAutomationTaskClassifier
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex WebContext = new(
-        @"\b(chrome|browser|website|webpage|page|tab|form|youtube|amazon|google|github|wikipedia|instagram|gmail|docs|devpost|https?://)\b",
+        @"\b(chrome|browser|website|webpage|page|tab|form|quiz|questionnaire|assessment|survey|youtube|amazon|google|github|wikipedia|instagram|gmail|docs|devpost|https?://)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex FormOrAssessmentTarget = new(
+        @"\b(?:form|quiz|questionnaire|assessment|survey)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex CartInteraction = new(
@@ -50,6 +54,30 @@ public sealed class BrowserAutomationTaskClassifier
 
     private static readonly Regex UnambiguouslyInteractive = new(
         @"\b(click|press|choose|select|unselect|check|uncheck|fill(?:ing)?|answer(?:ing)?|solv(?:e|ing)|type|enter|paste|scroll|dismiss|send|post|publish|delete|close .{0,40}\b(?:popup|banner|modal)|add .{0,80}\bto (?:my |the )?cart|play the (?:oldest|latest|newest|most recent)|upload)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // These requests commonly refer to text the user has selected, including
+    // text selected inside a webpage or a form. They are deliberately handled
+    // by normal Jarvis first so it can capture and answer the selection. A
+    // page-changing verb or an explicit automation request still wins.
+    private static readonly Regex SelectedContentQuestion = new(
+        @"\b(?:answer|solve|explain|summar(?:y|i[sz]e)|translate|analyse|analyze|define|meaning|mean)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex ExplicitSelectedContext = new(
+        @"\b(?:selected|highlighted)\b|\bselection\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex ExplicitPageMutation = new(
+        @"\b(click|press|choose|select|unselect|check|uncheck|fill(?:ing)?|type|enter|paste|copy|write|insert|place|put|upload|download|send|post|publish|delete|dismiss|close\s+(?:the\s+)?(?:popup|banner|modal))\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex ExplicitSubmit = new(
+        @"\bsubmit\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex SubmitBlockedByUser = new(
+        @"\b(?:do\s+not|don't|dont|without|before)\s+submit\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public BrowserClassification Classify(string request)
@@ -78,11 +106,45 @@ public sealed class BrowserAutomationTaskClassifier
                 "The user explicitly requested browser automation.",
                 current);
 
+        var contentQuestion = SelectedContentQuestion.IsMatch(text);
+        var selectedContext = ExplicitSelectedContext.IsMatch(text);
+        var explicitMutation = HasExplicitPageMutation(text);
+        var formOrAssessment = FormOrAssessmentTarget.IsMatch(text);
+
+        if (contentQuestion
+            && !explicitMutation
+            && selectedContext)
+        {
+            return Result(
+                BrowserAutomationDecision.AskUser,
+                "The user explicitly referred to selected content. Answer that selection normally and do not start page automation.",
+                current,
+                prefersSelectedContent: true);
+        }
+
+        if (contentQuestion
+            && !explicitMutation
+            && !current
+            && !formOrAssessment)
+        {
+            return Result(
+                BrowserAutomationDecision.AskUser,
+                "The request could mean answering selected content or acting on a live page, so ask one concise clarification.",
+                current,
+                prefersSelectedContent: true);
+        }
+
         if (current && interaction)
             return Result(
                 BrowserAutomationDecision.BrowserAutomation,
                 "The outcome depends on the live state of the current page.",
                 true);
+
+        if (formOrAssessment && interaction)
+            return Result(
+                BrowserAutomationDecision.BrowserAutomation,
+                "The request asks Jarvis to interact with a form or assessment rather than only answer selected content.",
+                current);
 
         if (ComparativeResearch.IsMatch(text))
             return Result(
@@ -134,10 +196,21 @@ public sealed class BrowserAutomationTaskClassifier
     private static BrowserClassification Result(
         BrowserAutomationDecision decision,
         string reason,
-        bool current = false) => new()
+        bool current = false,
+        bool prefersSelectedContent = false) => new()
     {
         Decision = decision,
         Reason = reason,
         RefersToCurrentPage = current,
+        PrefersSelectedContent = prefersSelectedContent,
     };
+
+    private static bool HasExplicitPageMutation(string text) =>
+        ExplicitPageMutation.IsMatch(text)
+        || (ExplicitSubmit.IsMatch(text) && !SubmitBlockedByUser.IsMatch(text));
+
+    internal static bool RequiresPageMutation(string text) =>
+        HasExplicitPageMutation(text)
+        || (FormOrAssessmentTarget.IsMatch(text)
+            && SelectedContentQuestion.IsMatch(text));
 }

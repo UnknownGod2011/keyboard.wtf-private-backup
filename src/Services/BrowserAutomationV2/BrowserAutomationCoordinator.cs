@@ -162,7 +162,9 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             return new BrowserAutomationStartResult
             {
                 NeedsClarification = true,
-                Message = "Do you want me to interact with the live webpage, or only open/search it?",
+                Message = classification.PrefersSelectedContent
+                    ? "Should I answer the selected text, or fill/change the live page?"
+                    : "Do you want me to interact with the live webpage, or only open/search it?",
                 RoutingReason = classification.Reason,
             };
         }
@@ -471,6 +473,21 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 runtime.History.Add(
                     $"Planner ({_planner.LastModel}) evaluated: {Short(lastDecision.Evaluation, 360)}; next goal: {Short(lastDecision.NextGoal, 240)}");
                 CapturePreparedDraft(runtime, lastDecision);
+
+                if (ShouldForceVisualRecovery(
+                    runtime.Request,
+                    runtime.Page,
+                    lastDecision,
+                    runtime.VisionRecovery))
+                {
+                    runtime.History.Add(
+                        "No grounded controls were available for the requested page mutation; using one bounded visual recovery before accepting completion or requesting manual help.");
+                    lastDecision.Done = false;
+                    lastDecision.NeedsUserAction = false;
+                    lastDecision.UserAction = "";
+                    lastDecision.NextGoal = "Visually inspect the current viewport and map the requested control to a live page element";
+                    lastDecision.Action = new BrowserPlannerAction { Type = "vision" };
+                }
 
                 if (lastDecision.NeedsUserAction
                     || lastDecision.Action.Type == "needs_user_action")
@@ -3650,6 +3667,33 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             or BrowserTaskState.Blocked
             or BrowserTaskState.Cancelled
             or BrowserTaskState.Failed;
+
+    internal static bool ShouldForceVisualRecovery(
+        string request,
+        BrowserPageSnapshot page,
+        BrowserPlannerDecision decision,
+        bool visionRecoveryAlreadyUsed)
+    {
+        if (visionRecoveryAlreadyUsed
+            || page?.Controls?.Length != 0
+            || decision == null
+            || !BrowserAutomationTaskClassifier.RequiresPageMutation(request))
+        {
+            return false;
+        }
+
+        var proposedTerminalOrBlocker = decision.Done
+            || decision.NeedsUserAction
+            || decision.Action?.Type is "done" or "needs_user_action";
+        if (!proposedTerminalOrBlocker)
+            return false;
+
+        var blocker = $"{decision.UserAction} {decision.Evaluation}";
+        return !Regex.IsMatch(
+            blocker,
+            @"\b(?:captcha|password|passcode|otp|two[- ]factor|2fa|sign[- ]?in|log[- ]?in|payment|card|bank|security challenge)\b",
+            RegexOptions.IgnoreCase);
+    }
 
     private static string SafeDomain(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : "";

@@ -35,10 +35,13 @@ public sealed class BrowserAutomationV2ClassifierTests
     [InlineData("Add MX Master 4 to my Amazon cart")]
     [InlineData("Play the oldest NASA video on YouTube")]
     [InlineData("Open Wikipedia, summarize Albert Einstein, and paste it into Google Docs")]
+    [InlineData("Fill this quiz")]
+    [InlineData("Could you please fill this quiz?")]
+    [InlineData("Solve this quiz on the active tab")]
+    [InlineData("Solve the quiz but do not submit it")]
+    [InlineData("Answer only the first unanswered image-based question on this page")]
     [InlineData("Send Yaksh a message on Instagram")]
     [InlineData("Reload this page, then close the harmless popup")]
-    [InlineData("Answer only the first unanswered image-based question on this page")]
-    [InlineData("Solve the quiz but do not submit it")]
     [InlineData("Open GitHub, find browser-use/browser-use, and report visible stars and forks")]
     [InlineData("Find the cheapest round-trip flights from Mumbai to Switzerland in September 2026 for one week")]
     [InlineData("Compare the best three options and open the lowest-priced result")]
@@ -48,6 +51,40 @@ public sealed class BrowserAutomationV2ClassifierTests
     public void Live_page_interactions_use_browser_automation(string request)
     {
         var result = _classifier.Classify(request);
+        Assert.Equal(BrowserAutomationDecision.BrowserAutomation, result.Decision);
+    }
+
+    [Theory]
+    [InlineData("Answer this")]
+    [InlineData("Solve these questions")]
+    [InlineData("Explain this")]
+    [InlineData("I selected this text, answer that question")]
+    [InlineData("Please solve the questions I have highlighted")]
+    [InlineData("Answer the question from the selected text")]
+    [InlineData("Can you explain the text I've selected?")]
+    [InlineData("I selected something. Can you answer it?")]
+    [InlineData("I selected a word. What does it mean?")]
+    [InlineData("I highlighted a paragraph; give me a summary")]
+    [InlineData("What is the meaning of the highlighted content?")]
+    public void Selection_style_questions_do_not_preempt_normal_jarvis(string request)
+    {
+        var result = _classifier.Classify(request);
+
+        Assert.Equal(BrowserAutomationDecision.AskUser, result.Decision);
+        Assert.True(result.PrefersSelectedContent);
+        Assert.Contains("selected content", result.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("Fill this form")]
+    [InlineData("Fill this page with the supplied answers")]
+    [InlineData("Use browser automation to answer and fill this")]
+    [InlineData("I selected these questions; solve and fill the quiz")]
+    [InlineData("I selected a paragraph; paste it into this form")]
+    public void Explicit_page_mutation_starts_browser_automation(string request)
+    {
+        var result = _classifier.Classify(request);
+
         Assert.Equal(BrowserAutomationDecision.BrowserAutomation, result.Decision);
     }
 

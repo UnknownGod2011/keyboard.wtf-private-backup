@@ -45,6 +45,7 @@ public sealed class BrowserClassification
     public BrowserAutomationDecision Decision { get; init; }
     public string Reason { get; init; } = "";
     public bool RefersToCurrentPage { get; init; }
+    public bool PrefersSelectedContent { get; init; }
 }
 
 public sealed class BrowserAutomationSnapshot

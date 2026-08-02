@@ -23,8 +23,9 @@ public sealed class CommandRegistry
     private readonly SmartActionPlanner _actionPlanner = new();
     private readonly object _browserPreRouteLock = new();
     private CancellationTokenSource _actionCts;
-    private string _browserPreRouteTaskId = "";
-    private DateTime _browserPreRouteUtc;
+    private BrowserPreRouteReceipt _browserPreRouteReceipt;
+    private string _awaitingLocalTextEcho = "";
+    private DateTime _awaitingLocalTextEchoUtc;
     private bool _browserPreRouteOwnsCurrentTurn;
     private string _latestJarvisUserTurn = "";
     private DateTime _latestJarvisUserTurnUtc;
@@ -80,19 +81,44 @@ public sealed class CommandRegistry
     public void ObserveJarvisTranscript(string text) =>
         TryPreRouteJarvisTranscript(text);
 
-    public bool TryPreRouteJarvisTranscript(string text)
+    public bool TryPreRouteJarvisTranscript(string text, bool fromLocalTextSubmission = false)
     {
         _automation?.ObserveUserTranscript(text);
+        var userTurn = (text ?? "").Trim();
+        if (userTurn.Length == 0)
+            return false;
 
-        // A newly observed user turn always gets a fresh tool-ownership decision.
-        // This keeps normal Jarvis conversation available while a background
-        // browser task is running, while still preventing one browser request
-        // from also firing generic active-window keyboard or desktop tools.
+        // Text turns are first pre-routed locally, then echoed by Gemini Live
+        // as input transcription. Reuse that one receipt for the echo so a
+        // click/tab switch/browser start is never performed twice.
         lock (_browserPreRouteLock)
         {
+            var now = DateTime.UtcNow;
+            if (!fromLocalTextSubmission
+                && _browserPreRouteReceipt?.IsEchoOf(userTurn, now) == true
+                && !string.IsNullOrWhiteSpace(_awaitingLocalTextEcho)
+                && now - _awaitingLocalTextEchoUtc <= TimeSpan.FromSeconds(12))
+            {
+                _awaitingLocalTextEcho = "";
+                _browserPreRouteOwnsCurrentTurn = true;
+                _latestJarvisUserTurn = BrowserAutomationText.Truncate(userTurn, 4000);
+                _latestJarvisUserTurnUtc = now;
+                return true;
+            }
+
             _browserPreRouteOwnsCurrentTurn = false;
-            _latestJarvisUserTurn = BrowserAutomationText.Truncate(text.Trim(), 4000);
-            _latestJarvisUserTurnUtc = DateTime.UtcNow;
+            _browserPreRouteReceipt = null;
+            _latestJarvisUserTurn = BrowserAutomationText.Truncate(userTurn, 4000);
+            _latestJarvisUserTurnUtc = now;
+            if (fromLocalTextSubmission)
+            {
+                _awaitingLocalTextEcho = userTurn;
+                _awaitingLocalTextEchoUtc = now;
+            }
+            else
+            {
+                _awaitingLocalTextEcho = "";
+            }
         }
 
         if (_browserAutomation != null
@@ -126,8 +152,13 @@ public sealed class CommandRegistry
 
             lock (_browserPreRouteLock)
             {
-                _browserPreRouteTaskId = "";
-                _browserPreRouteUtc = DateTime.UtcNow;
+                _browserPreRouteReceipt = new BrowserPreRouteReceipt
+                {
+                    UserTurn = userTurn,
+                    ToolName = "browser_action",
+                    Ok = ok,
+                    Message = message,
+                };
                 _browserPreRouteOwnsCurrentTurn = true;
             }
             if (ok)
@@ -151,8 +182,13 @@ public sealed class CommandRegistry
                 : "";
             lock (_browserPreRouteLock)
             {
-                _browserPreRouteTaskId = "";
-                _browserPreRouteUtc = DateTime.UtcNow;
+                _browserPreRouteReceipt = new BrowserPreRouteReceipt
+                {
+                    UserTurn = userTurn,
+                    ToolName = "browser_action",
+                    Ok = ok,
+                    Message = message,
+                };
                 _browserPreRouteOwnsCurrentTurn = true;
             }
             if (ok)
@@ -182,14 +218,21 @@ public sealed class CommandRegistry
         if (classification.Decision != BrowserAutomationDecision.BrowserAutomation)
             return false;
 
-        var result = _browserAutomation.Start(text);
-        if (string.IsNullOrWhiteSpace(result.TaskId))
+        var result = _browserAutomation.Start(userTurn);
+        if (!result.Started || string.IsNullOrWhiteSpace(result.TaskId))
             return false;
 
         lock (_browserPreRouteLock)
         {
-            _browserPreRouteTaskId = result.TaskId;
-            _browserPreRouteUtc = DateTime.UtcNow;
+            _browserPreRouteReceipt = new BrowserPreRouteReceipt
+            {
+                UserTurn = userTurn,
+                ToolName = "browser_automation",
+                Ok = true,
+                Started = true,
+                TaskId = result.TaskId,
+                Message = result.Message,
+            };
             _browserPreRouteOwnsCurrentTurn = true;
         }
         AppLog.Info(
@@ -225,6 +268,9 @@ public sealed class CommandRegistry
 
         try
         {
+            if (TryGetPreRoutedToolResult(toolName, out var preRoutedResult))
+                return preRoutedResult;
+
             if (ShouldBlockCompetingToolForPreRoutedBrowserTurn(toolName))
             {
                 return ToolResult(
@@ -275,8 +321,11 @@ public sealed class CommandRegistry
     {
         lock (_browserPreRouteLock)
         {
-            return _browserPreRouteOwnsCurrentTurn
-                && !IsBrowserTaskLifecycleTool(toolName);
+            if (!_browserPreRouteOwnsCurrentTurn)
+                return false;
+
+            return _browserPreRouteReceipt?.BlocksCompetingTool(toolName, DateTime.UtcNow)
+                ?? !IsBrowserTaskLifecycleTool(toolName);
         }
     }
 
@@ -842,29 +891,15 @@ public sealed class CommandRegistry
         var request = ResolveBrowserAutomationTask(
             GetString(args, "task"),
             RecentJarvisUserTurn());
-        var recent = RecentPreRoutedBrowserTask();
-        if (recent != null)
-        {
-            return new Dictionary<string, object>
-            {
-                ["ok"] = true,
-                ["started"] = false,
-                ["supported"] = true,
-                ["needs_clarification"] = false,
-                ["task_id"] = recent.TaskId,
-                ["message"] = recent.State is BrowserTaskState.Completed or BrowserTaskState.CompletedWithNote
-                    ? recent.ResultSummary
-                    : "This browser request is already being handled in the existing Chrome session.",
-                ["routing_reason"] = "The local transcript classifier already routed this user turn.",
-                ["lifecycle_note"] = "The local coordinator remains authoritative for current task state.",
-            };
-        }
-
         var result = _browserAutomation.Start(request);
+        var lifecycleState = result.Started
+            ? "starting"
+            : NormalizeBrowserTaskState(_browserAutomation.Snapshot());
         return new Dictionary<string, object>
         {
             ["ok"] = result.Started,
             ["started"] = result.Started,
+            ["state"] = lifecycleState,
             ["supported"] = true,
             ["needs_clarification"] = result.NeedsClarification,
             ["needs_consent"] = result.NeedsConsent,
@@ -910,26 +945,43 @@ public sealed class CommandRegistry
         return user;
     }
 
-    private BrowserAutomationSnapshot RecentPreRoutedBrowserTask()
+    private bool TryGetPreRoutedToolResult(
+        string toolName,
+        out Dictionary<string, object> result)
     {
-        string taskId;
-        DateTime startedUtc;
         lock (_browserPreRouteLock)
         {
-            taskId = _browserPreRouteTaskId;
-            startedUtc = _browserPreRouteUtc;
-        }
+            var receipt = _browserPreRouteReceipt;
+            if (receipt?.AppliesTo(toolName, DateTime.UtcNow) != true)
+            {
+                result = null;
+                return false;
+            }
 
-        if (string.IsNullOrWhiteSpace(taskId)
-            || DateTime.UtcNow - startedUtc > TimeSpan.FromSeconds(8))
-        {
-            return null;
-        }
+            if (string.Equals(toolName, "browser_automation", StringComparison.Ordinal))
+            {
+                result = new Dictionary<string, object>
+                {
+                    ["ok"] = receipt.Ok,
+                    ["started"] = receipt.Started,
+                    ["state"] = receipt.Started ? "starting" : "idle",
+                    ["supported"] = true,
+                    ["needs_clarification"] = false,
+                    ["task_id"] = receipt.TaskId,
+                    ["message"] = receipt.Message,
+                    ["routing_reason"] = "The local transcript router already started this exact browser task.",
+                    ["lifecycle_note"] = "A browser task is started, not completed. Use browser_automation_status for live progress.",
+                };
+                return true;
+            }
 
-        var snapshot = _browserAutomation.Snapshot();
-        return string.Equals(snapshot.TaskId, taskId, StringComparison.Ordinal)
-            ? snapshot
-            : null;
+            result = ToolResult(
+                receipt.Ok,
+                receipt.Message,
+                supported: true,
+                detail: "The verified local browser command was already executed once for this user turn.");
+            return true;
+        }
     }
 
     private Dictionary<string, object> BrowserAutomationStatus()
@@ -943,7 +995,9 @@ public sealed class CommandRegistry
         {
             ["ok"] = true,
             ["task_id"] = status.TaskId,
-            ["state"] = status.State.ToString(),
+            ["state"] = NormalizeBrowserTaskState(status),
+            ["detail_state"] = status.State.ToString(),
+            ["is_active"] = status.CanCancel,
             ["current_action"] = status.CurrentAction,
             ["current_domain"] = status.CurrentDomain,
             ["current_tab_title"] = status.CurrentTabTitle,
@@ -957,6 +1011,22 @@ public sealed class CommandRegistry
             ["result"] = status.ResultSummary,
             ["last_error"] = status.LastError,
             ["helper_connected"] = helper.CommandChannelReady,
+        };
+    }
+
+    internal static string NormalizeBrowserTaskState(BrowserAutomationSnapshot snapshot)
+    {
+        if (snapshot == null || string.IsNullOrWhiteSpace(snapshot.TaskId))
+            return "idle";
+
+        return snapshot.State switch
+        {
+            BrowserTaskState.Queued => "starting",
+            BrowserTaskState.Paused or BrowserTaskState.NeedsUserAction => "paused",
+            BrowserTaskState.Completed or BrowserTaskState.CompletedWithNote => "completed",
+            BrowserTaskState.Cancelled => "cancelled",
+            BrowserTaskState.Partial or BrowserTaskState.Blocked or BrowserTaskState.Failed => "failed",
+            _ => "running",
         };
     }
 

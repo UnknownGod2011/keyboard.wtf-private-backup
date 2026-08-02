@@ -10,6 +10,7 @@ public sealed class GeminiLiveConversationService : IDisposable
 {
     private const string Model = "gemini-3.1-flash-live-preview";
     private static readonly TimeSpan PreviousTurnGracePeriod = TimeSpan.FromSeconds(8);
+    internal static readonly TimeSpan PlaybackBufferDuration = TimeSpan.FromSeconds(45);
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly SemaphoreSlim _textTurnLock = new(1, 1);
     private readonly object _turnStateLock = new();
@@ -332,14 +333,37 @@ public sealed class GeminiLiveConversationService : IDisposable
 
     private void StartPlayback()
     {
-        _playbackBuffer = new BufferedWaveProvider(new WaveFormat(24000, 16, 1))
-        {
-            BufferDuration = TimeSpan.FromSeconds(12),
-            DiscardOnBufferOverflow = true,
-        };
+        _playbackBuffer = CreatePlaybackBuffer();
         _speaker = new WaveOutEvent();
         _speaker.Init(_playbackBuffer);
         _speaker.Play();
+    }
+
+    internal static BufferedWaveProvider CreatePlaybackBuffer() =>
+        new(new WaveFormat(24000, 16, 1))
+        {
+            BufferDuration = PlaybackBufferDuration,
+            // Never silently discard the tail of a spoken answer. If a truly
+            // excessive response fills this bounded buffer, fail explicitly.
+            DiscardOnBufferOverflow = false,
+        };
+
+    internal static bool TryQueuePlaybackAudio(
+        BufferedWaveProvider buffer,
+        byte[] audio)
+    {
+        if (buffer == null || audio == null || audio.Length == 0)
+            return true;
+        try
+        {
+            buffer.AddSamples(audio, 0, audio.Length);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            buffer.ClearBuffer();
+            return false;
+        }
     }
 
     private void StopPlayback()
@@ -467,7 +491,18 @@ public sealed class GeminiLiveConversationService : IDisposable
                 var audio = Convert.FromBase64String(data.GetString() ?? "");
                 if (audio.Length > 0)
                 {
-                    _playbackBuffer?.AddSamples(audio, 0, audio.Length);
+                    if (!TryQueuePlaybackAudio(_playbackBuffer, audio))
+                    {
+                        AppLog.Warning(
+                            "Jarvis Live audio exceeded the bounded playback buffer; the response was stopped instead of silently truncating it.");
+                        _playbackBuffer?.ClearBuffer();
+                        MarkTurnCompleted();
+                        KeyboardWtfState.SetUi(
+                            VoiceUiPhase.Error,
+                            "Jarvis speech interrupted",
+                            "The spoken response was too long to play safely. Please ask me to repeat it more briefly.");
+                        return;
+                    }
                     KeyboardWtfState.SetUi(VoiceUiPhase.Speaking, AssistantName(), "Speaking...");
                 }
             }
@@ -666,7 +701,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             "If the local resolver returns multiple candidates, read only the short names, ask the user to choose, and then retry with the chosen name or path. Do not guess between ambiguous matches. " +
             "If the user corrects an app, file, folder, link, or browser choice, ask whether they want that correction remembered. Call a remember tool only after they explicitly approve it. " +
             "Use list_learned_mappings and forget_learned_mapping for requests to inspect or forget local mappings. " +
-            "Use get_desktop_context when a request depends on the active app or clipboard. Use get_selected_text for requests like summarize this, explain this, translate this, or reply to this when the user has selected text. " +
+            "Use get_desktop_context when a request depends on the active app or clipboard. Re-evaluate routing independently for every user turn; never carry selected-content mode or page-action mode forward from the previous turn. If the current request explicitly says the user selected or highlighted something, call get_selected_text and use that selection as normal answer context. The selection may be one word needing a definition, a paragraph needing a summary, questions needing answers, or any other content, including content inside a webpage or form. Do not start browser automation for that turn unless the same current request explicitly asks to fill, enter, click, choose, submit, paste, or otherwise modify the page. A current request to fill, complete, or solve a form, quiz, questionnaire, assessment, or survey without mentioning a selection is a page-action request and should use browser automation; do not ask the user to select text merely because the previous turn used a selection. For a bare answer this, solve these, explain this, or what does this mean request with neither explicit selection context nor a clear page-action target, ask one short clarification. " +
             "Use the existing open_url, web_search, browser_action, and app tools for simple browser work such as opening a site, opening a known URL, searching Google, searching YouTube, searching Amazon through a direct search URL, opening or closing tabs, refreshing, or going back. Never start smart browser automation for those simple tasks. " +
             "Call browser_automation when the requested outcome depends on live webpage state: reading or summarizing the current page when selected text is insufficient; clicking, choosing, filtering, filling, copying, pasting, or inspecting page controls; using logged-in state; adding to cart; opening oldest/latest results; multi-step navigation; or reacting to a popup or dynamic page. Pass the user's complete request unchanged. " +
             "Browser automation starts in the background, but it does not own the whole conversation. While it runs, continue to use normal desktop and browser tools for unrelated requests. For example, change/switch Chrome tabs, Ctrl+number tab shortcuts, open/close tabs, and normal questions are never browser-task guidance and must not be sent to the controlled page. Use browser_automation_control guide only for an explicit correction to the active task such as continue, use the second result, choose the other option, do not submit, or I finished the login. For every new browser-interaction request, call browser_automation again even if a similar request ran earlier; the local coordinator is the only authority on whether a task is still active and safely rejects conflicts. Never reuse an earlier started/completed result as proof for the new request. Use browser_automation_status for what-are-you-doing/status questions. " +

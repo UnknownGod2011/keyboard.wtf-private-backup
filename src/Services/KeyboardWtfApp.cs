@@ -168,8 +168,11 @@ public sealed class KeyboardWtfApp : IDisposable
         if (!_liveConversation.IsActive)
             throw new InvalidOperationException("Jarvis could not start. Check the Gemini key, microphone, and app logs.");
 
-        if (_commands?.TryPreRouteJarvisTranscript(text) == true)
-            return;
+        // Start deterministic or browser work promptly, but still let the
+        // Live conversation receive the turn. CommandRegistry supplies the
+        // matching verified receipt to the model, which lets Jarvis say
+        // "started" or "switched" rather than silently returning early.
+        _commands?.TryPreRouteJarvisTranscript(text, fromLocalTextSubmission: true);
 
         await _liveConversation.SendTextTurnAsync(
             BrowserAutomationText.Truncate(text.Trim(), 4000),
