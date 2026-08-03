@@ -1,6 +1,7 @@
 namespace KeyboardWtf;
 
 using System.Diagnostics;
+using KeyboardWtf.Services;
 
 internal static class AppLog
 {
@@ -9,9 +10,7 @@ internal static class AppLog
 
     public static void Init()
     {
-        var dir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "keyboard.wtf", "logs");
+        var dir = Path.Combine(SettingsService.AppDataDir, "logs");
         Directory.CreateDirectory(dir);
         _logFile = Path.Combine(dir, "keyboard.wtf.log");
         Info("keyboard.wtf logging started");

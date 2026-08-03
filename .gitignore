@@ -405,6 +405,13 @@ FodyWeavers.xsd
 .env.*
 !.env.example
 *.local.json
+staging/**/.vercel/
+staging/**/.firebase/
+staging/**/appsettings.Development.json
+staging/**/service-account*.json
+staging/**/firebase-admin*.json
+output/playwright/
+.playwright-cli/
 
 # Local tooling and generated files
 official_docs/

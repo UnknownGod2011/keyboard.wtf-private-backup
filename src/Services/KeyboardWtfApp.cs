@@ -6,6 +6,7 @@ using KeyboardWtf.Destinations;
 using KeyboardWtf.Models;
 using KeyboardWtf.Services.Ai;
 using KeyboardWtf.Services.BrowserAutomationV2;
+using KeyboardWtf.Services.PaidStaging;
 
 public sealed class KeyboardWtfApp : IDisposable
 {
@@ -30,6 +31,7 @@ public sealed class KeyboardWtfApp : IDisposable
     private BrowserHelperBridge _browserHelper;
     private BrowserAutomationPlanner _browserPlanner;
     private BrowserAutomationCoordinator _browserAutomation;
+    private PaidAccountService _paidAccount;
     private JarvisTimerService _timers;
     private System.Windows.Forms.Timer _startupHotkeyRetryTimer;
     private int _startupHotkeyRetryCount;
@@ -56,22 +58,35 @@ public sealed class KeyboardWtfApp : IDisposable
         _intentMemory.Load();
         _jarvisHistory.Load();
         _learnedMappings.Load();
-        SyncStartupRegistration();
-        RegisterBrowserNativeHost();
+        _paidAccount = new PaidAccountService();
+        if (!_paidAccount.Enabled)
+        {
+            SyncStartupRegistration();
+            RegisterBrowserNativeHost();
+        }
+        else
+        {
+            AppLog.Info("Paid staging mode: startup and native-host registrations were left unchanged");
+        }
         ApplySecretEnvironmentOverrides();
-        AiProviderRegistry.Initialize(_claudeApi);
+        AiProviderRegistry.Initialize(_claudeApi, _paidAccount);
         RegisterDestinations();
 
         _capture = new VoiceCaptureService(_audioRecorder, _speechRecognition, _notifications, _router);
-        _liveConversation = new GeminiLiveConversationService(_notifications, _settings, _intentMemory);
+        _liveConversation = new GeminiLiveConversationService(
+            _notifications,
+            _settings,
+            _intentMemory,
+            _paidAccount);
         _browserHelper = new BrowserHelperBridge();
         _browserHelper.Start();
-        _browserPlanner = new BrowserAutomationPlanner();
+        _browserPlanner = new BrowserAutomationPlanner(_paidAccount);
         _browserAutomation = new BrowserAutomationCoordinator(
             _settings,
             _notifications,
             _browserHelper,
-            _browserPlanner);
+            _browserPlanner,
+            _paidAccount);
         _timers = new JarvisTimerService(_notifications, _jarvisHistory);
         _browserAutomation.AnnouncementRequested += HandleLifecycleAnnouncement;
         _timers.AnnouncementRequested += HandleLifecycleAnnouncement;
@@ -81,7 +96,8 @@ public sealed class KeyboardWtfApp : IDisposable
             _jarvisHistory,
             _learnedMappings,
             OpenSettings,
-            _timers);
+            _timers,
+            _paidAccount);
         _commands = new CommandRegistry(
             this,
             _capture,
@@ -106,8 +122,11 @@ public sealed class KeyboardWtfApp : IDisposable
             _jarvisHistory,
             _learnedMappings,
             _jarvisAutomation,
-            _browserAutomation);
+            _browserAutomation,
+            _paidAccount);
         WebSettingsService.Instance.Start();
+        if (_paidAccount.Enabled)
+            _ = InitializePaidAccountAsync();
 
         _hotkeys.RegistrationFailed += (name, reason) => _notifications.Warning("Hotkey unavailable", $"{name}: {reason}");
         _hotkeys.RegistrationFallbackUsed += (name, requested, fallback) =>
@@ -135,6 +154,17 @@ public sealed class KeyboardWtfApp : IDisposable
         return _hotkeys.RegisterDefaults(_settings.Current.Hotkeys, _commands);
     }
 
+    public bool TryUpdateHotkeys(HotkeySettings requested, out string error)
+    {
+        if (!_hotkeys.TryReplaceAll(requested, _commands, out error))
+            return false;
+        _settings.SaveHotkeys(requested);
+        return true;
+    }
+
+    public bool TryResetHotkeys(out string error) =>
+        TryUpdateHotkeys(HotkeySettings.Defaults(), out error);
+
     private void ScheduleStartupHotkeyRetry()
     {
         _startupHotkeyRetryTimer?.Dispose();
@@ -155,6 +185,18 @@ public sealed class KeyboardWtfApp : IDisposable
     }
 
     public void OpenSettings() => WebSettingsService.Instance.OpenInBrowser();
+
+    private async Task InitializePaidAccountAsync()
+    {
+        try
+        {
+            await _paidAccount.InitializeAsync();
+        }
+        catch (Exception exception)
+        {
+            AppLog.Warning(exception, "Paid account initialization failed");
+        }
+    }
 
     public async Task SendJarvisTextTurnAsync(string text, CancellationToken token = default)
     {
@@ -260,8 +302,18 @@ public sealed class KeyboardWtfApp : IDisposable
     public void SyncStartupRegistration() =>
         WindowsStartupService.Sync(_settings.Current.StartWithWindows, StartupExecutablePath);
 
-    private static void OpenFirstRunSetup()
+    private void OpenFirstRunSetup()
     {
+        if (_paidAccount?.Enabled == true)
+        {
+            if (!_paidAccount.IsSignedIn)
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(900);
+                    WebSettingsService.Instance.OpenInBrowser("#account-billing");
+                });
+            return;
+        }
         if (!string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey))
             return;
 
@@ -307,6 +359,8 @@ public sealed class KeyboardWtfApp : IDisposable
 
     private void ApplySecretEnvironmentOverrides()
     {
+        if (_paidAccount?.Enabled == true && !_paidAccount.EmergencyByokEnabled)
+            return;
         var geminiKey = Environment.GetEnvironmentVariable("KEYBOARD_WTF_GEMINI_API_KEY");
         if (!string.IsNullOrWhiteSpace(geminiKey) && string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey))
         {
@@ -439,6 +493,7 @@ public sealed class KeyboardWtfApp : IDisposable
         _liveConversation?.Dispose();
         _timers?.Dispose();
         _browserAutomation?.Dispose();
+        _paidAccount?.Dispose();
         _jarvisAutomation?.Dispose();
         _overlay?.Dispose();
     }

@@ -11,6 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using KeyboardWtf.Models;
 using KeyboardWtf.Services.BrowserAutomationV2;
+using KeyboardWtf.Services.PaidStaging;
 using NAudio.Wave;
 
 public sealed class WebSettingsService : IDisposable
@@ -31,6 +32,7 @@ public sealed class WebSettingsService : IDisposable
     private LearnedMappingService _learnedMappings;
     private JarvisAutomationService _jarvisAutomation;
     private BrowserAutomationCoordinator _browserAutomation;
+    private PaidAccountService _paidAccount;
     private readonly BrowserNativeHostInstaller _browserNativeHostInstaller = new();
     private string _settingsHtml;
 
@@ -59,7 +61,7 @@ public sealed class WebSettingsService : IDisposable
         }
     }
 
-    public void Initialize(
+    internal void Initialize(
         KeyboardWtfApp app,
         SettingsService settings,
         HotkeyService hotkeys,
@@ -67,7 +69,8 @@ public sealed class WebSettingsService : IDisposable
         JarvisActionHistoryService jarvisHistory,
         LearnedMappingService learnedMappings,
         JarvisAutomationService jarvisAutomation,
-        BrowserAutomationCoordinator browserAutomation)
+        BrowserAutomationCoordinator browserAutomation,
+        PaidAccountService paidAccount = null)
     {
         _app = app;
         _settings = settings;
@@ -77,6 +80,7 @@ public sealed class WebSettingsService : IDisposable
         _learnedMappings = learnedMappings;
         _jarvisAutomation = jarvisAutomation;
         _browserAutomation = browserAutomation;
+        _paidAccount = paidAccount;
         _settingsHtml = LoadSettingsHtml();
     }
 
@@ -176,9 +180,25 @@ public sealed class WebSettingsService : IDisposable
             }
             else if (path == "/api/hotkeys/reset" && method == "POST")
             {
-                _settings?.ResetHotkeys();
-                _app?.RegisterHotkeys();
-                await WriteJson(resp, new { ok = true });
+                string error = null;
+                if (_app?.TryResetHotkeys(out error) == true)
+                    await WriteJson(resp, new { ok = true });
+                else
+                {
+                    resp.StatusCode = 409;
+                    await WriteJson(resp, new { ok = false, error = error ?? "Hotkeys could not be reset." });
+                }
+            }
+            else if (path.StartsWith("/api/paid/", StringComparison.Ordinal)
+                && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Settings action header required." });
+                    return;
+                }
+                await HandlePaidAccountAction(path, resp);
             }
             else if (path == "/api/intent-memory/delete" && method == "POST")
             {
@@ -525,16 +545,23 @@ public sealed class WebSettingsService : IDisposable
             preferredBrowser = _settings?.Current.PreferredBrowser ?? "",
             learnedMappings = _learnedMappings?.Snapshot() ?? Array.Empty<LearnedMappingEntry>(),
             browserAutomation = BrowserAutomationSettingsSnapshot(),
+            paidAccount = PaidAccountSettingsSnapshot(),
             featureStatus = new
             {
                 smartAppSearch = "Available",
                 smartFileSearch = "Available",
                 browserTargeting = "Available",
-                screenGuidance = string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey)
-                    ? "Needs Gemini API key"
-                    : (_settings?.Current.JarvisPermissionMode == JarvisPermissionMode.AutoExecute
-                        ? "Available in auto-execute"
-                        : "Available with confirmation"),
+                screenGuidance = _paidAccount?.Enabled == true
+                    ? (!_paidAccount.IsSignedIn
+                        ? "Sign in with Google"
+                        : (_paidAccount.Account?.AvailableCreditMicros > 0
+                            ? "Available through paid staging"
+                            : "Add credits to use"))
+                    : (string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey)
+                        ? "Needs Gemini API key"
+                        : (_settings?.Current.JarvisPermissionMode == JarvisPermissionMode.AutoExecute
+                            ? "Available in auto-execute"
+                            : "Available with confirmation")),
                 cameraCapture = "One-shot photo capture available",
                 virtualDesktops = "Available",
                 windowsRecording = "Game Bar + region shortcuts available",
@@ -746,8 +773,21 @@ public sealed class WebSettingsService : IDisposable
                 return;
             }
 
-            _settings?.SaveHotkeys(hotkeys);
-            _app?.RegisterHotkeys();
+            string registrationError = null;
+            if (_app?.TryUpdateHotkeys(hotkeys, out registrationError) != true)
+            {
+                resp.StatusCode = 409;
+                var error = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+                {
+                    ok = false,
+                    error = registrationError ?? "The requested hotkeys could not be registered.",
+                }));
+                resp.ContentType = "application/json";
+                resp.ContentLength64 = error.Length;
+                await resp.OutputStream.WriteAsync(error);
+                resp.Close();
+                return;
+            }
         }
 
         var buffer = Encoding.UTF8.GetBytes("{\"ok\":true}");
@@ -1354,6 +1394,72 @@ public sealed class WebSettingsService : IDisposable
                 resultSummary = task.ResultSummary,
             },
         };
+    }
+
+    private object PaidAccountSettingsSnapshot()
+    {
+        var account = _paidAccount?.Account;
+        return new
+        {
+            enabled = _paidAccount?.Enabled ?? false,
+            signedIn = _paidAccount?.IsSignedIn ?? false,
+            email = account?.Email ?? "",
+            displayName = account?.DisplayName ?? "",
+            status = account?.Status ?? "signed_out",
+            planId = account?.PlanId ?? "none",
+            subscriptionStatus = account?.SubscriptionStatus ?? "none",
+            availableCreditMicros = account?.AvailableCreditMicros ?? 0,
+            reservedCreditMicros = account?.ReservedCreditMicros ?? 0,
+            cycleUsageCreditMicros = account?.CycleUsageCreditMicros ?? 0,
+            cycleEndsAt = account?.CycleEndsAt,
+            deviceId = account?.Devices?.FirstOrDefault(device =>
+                string.Equals(device.Status, "active", StringComparison.OrdinalIgnoreCase))?.DeviceId ?? "",
+            lastError = _paidAccount?.LastError ?? "",
+            emergencyByokEnabled = _paidAccount?.EmergencyByokEnabled ?? false,
+        };
+    }
+
+    private async Task HandlePaidAccountAction(string path, HttpListenerResponse response)
+    {
+        try
+        {
+            if (_paidAccount?.Enabled != true)
+                throw new InvalidOperationException("Paid staging is not enabled for this build.");
+            switch (path)
+            {
+                case "/api/paid/sign-in":
+                    await _paidAccount.SignInAsync(_cts?.Token ?? CancellationToken.None);
+                    break;
+                case "/api/paid/refresh":
+                    await _paidAccount.RefreshAccountAsync(_cts?.Token ?? CancellationToken.None);
+                    break;
+                case "/api/paid/sign-out":
+                    await _paidAccount.SignOutAsync(false, _cts?.Token ?? CancellationToken.None);
+                    break;
+                case "/api/paid/manage":
+                    _paidAccount.OpenManageAccount();
+                    break;
+                case "/api/paid/billing":
+                    _paidAccount.OpenBilling();
+                    break;
+                default:
+                    response.StatusCode = 404;
+                    await WriteJson(response, new { ok = false, error = "Unknown paid account action." });
+                    return;
+            }
+            await WriteJson(response, new { ok = true, account = PaidAccountSettingsSnapshot() });
+        }
+        catch (OperationCanceledException)
+        {
+            response.StatusCode = 408;
+            await WriteJson(response, new { ok = false, error = "The account action was cancelled." });
+        }
+        catch (Exception exception)
+        {
+            AppLog.Warning(exception, "Paid account settings action failed");
+            response.StatusCode = 400;
+            await WriteJson(response, new { ok = false, error = exception.Message });
+        }
     }
 
     private async Task SendJarvisTextTurn(

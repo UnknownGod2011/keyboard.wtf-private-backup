@@ -32,3 +32,11 @@ internal interface IAiProvider
     /// <summary>Low-cost smoke test for the currently-configured API key.</summary>
     Task<(bool success, string message)> TestApiKeyAsync();
 }
+
+internal interface IStructuredAiProvider : IAiProvider
+{
+    Task<T> GenerateStructuredAsync<T>(
+        string prompt,
+        object responseSchema,
+        CancellationToken cancellationToken = default);
+}

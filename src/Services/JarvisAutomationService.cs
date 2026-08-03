@@ -10,6 +10,7 @@ using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using KeyboardWtf.Helpers;
 using KeyboardWtf.Services.BrowserAutomationV2;
+using KeyboardWtf.Services.PaidStaging;
 
 public sealed class JarvisAutomationService : IDisposable
 {
@@ -30,7 +31,7 @@ public sealed class JarvisAutomationService : IDisposable
     private readonly AppResolverService _apps;
     private readonly SmartFileSearchService _files;
     private readonly BrowserLauncherService _browsers;
-    private readonly GeminiScreenGuidanceService _screenGuidance = new();
+    private readonly GeminiScreenGuidanceService _screenGuidance;
     private readonly WebcamCaptureService _webcam = new();
     private readonly Action _openSettings;
     private readonly object _pendingLock = new();
@@ -48,6 +49,25 @@ public sealed class JarvisAutomationService : IDisposable
         LearnedMappingService mappings,
         Action openSettings,
         JarvisTimerService timerService = null)
+        : this(
+            notifications,
+            settings,
+            history,
+            mappings,
+            openSettings,
+            timerService,
+            null)
+    {
+    }
+
+    internal JarvisAutomationService(
+        NotificationService notifications,
+        SettingsService settings,
+        JarvisActionHistoryService history,
+        LearnedMappingService mappings,
+        Action openSettings,
+        JarvisTimerService timerService,
+        PaidAccountService paidAccount = null)
     {
         _notifications = notifications;
         _settings = settings;
@@ -56,6 +76,7 @@ public sealed class JarvisAutomationService : IDisposable
         _apps = new AppResolverService(mappings);
         _files = new SmartFileSearchService(mappings);
         _browsers = new BrowserLauncherService(_apps, settings);
+        _screenGuidance = new GeminiScreenGuidanceService(paidAccount);
         _openSettings = openSettings;
         _timerService = timerService ?? new JarvisTimerService(notifications, history);
         _ownsTimerService = timerService == null;

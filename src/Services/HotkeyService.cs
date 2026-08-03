@@ -41,6 +41,62 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
         return results.All(result => result);
     }
 
+    public bool TryReplaceAll(
+        HotkeySettings settings,
+        CommandRegistry commands,
+        out string error)
+    {
+        error = "";
+        if (settings == null || commands == null)
+        {
+            error = "Hotkey settings are unavailable.";
+            return false;
+        }
+        if (HasDuplicates(settings, out var duplicate))
+        {
+            error = $"Duplicate hotkey: {duplicate}";
+            return false;
+        }
+
+        var previous = _handlers.Values.ToArray();
+        UnregisterAll();
+        if (!_filterAdded)
+        {
+            Application.AddMessageFilter(this);
+            _filterAdded = true;
+        }
+        var requested = new (string Name, string Hotkey, Action Handler)[]
+        {
+            ("SmartWriting", settings.PushToTalk, commands.ToggleSmartMode),
+            ("Dictation", settings.Dictation, commands.ToggleDictation),
+            ("Jarvis", settings.Jarvis, commands.ToggleJarvisMode),
+            ("Cancel", settings.Cancel, commands.CancelCurrent),
+            ("OpenSettings", settings.OpenSettings, commands.OpenSettings),
+        };
+
+        foreach (var binding in requested)
+        {
+            if (TryRegister(binding.Name, binding.Hotkey, binding.Handler, out var reason))
+                continue;
+
+            UnregisterAll();
+            var rollbackFailures = new List<string>();
+            foreach (var old in previous)
+            {
+                if (!TryRegister(old.Name, old.Hotkey, old.Handler, out var rollbackReason))
+                    rollbackFailures.Add($"{old.Name}: {rollbackReason}");
+            }
+            error = rollbackFailures.Count == 0
+                ? reason
+                : $"{reason} Previous hotkeys could not be fully restored: {string.Join("; ", rollbackFailures)}";
+            AppLog.Warning($"Hotkey replacement rolled back: {error}");
+            return false;
+        }
+
+        AppLog.Info("Hotkey replacement committed atomically");
+        return true;
+    }
+
     public static bool HasDuplicates(HotkeySettings settings, out string duplicate)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -147,10 +203,11 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
             .Select(p => p.Equals("Control", StringComparison.OrdinalIgnoreCase) ? "Ctrl" : p)
             .Select(p => p.ToUpperInvariant()));
 
-    private static bool TryParse(string hotkey, out uint modifiers, out Keys key)
+    internal static bool TryParse(string hotkey, out uint modifiers, out Keys key)
     {
         modifiers = 0;
         key = Keys.None;
+        var keyCount = 0;
 
         foreach (var raw in (hotkey ?? string.Empty).Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
@@ -163,15 +220,35 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
             else if (raw.Equals("Win", StringComparison.OrdinalIgnoreCase) || raw.Equals("Windows", StringComparison.OrdinalIgnoreCase))
                 modifiers |= ModWin;
             else if (raw == ",")
+            {
                 key = Keys.Oemcomma;
+                keyCount++;
+            }
             else if (raw.Equals("Space", StringComparison.OrdinalIgnoreCase))
+            {
                 key = Keys.Space;
+                keyCount++;
+            }
             else if (Enum.TryParse<Keys>(raw, true, out var parsed))
+            {
                 key = parsed;
+                keyCount++;
+            }
+            else
+                return false;
         }
 
-        return key != Keys.None;
+        return keyCount == 1
+            && key != Keys.None
+            && modifiers != 0
+            && !IsReservedWindowsCombination(modifiers, key);
     }
+
+    private static bool IsReservedWindowsCombination(uint modifiers, Keys key) =>
+        (modifiers == ModAlt && key is Keys.F4 or Keys.Tab)
+        || (modifiers == (ModControl | ModShift) && key == Keys.Escape)
+        || (modifiers == (ModControl | ModAlt) && key == Keys.Delete)
+        || (modifiers == ModWin && key is Keys.L or Keys.D or Keys.E or Keys.R or Keys.Tab);
 
     private const uint ModAlt = 0x0001;
     private const uint ModControl = 0x0002;

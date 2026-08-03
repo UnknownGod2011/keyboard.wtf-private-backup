@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using KeyboardWtf.Models;
+using KeyboardWtf.Services.PaidStaging;
 
 public sealed class BrowserPlannerAction
 {
@@ -153,6 +154,12 @@ public sealed class BrowserAutomationPlanner : IDisposable
         StringComparer.OrdinalIgnoreCase);
     private string _healthTaskId = "";
     private string _lastModel = "";
+    private readonly PaidAccountService _paidAccount;
+
+    public BrowserAutomationPlanner() : this(null) { }
+
+    internal BrowserAutomationPlanner(PaidAccountService paidAccount) =>
+        _paidAccount = paidAccount;
 
     public string LastModel => _lastModel;
 
@@ -212,6 +219,15 @@ public sealed class BrowserAutomationPlanner : IDisposable
         string configuredModel,
         CancellationToken token)
     {
+        if (_paidAccount?.Enabled == true)
+        {
+            var rankedPaid = _ranker.Rank(request, page.Controls, 110);
+            var paidPrompt = BuildPrompt(request, page, history, rankedPaid);
+            _lastModel = "vertex-cloud-staging";
+            var paidDecision = await SendPaidStructuredAsync(paidPrompt, null, token);
+            ValidateDecision(paidDecision);
+            return paidDecision;
+        }
         if (string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey))
             throw new InvalidOperationException("A Gemini API key is required for smart browser automation.");
 
@@ -252,8 +268,6 @@ public sealed class BrowserAutomationPlanner : IDisposable
         string configuredModel,
         CancellationToken token)
     {
-        if (string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey))
-            throw new InvalidOperationException("A Gemini API key is required for visual browser recovery.");
         if (!TryParseDataUrl(screenshotDataUrl, out var mimeType, out var imageBase64))
             throw new InvalidDataException("The Chrome Helper returned an invalid screenshot.");
 
@@ -263,6 +277,19 @@ public sealed class BrowserAutomationPlanner : IDisposable
             + "The attached screenshot is the current visible viewport. Identify the requested visible control, icon, diagram, or image question. "
             + "Correlate it to one current control ID when an interactive DOM candidate exists. "
             + "Do not return an approximate coordinate. If no safe live control maps to the visual target, use needs_user_action.\n";
+
+        if (_paidAccount?.Enabled == true)
+        {
+            _lastModel = "vertex-cloud-staging";
+            var paidDecision = await SendPaidStructuredAsync(
+                prompt,
+                new PaidInlineImage(mimeType, imageBase64),
+                token);
+            ValidateDecision(paidDecision);
+            return paidDecision;
+        }
+        if (string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey))
+            throw new InvalidOperationException("A Gemini API key is required for visual browser recovery.");
 
         Exception lastError = null;
         foreach (var model in ModelCandidates(configuredModel))
@@ -344,6 +371,23 @@ public sealed class BrowserAutomationPlanner : IDisposable
             .GetString();
         return JsonSerializer.Deserialize<BrowserPlannerDecision>(text ?? "{}", JsonOptions)
             ?? throw new InvalidDataException("Gemini returned an empty browser plan.");
+    }
+
+    private async Task<BrowserPlannerDecision> SendPaidStructuredAsync(
+        string prompt,
+        PaidInlineImage image,
+        CancellationToken token)
+    {
+        var response = await _paidAccount.GenerateAsync(
+            prompt,
+            "You are the grounded browser planner for keyboard.wtf. Return only valid JSON matching the response schema.",
+            1500,
+            Schema,
+            image is null ? null : new[] { image },
+            image is null ? "browser-plan" : "browser-vision-recovery",
+            token);
+        return JsonSerializer.Deserialize<BrowserPlannerDecision>(response.Text, JsonOptions)
+            ?? throw new InvalidDataException("Cloud AI returned an empty browser plan.");
     }
 
     internal static string BuildPrompt(

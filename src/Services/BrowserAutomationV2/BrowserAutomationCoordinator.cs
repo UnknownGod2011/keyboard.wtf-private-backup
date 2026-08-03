@@ -3,6 +3,7 @@ namespace KeyboardWtf.Services.BrowserAutomationV2;
 using KeyboardWtf.Helpers;
 using System.Globalization;
 using System.Text.RegularExpressions;
+using KeyboardWtf.Services.PaidStaging;
 
 public sealed class BrowserAutomationStartResult
 {
@@ -67,17 +68,29 @@ public sealed class BrowserAutomationCoordinator : IDisposable
     private BrowserAutomationSnapshot _last = new();
     private DateTime _lastConsentPromptUtc;
     private bool _disposed;
+    private readonly PaidAccountService _paidAccount;
 
     public BrowserAutomationCoordinator(
         SettingsService settings,
         NotificationService notifications,
         BrowserHelperBridge bridge,
         BrowserAutomationPlanner planner)
+        : this(settings, notifications, bridge, planner, null)
+    {
+    }
+
+    internal BrowserAutomationCoordinator(
+        SettingsService settings,
+        NotificationService notifications,
+        BrowserHelperBridge bridge,
+        BrowserAutomationPlanner planner,
+        PaidAccountService paidAccount)
     {
         _settings = settings;
         _notifications = notifications;
         _bridge = bridge;
         _planner = planner;
+        _paidAccount = paidAccount;
     }
 
     public event Action<BrowserAutomationSnapshot> StatusChanged;
@@ -192,6 +205,26 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 Message = "Browser Automation is disabled in Settings.",
                 RoutingReason = classification.Reason,
             };
+        }
+
+        if (_paidAccount?.Enabled == true)
+        {
+            if (!_paidAccount.IsSignedIn)
+            {
+                return new BrowserAutomationStartResult
+                {
+                    Message = "Sign in with Google in Account & Billing before starting browser automation.",
+                    RoutingReason = classification.Reason,
+                };
+            }
+            if (_paidAccount.Account?.AvailableCreditMicros <= 0)
+            {
+                return new BrowserAutomationStartResult
+                {
+                    Message = "This account has no usable credits. Open Account & Billing to add credits.",
+                    RoutingReason = classification.Reason,
+                };
+            }
         }
 
         if (!_bridge.Status.CommandChannelReady)

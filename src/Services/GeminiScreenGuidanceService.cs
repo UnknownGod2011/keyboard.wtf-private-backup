@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
 using KeyboardWtf.Models;
+using KeyboardWtf.Services.PaidStaging;
 
 public sealed class GeminiScreenGuidanceService : IDisposable
 {
@@ -19,16 +20,36 @@ public sealed class GeminiScreenGuidanceService : IDisposable
     ];
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(35) };
+    private readonly PaidAccountService _paidAccount;
+
+    public GeminiScreenGuidanceService() : this(null) { }
+
+    internal GeminiScreenGuidanceService(PaidAccountService paidAccount) =>
+        _paidAccount = paidAccount;
 
     public async Task<string> InspectAsync(string request, CancellationToken token)
     {
-        if (string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey))
+        if (_paidAccount?.Enabled != true && string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey))
             throw new InvalidOperationException("Gemini is not configured.");
 
         KeyboardWtfState.SetUi(VoiceUiPhase.Executing, "Capturing screen", "One-time capture approved. Nothing is saved.");
         var image = CaptureScreenJpeg();
         token.ThrowIfCancellationRequested();
         KeyboardWtfState.SetUi(VoiceUiPhase.Thinking, "Analyzing screen", "Gemini is examining this one approved image.");
+
+        if (_paidAccount?.Enabled == true)
+        {
+            var response = await _paidAccount.GenerateAsync(
+                BuildPrompt(request),
+                null,
+                900,
+                null,
+                new[] { new PaidInlineImage("image/jpeg", Convert.ToBase64String(image)) },
+                "screen-guidance",
+                token);
+            KeyboardWtfState.SetUi(VoiceUiPhase.Done, "Guidance ready", Limit(response.Text, 120));
+            return response.Text;
+        }
 
         Exception lastError = null;
         foreach (var model in ModelCandidates)
@@ -85,23 +106,7 @@ public sealed class GeminiScreenGuidanceService : IDisposable
         string request,
         CancellationToken token)
     {
-        var userRequest = string.IsNullOrWhiteSpace(request)
-            ? "Explain what is visible and give the next safe step."
-            : request.Trim();
-        var prompt =
-            """
-            You are the screen-guidance component of keyboard.wtf on Windows.
-            Analyze only this one user-approved screenshot.
-            Give concise, step-by-step guidance about what is visibly present.
-            Identify likely buttons or controls by their visible labels and relative position.
-            Never claim you clicked, typed, submitted, or changed anything.
-            If the requested control is not visible or uncertain, say so and explain what to look for.
-            Avoid repeating private values, API keys, passwords, tokens, email bodies, financial details,
-            or personal messages visible on screen unless the user explicitly asks to read that exact content.
-            Do not infer hidden page state or browser DOM.
-
-            User request:
-            """ + userRequest;
+        var prompt = BuildPrompt(request);
         var body = new
         {
             contents = new[]
@@ -145,6 +150,27 @@ public sealed class GeminiScreenGuidanceService : IDisposable
             throw new InvalidDataException("Gemini vision returned no guidance.");
         KeyboardWtfState.SetUi(VoiceUiPhase.Done, "Guidance ready", Limit(text, 120));
         return text;
+    }
+
+    private static string BuildPrompt(string request)
+    {
+        var userRequest = string.IsNullOrWhiteSpace(request)
+            ? "Explain what is visible and give the next safe step."
+            : request.Trim();
+        return
+            """
+            You are the screen-guidance component of keyboard.wtf on Windows.
+            Analyze only this one user-approved screenshot.
+            Give concise, step-by-step guidance about what is visibly present.
+            Identify likely buttons or controls by their visible labels and relative position.
+            Never claim you clicked, typed, submitted, or changed anything.
+            If the requested control is not visible or uncertain, say so and explain what to look for.
+            Avoid repeating private values, API keys, passwords, tokens, email bodies, financial details,
+            or personal messages visible on screen unless the user explicitly asks to read that exact content.
+            Do not infer hidden page state or browser DOM.
+
+            User request:
+            """ + userRequest;
     }
 
     private static string ExtractText(string responseJson)

@@ -114,9 +114,30 @@ public sealed class SettingsService
         Converters = { new JsonStringEnumConverter() },
     };
 
-    public static string AppDataDir { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "keyboard.wtf");
+    public static string AppDataDir { get; } = ResolveAppDataDir(
+        Environment.GetEnvironmentVariable("KEYBOARD_WTF_APPDATA_DIR"),
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+
+    internal static string ResolveAppDataDir(string overridePath, string localAppData)
+    {
+        var root = Path.GetFullPath(localAppData);
+        var defaultPath = Path.Combine(root, "keyboard.wtf");
+        if (string.IsNullOrWhiteSpace(overridePath))
+            return defaultPath;
+
+        var requested = Path.GetFullPath(overridePath.Trim());
+        var relative = Path.GetRelativePath(root, requested);
+        if (relative is "."
+            || Path.IsPathRooted(relative)
+            || relative.Equals("..", StringComparison.Ordinal)
+            || relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "KEYBOARD_WTF_APPDATA_DIR must be a child of the current user's LocalAppData directory.");
+        }
+
+        return requested;
+    }
 
     public SettingsService(string settingsPath = null)
     {

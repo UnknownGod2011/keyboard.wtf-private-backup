@@ -1,0 +1,11 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // All account, ledger, payment, pricing, session, device, and usage data is
+    // backend-authoritative. Cloud Run uses IAM/Admin credentials and bypasses
+    // these client rules. Web and desktop clients must use the authenticated API.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

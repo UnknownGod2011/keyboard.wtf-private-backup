@@ -4,6 +4,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using KeyboardWtf.Models;
+using KeyboardWtf.Services.PaidStaging;
 using NAudio.Wave;
 
 public sealed class GeminiLiveConversationService : IDisposable
@@ -17,6 +18,7 @@ public sealed class GeminiLiveConversationService : IDisposable
     private readonly NotificationService _notifications;
     private readonly SettingsService _settings;
     private readonly IntentMemoryService _memory;
+    private readonly PaidAccountService _paidAccount;
 
     private Func<string, JsonElement, CancellationToken, Task<Dictionary<string, object>>> _toolExecutor;
     private Action<string> _userTranscriptObserver;
@@ -36,10 +38,20 @@ public sealed class GeminiLiveConversationService : IDisposable
         NotificationService notifications,
         SettingsService settings,
         IntentMemoryService memory)
+        : this(notifications, settings, memory, null)
+    {
+    }
+
+    internal GeminiLiveConversationService(
+        NotificationService notifications,
+        SettingsService settings,
+        IntentMemoryService memory,
+        PaidAccountService paidAccount)
     {
         _notifications = notifications;
         _settings = settings;
         _memory = memory;
+        _paidAccount = paidAccount;
     }
 
     public bool IsActive => _socket?.State == WebSocketState.Open && _microphone != null;
@@ -66,7 +78,22 @@ public sealed class GeminiLiveConversationService : IDisposable
 
     public async Task StartAsync()
     {
-        if (string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey))
+        if (_paidAccount?.Enabled == true)
+        {
+            if (!_paidAccount.IsSignedIn)
+            {
+                KeyboardWtfState.SetUi(VoiceUiPhase.Error, $"{AssistantName()} unavailable", "Sign in with Google in Account & Billing.");
+                _notifications.Warning("Jarvis mode", "Sign in with Google in Account & Billing first.");
+                return;
+            }
+            if (_paidAccount.Account?.AvailableCreditMicros <= 0)
+            {
+                KeyboardWtfState.SetUi(VoiceUiPhase.Error, $"{AssistantName()} unavailable", "Add credits in Account & Billing.");
+                _notifications.Warning("Jarvis mode", "This account has no usable credits.");
+                return;
+            }
+        }
+        else if (string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey))
         {
             KeyboardWtfState.SetUi(VoiceUiPhase.Error, $"{AssistantName()} unavailable", "Add a Gemini API key in settings.");
             _notifications.Warning("Jarvis mode", "Add a Gemini API key in settings first.");
@@ -83,12 +110,19 @@ public sealed class GeminiLiveConversationService : IDisposable
         try
         {
             KeyboardWtfState.SetUi(VoiceUiPhase.Thinking, "Connecting", $"Starting {AssistantName()}...");
-            _socket = new ClientWebSocket();
-            var endpoint = new Uri(
-                "wss://generativelanguage.googleapis.com/ws/" +
-                "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent" +
-                $"?key={Uri.EscapeDataString(KeyboardWtfState.GeminiApiKey)}");
-            await _socket.ConnectAsync(endpoint, token);
+            if (_paidAccount?.Enabled == true)
+            {
+                _socket = await _paidAccount.ConnectLiveAsync(token);
+            }
+            else
+            {
+                _socket = new ClientWebSocket();
+                var endpoint = new Uri(
+                    "wss://generativelanguage.googleapis.com/ws/" +
+                    "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent" +
+                    $"?key={Uri.EscapeDataString(KeyboardWtfState.GeminiApiKey)}");
+                await _socket.ConnectAsync(endpoint, token);
+            }
 
             _receiveTask = Task.Run(() => ReceiveLoopAsync(token), token);
             await SendJsonAsync(new

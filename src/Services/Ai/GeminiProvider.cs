@@ -5,7 +5,7 @@ using System.Text;
 using System.Text.Json;
 using KeyboardWtf.Models;
 
-internal sealed class GeminiProvider : IAiProvider, IDisposable
+internal sealed class GeminiProvider : IStructuredAiProvider, IDisposable
 {
     private static readonly string[] ModelCandidates =
     [

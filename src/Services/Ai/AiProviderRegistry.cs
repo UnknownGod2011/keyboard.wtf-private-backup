@@ -2,6 +2,7 @@ namespace KeyboardWtf.Services.Ai;
 
 using System.Collections.Generic;
 using KeyboardWtf.Models;
+using KeyboardWtf.Services.PaidStaging;
 
 /// <summary>
 /// Singleton registry of every AI provider the app knows about, implemented or not.
@@ -16,7 +17,7 @@ internal static class AiProviderRegistry
     /// <summary>
     /// Called once from app startup after <see cref="ClaudeApiService"/> is up.
     /// </summary>
-    public static void Initialize(ClaudeApiService claudeService)
+    public static void Initialize(ClaudeApiService claudeService, PaidAccountService paidAccount = null)
     {
         _providers.Clear();
 
@@ -25,7 +26,9 @@ internal static class AiProviderRegistry
         _fallback = claude;
 
         _providers[AiProvider.OpenAi] = new OpenAiProvider();
-        _providers[AiProvider.Gemini] = new GeminiProvider();
+        _providers[AiProvider.Gemini] = paidAccount?.Enabled == true
+            ? new PaidCloudAiProvider(paidAccount)
+            : new GeminiProvider();
         _providers[AiProvider.DeepSeek]   = new ComingSoonProvider(AiProvider.DeepSeek,   "DeepSeek");
         _providers[AiProvider.Perplexity] = new ComingSoonProvider(AiProvider.Perplexity, "Perplexity");
 
