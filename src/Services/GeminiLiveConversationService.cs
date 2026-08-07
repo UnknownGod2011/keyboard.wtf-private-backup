@@ -206,6 +206,21 @@ public sealed class GeminiLiveConversationService : IDisposable
             socket.Dispose();
         }
 
+        if (_paidAccount?.Enabled == true && _paidAccount.IsSignedIn)
+        {
+            try
+            {
+                // The backend settles Live usage only after the provider socket
+                // closes. Refresh from that authoritative account instead of
+                // leaving a stale desktop balance until the next restart.
+                await _paidAccount.RefreshAccountAsync(CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warning(ex, "Paid account refresh after Jarvis session settlement failed");
+            }
+        }
+
         if (showDone)
         {
             KeyboardWtfState.SetUi(VoiceUiPhase.Done, $"{AssistantName()} ended", $"{JarvisHotkey()} starts another conversation.");

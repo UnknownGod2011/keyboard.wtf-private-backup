@@ -36,10 +36,19 @@ public sealed class PaidSystemOptions
     public int MaxConcurrentRequestsPerUser { get; init; } = 1;
     public int MaxRequestsPerMinutePerUser { get; init; } = 12;
     public long GlobalDailyCreditMicrosCap { get; init; } = 1_000_000_000;
+    public int GlobalUsageShardCount { get; init; } = 32;
     public long DefaultTaskCreditMicrosCap { get; init; } = 25_000_000;
     public long LiveSessionCreditMicrosCap { get; init; } = 5_000_000;
     public int LiveSessionMaxSeconds { get; init; } = 600;
     public long LiveSessionMaxTrafficBytes { get; init; } = 64 * 1024 * 1024;
+    public int LiveUsageCheckpointSeconds { get; init; } = 30;
+    public int LiveEstimateSafetyBasisPoints { get; init; } = 12_500;
     public int ReservationLeaseGraceSeconds { get; init; } = 120;
+    public int ReconciliationBatchSize { get; init; } = 100;
+    public int ReconciliationMaxRecordsPerRun { get; init; } = 5_000;
+    public int ReconciliationLeaseSeconds { get; init; } = 600;
+    public int PaymentReconciliationLookbackDays { get; init; } = 180;
+    public long PerUserSpendAlertCreditMicros { get; init; } = 250_000_000;
+    public int StuckPaymentMinutes { get; init; } = 30;
     public bool AllowBootstrapCatalog { get; init; } = true;
 }

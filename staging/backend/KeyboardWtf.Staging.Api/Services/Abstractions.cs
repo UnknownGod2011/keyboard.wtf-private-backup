@@ -47,6 +47,21 @@ public interface IAccountStore
         string userId,
         string requestId,
         CancellationToken cancellationToken);
+    Task RecordProviderCompletionAsync(
+        string userId,
+        string requestId,
+        ProviderUsage usage,
+        long actualCreditMicros,
+        long providerCostUsdMicros,
+        string outcome,
+        CancellationToken cancellationToken);
+    Task CheckpointReservationUsageAsync(
+        string userId,
+        string requestId,
+        ProviderUsage usage,
+        long estimatedCreditMicros,
+        long providerCostUsdMicros,
+        CancellationToken cancellationToken);
     Task MarkReservationForReconciliationAsync(
         string userId,
         string requestId,
@@ -136,7 +151,9 @@ public interface IAccountStore
         long? providerAmountMinor,
         string status,
         CancellationToken cancellationToken,
-        DateTimeOffset? subscriptionCycleEndsAt = null);
+        DateTimeOffset? subscriptionCycleEndsAt = null,
+        string? providerCurrency = null,
+        string? providerProductSku = null);
 }
 
 public interface ICatalogService
@@ -151,6 +168,10 @@ public interface ICatalogService
     (long ProviderCostUsdMicros, long ChargeCreditMicros) CalculateActualCost(
         PricingSnapshot pricing,
         ProviderUsage usage);
+    (long ProviderCostUsdMicros, long ChargeCreditMicros) CalculateLiveActualCost(
+        PricingSnapshot pricing,
+        ProviderUsage usage,
+        int estimateSafetyBasisPoints);
 }
 
 public sealed record VertexGenerateResult(string Text, ProviderUsage Usage);
@@ -189,6 +210,18 @@ public interface IPaymentProvider
     Task<PaymentSubscription> CreateSubscriptionAsync(
         string purchaseId,
         CatalogProduct product,
+        CancellationToken cancellationToken);
+    Task<ProviderOrderInspection> InspectOrderAsync(
+        string orderId,
+        CancellationToken cancellationToken);
+    Task<ProviderSubscriptionInspection> InspectSubscriptionAsync(
+        string subscriptionId,
+        CancellationToken cancellationToken);
+    Task<IReadOnlyList<ProviderRefund>> InspectRefundsAsync(
+        string paymentId,
+        CancellationToken cancellationToken);
+    Task<IReadOnlyList<ProviderDispute>> InspectDisputesAsync(
+        string paymentId,
         CancellationToken cancellationToken);
     bool VerifyOrderCheckoutSignature(string orderId, string paymentId, string signature);
     bool VerifySubscriptionCheckoutSignature(string subscriptionId, string paymentId, string signature);

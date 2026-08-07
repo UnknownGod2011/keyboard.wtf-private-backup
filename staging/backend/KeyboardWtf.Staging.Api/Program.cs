@@ -24,7 +24,15 @@ builder.Services.AddOptions<PaidSystemOptions>()
     .Validate(options => options.MaxRetries is >= 0 and <= 3, "Retry count is unsafe.")
     .Validate(options => options.LiveSessionMaxSeconds is >= 30 and <= 900, "Live session lifetime is unsafe.")
     .Validate(options => options.LiveSessionCreditMicrosCap > 0, "Live session budget must be positive.")
+    .Validate(options => options.LiveUsageCheckpointSeconds is >= 10 and <= 120, "Live usage checkpoint interval is unsafe.")
+    .Validate(options => options.LiveEstimateSafetyBasisPoints is >= 10_000 and <= 20_000, "Live estimate safety margin is unsafe.")
+    .Validate(options => options.GlobalUsageShardCount is >= 8 and <= 128, "Global usage shard count is unsafe.")
     .Validate(options => options.ReservationLeaseGraceSeconds is >= 30 and <= 600, "Reservation lease grace period is unsafe.")
+    .Validate(options => options.ReconciliationBatchSize is >= 10 and <= 500, "Reconciliation batch size is unsafe.")
+    .Validate(options => options.ReconciliationMaxRecordsPerRun is >= 100 and <= 100_000, "Reconciliation run limit is unsafe.")
+    .Validate(options => options.ReconciliationLeaseSeconds is >= 60 and <= 3600, "Reconciliation lease is unsafe.")
+    .Validate(options => options.PerUserSpendAlertCreditMicros > 0, "Per-user spend alert threshold must be positive.")
+    .Validate(options => options.StuckPaymentMinutes is >= 5 and <= 1440, "Stuck payment threshold is unsafe.")
     .ValidateOnStart();
 var paidOptions = builder.Configuration
     .GetSection(PaidSystemOptions.SectionName)
@@ -50,8 +58,33 @@ builder.Services.AddHttpClient<IVertexAiClient, VertexAiClient>();
 builder.Services.AddHttpClient<IPaymentProvider, RazorpayPaymentProvider>();
 builder.Services.AddSingleton<IVertexAccessTokenProvider, VertexAccessTokenProvider>();
 builder.Services.AddSingleton<VertexLiveProxyService>();
+builder.Services.AddSingleton<PaymentReconciliationService>();
+builder.Services.AddSingleton<UsageReconciliationService>();
+builder.Services.AddSingleton<LedgerInvariantService>();
+builder.Services.AddSingleton<MaintenanceRunner>();
+builder.Services.AddSingleton<OperationalHealthService>();
 
 var app = builder.Build();
+var maintenanceJob = MaintenanceRunner.ParseJob(args);
+if (!string.IsNullOrWhiteSpace(maintenanceJob))
+{
+    try
+    {
+        await app.Services.GetRequiredService<MaintenanceRunner>()
+            .RunAsync(maintenanceJob, app.Lifetime.ApplicationStopping);
+    }
+    catch (Exception exception)
+    {
+        // Jobs must fail visibly and non-zero.  An unhandled background-process
+        // failure can be reported as a container signal and makes the run hard
+        // to audit or alert on.
+        app.Services.GetRequiredService<ILoggerFactory>()
+            .CreateLogger("MaintenanceJob")
+            .LogError(exception, "Maintenance command failed job={Job}", maintenanceJob);
+        Environment.ExitCode = 1;
+    }
+    return;
+}
 app.UseMiddleware<ApiExceptionMiddleware>();
 app.UseCors();
 app.UseRequestTimeouts();

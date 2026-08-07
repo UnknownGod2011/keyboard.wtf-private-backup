@@ -13,6 +13,7 @@ internal static class AiProviderRegistry
 {
     private static readonly Dictionary<AiProvider, IAiProvider> _providers = new();
     private static IAiProvider _fallback;
+    private static IAiProvider _paidProvider;
 
     /// <summary>
     /// Called once from app startup after <see cref="ClaudeApiService"/> is up.
@@ -20,14 +21,17 @@ internal static class AiProviderRegistry
     public static void Initialize(ClaudeApiService claudeService, PaidAccountService paidAccount = null)
     {
         _providers.Clear();
+        _paidProvider = paidAccount?.Enabled == true
+            ? new PaidCloudAiProvider(paidAccount)
+            : null;
 
         var claude = new ClaudeProvider(claudeService);
         _providers[AiProvider.Claude] = claude;
         _fallback = claude;
 
         _providers[AiProvider.OpenAi] = new OpenAiProvider();
-        _providers[AiProvider.Gemini] = paidAccount?.Enabled == true
-            ? new PaidCloudAiProvider(paidAccount)
+        _providers[AiProvider.Gemini] = _paidProvider is not null
+            ? _paidProvider
             : new GeminiProvider();
         _providers[AiProvider.DeepSeek]   = new ComingSoonProvider(AiProvider.DeepSeek,   "DeepSeek");
         _providers[AiProvider.Perplexity] = new ComingSoonProvider(AiProvider.Perplexity, "Perplexity");
@@ -38,7 +42,8 @@ internal static class AiProviderRegistry
     public static IReadOnlyCollection<IAiProvider> All => _providers.Values;
 
     public static IAiProvider Get(AiProvider id) =>
-        _providers.TryGetValue(id, out var p) ? p : _fallback;
+        _paidProvider
+        ?? (_providers.TryGetValue(id, out var p) ? p : _fallback);
 
     public static IAiProvider Current => Get(KeyboardWtfState.SelectedAiProvider);
 

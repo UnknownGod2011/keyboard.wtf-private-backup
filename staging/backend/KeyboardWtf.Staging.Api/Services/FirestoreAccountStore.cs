@@ -4,6 +4,7 @@ using KeyboardWtf.Staging.Api.Domain;
 using KeyboardWtf.Staging.Api.Infrastructure;
 using Microsoft.Extensions.Options;
 using Grpc.Core;
+using System.Collections.Concurrent;
 
 namespace KeyboardWtf.Staging.Api.Services;
 
@@ -12,6 +13,7 @@ public sealed class FirestoreAccountStore : IAccountStore
     private readonly FirestoreDb _db;
     private readonly IClock _clock;
     private readonly PaidSystemOptions _options;
+    private readonly ConcurrentDictionary<string, long> _initializedGlobalQuotaDays = new();
 
     public FirestoreAccountStore(FirestoreDb db, IClock clock, IOptions<PaidSystemOptions> options)
     {
@@ -160,7 +162,24 @@ public sealed class FirestoreAccountStore : IAccountStore
             + _options.ReservationLeaseGraceSeconds;
         var expiresAt = now.AddSeconds(leaseSeconds);
         var globalUsageDate = now.ToString("yyyyMMdd");
-        var globalRef = _db.Collection("globalUsage").Document(globalUsageDate);
+        var shardedDailyCap = await EnsureGlobalUsageShardsAsync(
+            globalUsageDate,
+            globalDailyCap,
+            _options.GlobalUsageShardCount,
+            cancellationToken);
+        if (shardedDailyCap <= 0)
+            throw new InvalidOperationException("The staging daily spending cap has been reached.");
+        var globalShardIndex = GlobalUsageShardIndex(
+            globalUsageDate,
+            caller.UserId,
+            requestId,
+            _options.GlobalUsageShardCount);
+        var globalShardId = $"{globalUsageDate}-{globalShardIndex:D3}";
+        var globalShardCap = GlobalUsageShardCap(
+            shardedDailyCap,
+            _options.GlobalUsageShardCount,
+            globalShardIndex);
+        var globalRef = _db.Collection("globalUsageShards").Document(globalShardId);
 
         async Task<bool> ExecuteReservationTransactionAsync() =>
             await _db.RunTransactionAsync(async transaction =>
@@ -196,7 +215,7 @@ public sealed class FirestoreAccountStore : IAccountStore
             var globalSnapshot = await transaction.GetSnapshotAsync(globalRef, cancellationToken);
             var global = globalSnapshot.Exists ? globalSnapshot.ToDictionary() : [];
             var globalCommitted = Long(global, "settledCreditMicros") + Long(global, "reservedCreditMicros");
-            if (globalCommitted + reserveCreditMicros > globalDailyCap)
+            if (globalCommitted + reserveCreditMicros > globalShardCap)
                 throw new InvalidOperationException("The staging daily spending cap has been reached.");
 
             var eventId = $"reserve_{SafeId(requestId)}";
@@ -208,6 +227,9 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ["model"] = model,
                 ["pricingVersion"] = pricingVersion,
                 ["globalUsageDate"] = globalUsageDate,
+                ["globalUsageShardId"] = globalShardId,
+                ["taskCapCreditMicros"] = taskCapCreditMicros,
+                ["accountingVersion"] = 2,
                 ["status"] = "reserved",
                 ["expiresAt"] = Ts(expiresAt),
                 ["createdAt"] = Ts(now),
@@ -235,6 +257,8 @@ public sealed class FirestoreAccountStore : IAccountStore
             {
                 ["reservedCreditMicros"] = FieldValue.Increment(reserveCreditMicros),
                 ["settledCreditMicros"] = Long(global, "settledCreditMicros"),
+                ["dailyCapCreditMicros"] = globalShardCap,
+                ["shardIndex"] = globalShardIndex,
                 ["updatedAt"] = Ts(now),
             }, SetOptions.MergeAll);
             transaction.Update(accountRef, new Dictionary<string, object>
@@ -298,22 +322,46 @@ public sealed class FirestoreAccountStore : IAccountStore
                 throw new InvalidOperationException("The usage reservation no longer exists.");
             var account = accountSnapshot.ToDictionary();
             var reservation = reservationSnapshot.ToDictionary();
-            var globalRef = _db.Collection("globalUsage").Document(
-                String(reservation, "globalUsageDate", now.ToString("yyyyMMdd")));
+            var globalShardId = String(reservation, "globalUsageShardId", "");
+            var globalRef = string.IsNullOrWhiteSpace(globalShardId)
+                ? _db.Collection("globalUsage").Document(
+                    String(reservation, "globalUsageDate", now.ToString("yyyyMMdd")))
+                : _db.Collection("globalUsageShards").Document(globalShardId);
             var reserved = Long(reservation, "reservedCreditMicros");
+            if (Long(reservation, "accountingVersion") >= 2)
+            {
+                if (!Bool(reservation, "providerCompletionRecorded", false)
+                    || !string.Equals(
+                        String(reservation, "status", ""),
+                        "provider_completed",
+                        StringComparison.Ordinal))
+                    throw new InvalidOperationException(
+                        "Provider completion evidence must be recorded before settlement.");
+                if (Long(reservation, "plannedChargeCreditMicros") != actualCreditMicros
+                    || Long(reservation, "providerCostUsdMicros") != providerCostUsdMicros
+                    || !UsageEvidenceMatches(reservation, usage))
+                    throw new InvalidOperationException(
+                        "Settlement evidence does not match the durable provider result.");
+            }
             if (idempotencySnapshot.Exists
                 || string.Equals(String(reservation, "status", ""), "settled", StringComparison.Ordinal))
             {
                 return (Settled: false, Charged: Long(reservation, "chargedCreditMicros"), Released: Long(reservation, "releasedCreditMicros"));
             }
 
-            var charged = Math.Clamp(actualCreditMicros, 0, reserved);
-            var released = reserved - charged;
+            var charged = Math.Max(0, actualCreditMicros);
+            var reservedConsumed = Math.Min(charged, reserved);
+            var released = reserved - reservedConsumed;
+            var overage = Math.Max(0, charged - reserved);
+            var availableBeforeSettlement = Long(account, "availableCreditMicros");
+            var additionalAvailableCharge = Math.Min(overage, availableBeforeSettlement);
+            var debtAdded = overage - additionalAvailableCharge;
+            var availableDelta = released - additionalAvailableCharge;
             var eventId = $"settle_{SafeId(requestId)}";
             transaction.Create(accountRef.Collection("ledger").Document(eventId), LedgerMap(new LedgerEntry(
                 eventId,
                 LedgerTypes.UsageSettlement,
-                released,
+                availableDelta,
                 -reserved,
                 "usage",
                 requestId,
@@ -325,6 +373,9 @@ public sealed class FirestoreAccountStore : IAccountStore
                 {
                     ["providerCostUsdMicros"] = providerCostUsdMicros,
                     ["chargedCreditMicros"] = charged,
+                    ["reservedCreditMicros"] = reserved,
+                    ["overageCreditMicros"] = overage,
+                    ["creditDebtAddedMicros"] = debtAdded,
                 })));
             transaction.Create(accountRef.Collection("usage").Document(SafeId(requestId)), new Dictionary<string, object>
             {
@@ -338,11 +389,18 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ["reasoningTokens"] = usage.ReasoningTokens,
                 ["imageTokens"] = usage.ImageTokens,
                 ["audioTokens"] = usage.AudioTokens,
+                ["inputAudioTokens"] = usage.InputAudioTokens,
+                ["outputAudioTokens"] = usage.OutputAudioTokens,
+                ["inputImageTokens"] = usage.InputImageTokens,
+                ["outputImageTokens"] = usage.OutputImageTokens,
                 ["totalTokens"] = usage.TotalTokens,
+                ["usageEstimated"] = usage.Estimated,
                 ["providerRequestId"] = usage.ProviderRequestId ?? "",
                 ["providerModelVersion"] = usage.ProviderModelVersion ?? "",
                 ["providerCostUsdMicros"] = providerCostUsdMicros,
                 ["chargedCreditMicros"] = charged,
+                ["overageCreditMicros"] = overage,
+                ["creditDebtAddedMicros"] = debtAdded,
                 ["createdAt"] = Ts(now),
             });
             transaction.Create(idempotencyRef, new Dictionary<string, object>
@@ -362,9 +420,10 @@ public sealed class FirestoreAccountStore : IAccountStore
             });
             transaction.Update(accountRef, new Dictionary<string, object>
             {
-                ["availableCreditMicros"] = Long(account, "availableCreditMicros") + released,
+                ["availableCreditMicros"] = Math.Max(0, availableBeforeSettlement + availableDelta),
                 ["reservedCreditMicros"] = Math.Max(0, Long(account, "reservedCreditMicros") - reserved),
                 ["cycleUsageCreditMicros"] = Long(account, "cycleUsageCreditMicros") + charged,
+                ["creditDebtMicros"] = Long(account, "creditDebtMicros") + debtAdded,
                 ["activeRequests"] = Math.Max(0, Long(account, "activeRequests") - 1),
                 ["updatedAt"] = Ts(now),
             });
@@ -412,6 +471,86 @@ public sealed class FirestoreAccountStore : IAccountStore
         }, cancellationToken: cancellationToken);
     }
 
+    public Task RecordProviderCompletionAsync(
+        string userId,
+        string requestId,
+        ProviderUsage usage,
+        long actualCreditMicros,
+        long providerCostUsdMicros,
+        string outcome,
+        CancellationToken cancellationToken)
+    {
+        if (actualCreditMicros < 0 || providerCostUsdMicros < 0)
+            throw new ArgumentOutOfRangeException(nameof(actualCreditMicros));
+        var reservationRef = Account(userId)
+            .Collection("reservations")
+            .Document(SafeId(requestId));
+        var now = _clock.UtcNow;
+        return _db.RunTransactionAsync(async transaction =>
+        {
+            var snapshot = await transaction.GetSnapshotAsync(reservationRef, cancellationToken);
+            if (!snapshot.Exists)
+                throw new InvalidOperationException("The usage reservation no longer exists.");
+            var data = snapshot.ToDictionary();
+            var status = String(data, "status", "");
+            if (status is "settled" or "released")
+                return;
+            if (Long(data, "accountingVersion") >= 2
+                && !data.ContainsKey("providerStartedAt"))
+                throw new InvalidOperationException(
+                    "Provider completion cannot precede the durable dispatch marker.");
+            if (status is not ("reserved" or "reconciliation_pending" or "provider_completed"))
+                throw new InvalidOperationException("The usage reservation cannot record provider completion.");
+            if (Bool(data, "providerCompletionRecorded", false))
+            {
+                if (Long(data, "plannedChargeCreditMicros") != actualCreditMicros
+                    || Long(data, "providerCostUsdMicros") != providerCostUsdMicros
+                    || !UsageEvidenceMatches(data, usage))
+                    throw new InvalidOperationException("Conflicting provider completion evidence was rejected.");
+                return;
+            }
+            var updates = UsageEvidenceMap(usage, actualCreditMicros, providerCostUsdMicros);
+            updates["providerCompletionRecorded"] = true;
+            updates["providerCompletedAt"] = Ts(now);
+            updates["status"] = "provider_completed";
+            updates["outcome"] = CleanOutcome(outcome);
+            updates["updatedAt"] = Ts(now);
+            transaction.Update(reservationRef, updates);
+        }, cancellationToken: cancellationToken);
+    }
+
+    public Task CheckpointReservationUsageAsync(
+        string userId,
+        string requestId,
+        ProviderUsage usage,
+        long estimatedCreditMicros,
+        long providerCostUsdMicros,
+        CancellationToken cancellationToken)
+    {
+        if (estimatedCreditMicros < 0 || providerCostUsdMicros < 0)
+            throw new ArgumentOutOfRangeException(nameof(estimatedCreditMicros));
+        var reservationRef = Account(userId)
+            .Collection("reservations")
+            .Document(SafeId(requestId));
+        var now = _clock.UtcNow;
+        return _db.RunTransactionAsync(async transaction =>
+        {
+            var snapshot = await transaction.GetSnapshotAsync(reservationRef, cancellationToken);
+            if (!snapshot.Exists)
+                return;
+            var data = snapshot.ToDictionary();
+            if (String(data, "status", "") is "settled" or "released")
+                return;
+            if (estimatedCreditMicros < Long(data, "checkpointChargeCreditMicros")
+                || usage.TotalTokens < Long(data, "checkpointTotalTokens"))
+                return;
+            var updates = UsageCheckpointMap(usage, estimatedCreditMicros, providerCostUsdMicros);
+            updates["checkpointAt"] = Ts(now);
+            updates["updatedAt"] = Ts(now);
+            transaction.Update(reservationRef, updates);
+        }, cancellationToken: cancellationToken);
+    }
+
     public async Task ReleaseReservationAsync(
         string userId,
         string requestId,
@@ -436,10 +575,21 @@ public sealed class FirestoreAccountStore : IAccountStore
             if (!string.Equals(status, "reserved", StringComparison.Ordinal)
                 && !string.Equals(status, "reconciliation_pending", StringComparison.Ordinal))
                 return 0;
+            var providerStarted = reservation.ContainsKey("providerStartedAt");
+            var safelyRejected = string.Equals(
+                CleanOutcome(outcome),
+                "provider_rejected",
+                StringComparison.Ordinal);
+            if (providerStarted && !safelyRejected)
+                throw new InvalidOperationException(
+                    "A reservation cannot be released after provider dispatch without authoritative no-charge evidence.");
             var account = accountSnapshot.ToDictionary();
             var reserved = Long(reservation, "reservedCreditMicros");
-            var globalRef = _db.Collection("globalUsage").Document(
-                String(reservation, "globalUsageDate", now.ToString("yyyyMMdd")));
+            var globalShardId = String(reservation, "globalUsageShardId", "");
+            var globalRef = string.IsNullOrWhiteSpace(globalShardId)
+                ? _db.Collection("globalUsage").Document(
+                    String(reservation, "globalUsageDate", now.ToString("yyyyMMdd")))
+                : _db.Collection("globalUsageShards").Document(globalShardId);
             var eventId = $"release_{SafeId(requestId)}";
             transaction.Create(accountRef.Collection("ledger").Document(eventId), LedgerMap(new LedgerEntry(
                 eventId,
@@ -900,6 +1050,7 @@ public sealed class FirestoreAccountStore : IAccountStore
             transaction.Create(purchaseRef, new Dictionary<string, object>
             {
                 ["purchaseId"] = purchaseId,
+                ["userId"] = userId,
                 ["productSku"] = product.Sku,
                 ["kind"] = product.Kind,
                 ["provider"] = "razorpay",
@@ -1058,7 +1209,9 @@ public sealed class FirestoreAccountStore : IAccountStore
         long? providerAmountMinor,
         string status,
         CancellationToken cancellationToken,
-        DateTimeOffset? subscriptionCycleEndsAt = null)
+        DateTimeOffset? subscriptionCycleEndsAt = null,
+        string? providerCurrency = null,
+        string? providerProductSku = null)
     {
         var eventRef = _db.Collection("paymentEvents").Document(Crypto.Sha256($"razorpay:{eventId}"));
         var existingEventSnapshot = await eventRef.GetSnapshotAsync(cancellationToken);
@@ -1121,6 +1274,8 @@ public sealed class FirestoreAccountStore : IAccountStore
             ?? throw new InvalidOperationException("The payment account reference is invalid.");
         var userId = accountRef.Id;
         var purchaseRef = purchaseSnapshot.Reference;
+        var mismatchIssueRef = _db.Collection("reconciliationIssues").Document(
+            Crypto.Sha256($"payment-webhook:{purchaseRef.Path}:{eventId}"));
         var recurringFulfillmentId = RecurringFulfillmentId(
             eventType,
             providerPaymentId,
@@ -1148,6 +1303,53 @@ public sealed class FirestoreAccountStore : IAccountStore
             var purchaseData = purchase.ToDictionary();
             var accountData = account.ToDictionary();
             var purchaseKind = String(purchaseData, "kind", "credits");
+            var evidenceRejection = PaymentEvidenceRejection(
+                eventType,
+                purchaseKind,
+                userId,
+                purchaseData,
+                providerObjectId,
+                providerOrderId,
+                providerSubscriptionId,
+                providerPaymentId,
+                providerAmountMinor,
+                providerCurrency,
+                providerProductSku);
+            if (evidenceRejection is not null)
+            {
+                transaction.Update(purchaseRef, new Dictionary<string, object>
+                {
+                    ["reconciliationStatus"] = "payment_review",
+                    ["lastPaymentRejection"] = evidenceRejection,
+                    ["updatedAt"] = Ts(now),
+                });
+                transaction.Set(eventRef, new Dictionary<string, object>
+                {
+                    ["provider"] = "razorpay",
+                    ["eventId"] = eventId,
+                    ["eventType"] = eventType,
+                    ["status"] = "rejected",
+                    ["outcome"] = evidenceRejection,
+                    ["userId"] = userId,
+                    ["purchaseId"] = purchase.Id,
+                    ["providerObjectId"] = providerObjectId,
+                    ["providerEventObjectId"] = providerEventObjectId ?? "",
+                    ["providerAmountMinor"] = providerAmountMinor ?? 0,
+                    ["createdAt"] = Ts(now),
+                });
+                transaction.Set(mismatchIssueRef, new Dictionary<string, object>
+                {
+                    ["kind"] = "payment",
+                    ["category"] = evidenceRejection,
+                    ["resourcePathHash"] = Crypto.Sha256(purchaseRef.Path),
+                    ["purchaseIdHash"] = Crypto.Sha256(purchase.Id),
+                    ["providerEventIdHash"] = Crypto.Sha256(eventId),
+                    ["status"] = "open",
+                    ["firstObservedAt"] = Ts(now),
+                    ["lastObservedAt"] = Ts(now),
+                }, SetOptions.MergeAll);
+                return evidenceRejection;
+            }
             var recurringCharge = string.Equals(eventType, "subscription.charged", StringComparison.Ordinal);
             var subscriptionLifecycleEvent = eventType.StartsWith("subscription.", StringComparison.Ordinal)
                 && !recurringCharge;
@@ -1308,6 +1510,8 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ["providerObjectId"] = providerObjectId,
                 ["providerEventObjectId"] = providerEventObjectId ?? "",
                 ["providerAmountMinor"] = providerAmountMinor ?? 0,
+                ["providerCurrency"] = providerCurrency?.Trim().ToUpperInvariant() ?? "",
+                ["providerProductSku"] = providerProductSku?.Trim() ?? "",
                 ["subscriptionCycleEndsAtUnix"] = subscriptionCycleEndsAt?.ToUnixTimeSeconds() ?? 0,
                 ["createdAt"] = Ts(now),
             });
@@ -1320,6 +1524,264 @@ public sealed class FirestoreAccountStore : IAccountStore
             };
         }, cancellationToken: cancellationToken);
         return new PaymentWebhookResult(outcome == "duplicate", eventId, outcome);
+    }
+
+    internal static string? PaymentEvidenceRejection(
+        string eventType,
+        string purchaseKind,
+        string accountUserId,
+        IDictionary<string, object> purchase,
+        string providerObjectId,
+        string? providerOrderId,
+        string? providerSubscriptionId,
+        string? providerPaymentId,
+        long? providerAmountMinor,
+        string? providerCurrency,
+        string? providerProductSku)
+    {
+        var recordedUserId = String(purchase, "userId", accountUserId);
+        if (!string.Equals(recordedUserId, accountUserId, StringComparison.Ordinal))
+            return "purchase_owner_mismatch";
+
+        var attachedObjectId = String(purchase, "providerObjectId", "");
+        var attachedPaymentId = String(purchase, "providerPaymentId", "");
+        var objectMatches = !string.IsNullOrWhiteSpace(attachedObjectId)
+            && new[] { providerObjectId, providerOrderId, providerSubscriptionId }
+                .Any(candidate => string.Equals(candidate, attachedObjectId, StringComparison.Ordinal));
+        var paymentMatches = !string.IsNullOrWhiteSpace(attachedPaymentId)
+            && !string.IsNullOrWhiteSpace(providerPaymentId)
+            && string.Equals(providerPaymentId, attachedPaymentId, StringComparison.Ordinal);
+        if (!objectMatches && !paymentMatches)
+            return "provider_identity_mismatch";
+
+        var creditEvent = IsCreditEvent(eventType, purchaseKind);
+        if (creditEvent)
+        {
+            if (providerAmountMinor is null || providerAmountMinor <= 0)
+                return "payment_amount_missing";
+            if (providerAmountMinor.Value != Long(purchase, "amountMinor"))
+                return "payment_amount_mismatch";
+            if (string.IsNullOrWhiteSpace(providerCurrency))
+                return "payment_currency_missing";
+            if (!string.Equals(
+                    providerCurrency.Trim(),
+                    String(purchase, "currency", "INR"),
+                    StringComparison.OrdinalIgnoreCase))
+                return "payment_currency_mismatch";
+            if (string.IsNullOrWhiteSpace(providerProductSku))
+                return "payment_sku_missing";
+            if (!string.Equals(
+                    providerProductSku.Trim(),
+                    String(purchase, "productSku", ""),
+                    StringComparison.Ordinal))
+                return "payment_sku_mismatch";
+        }
+        else if (IsReversalEvent(eventType))
+        {
+            if (providerAmountMinor is null || providerAmountMinor <= 0)
+                return "reversal_amount_missing";
+            if (providerAmountMinor.Value > Long(purchase, "amountMinor"))
+                return "reversal_amount_exceeds_purchase";
+            if (!string.IsNullOrWhiteSpace(providerCurrency)
+                && !string.Equals(
+                    providerCurrency.Trim(),
+                    String(purchase, "currency", "INR"),
+                    StringComparison.OrdinalIgnoreCase))
+                return "reversal_currency_mismatch";
+            if (!string.IsNullOrWhiteSpace(providerProductSku)
+                && !string.Equals(
+                    providerProductSku.Trim(),
+                    String(purchase, "productSku", ""),
+                    StringComparison.Ordinal))
+                return "reversal_sku_mismatch";
+        }
+
+        return null;
+    }
+
+    private async Task<long> EnsureGlobalUsageShardsAsync(
+        string date,
+        long globalDailyCap,
+        int shardCount,
+        CancellationToken cancellationToken)
+    {
+        if (_initializedGlobalQuotaDays.TryGetValue(date, out var cachedCap))
+            return cachedCap;
+        var markerRef = _db.Collection("globalUsageMigrations").Document(date);
+        var legacyRef = _db.Collection("globalUsage").Document(date);
+        var shardedCap = await _db.RunTransactionAsync(async transaction =>
+        {
+            var marker = await transaction.GetSnapshotAsync(markerRef, cancellationToken);
+            if (marker.Exists)
+            {
+                var markerData = marker.ToDictionary();
+                if (Long(markerData, "globalDailyCapCreditMicros") != globalDailyCap
+                    || Long(markerData, "shardCount") != shardCount)
+                    throw new InvalidOperationException("The daily quota shard configuration changed during an active day.");
+                // During a rolling deployment an older revision may briefly
+                // continue writing the legacy counter. Re-read it and reduce
+                // new-shard capacity by any post-cutover increase rather than
+                // allowing the aggregate daily commitment to exceed the cap.
+                var currentLegacy = await transaction.GetSnapshotAsync(legacyRef, cancellationToken);
+                var currentLegacyData = currentLegacy.Exists ? currentLegacy.ToDictionary() : [];
+                var currentLegacyCommitted = checked(
+                    Math.Max(0, Long(currentLegacyData, "reservedCreditMicros"))
+                    + Math.Max(0, Long(currentLegacyData, "settledCreditMicros")));
+                var cutoverLegacyCommitted = Long(markerData, "legacyCommittedCreditMicrosAtCutover");
+                var postCutoverLegacyIncrease = Math.Max(0, currentLegacyCommitted - cutoverLegacyCommitted);
+                return Math.Max(
+                    0,
+                    Long(markerData, "shardedDailyCapCreditMicros") - postCutoverLegacyIncrease);
+            }
+
+            var legacy = await transaction.GetSnapshotAsync(legacyRef, cancellationToken);
+            var legacyData = legacy.Exists ? legacy.ToDictionary() : [];
+            var legacyReserved = Long(legacyData, "reservedCreditMicros");
+            var legacySettled = Long(legacyData, "settledCreditMicros");
+            var legacyCommitted = checked(Math.Max(0, legacyReserved) + Math.Max(0, legacySettled));
+            if (legacyCommitted > globalDailyCap)
+                throw new InvalidOperationException("Legacy daily usage exceeds the configured global cap.");
+            // Preserve the entire legacy commitment as a conservative cutover
+            // allocation. If an old reservation is later released, that spare
+            // capacity intentionally remains unused until the next UTC day.
+            var availableForShards = globalDailyCap - legacyCommitted;
+            for (var index = 0; index < shardCount; index++)
+            {
+                var shardCap = availableForShards == 0
+                    ? 0
+                    : GlobalUsageShardCap(availableForShards, shardCount, index);
+                transaction.Set(
+                    _db.Collection("globalUsageShards").Document($"{date}-{index:D3}"),
+                    new Dictionary<string, object>
+                    {
+                        ["date"] = date,
+                        ["shardIndex"] = index,
+                        ["dailyCapCreditMicros"] = shardCap,
+                        ["reservedCreditMicros"] = 0L,
+                        ["settledCreditMicros"] = 0L,
+                        ["schemaVersion"] = 1L,
+                        ["createdAt"] = Ts(_clock.UtcNow),
+                        ["updatedAt"] = Ts(_clock.UtcNow),
+                    },
+                    SetOptions.MergeAll);
+            }
+            transaction.Create(markerRef, new Dictionary<string, object>
+            {
+                ["date"] = date,
+                ["globalDailyCapCreditMicros"] = globalDailyCap,
+                ["shardCount"] = shardCount,
+                ["legacySettledCreditMicros"] = legacySettled,
+                ["legacyReservedCreditMicrosAtCutover"] = legacyReserved,
+                ["legacyCommittedCreditMicrosAtCutover"] = legacyCommitted,
+                ["shardedDailyCapCreditMicros"] = availableForShards,
+                ["createdAt"] = Ts(_clock.UtcNow),
+            });
+            return availableForShards;
+        }, cancellationToken: cancellationToken);
+        var legacyAtCutover = await legacyRef.GetSnapshotAsync(cancellationToken);
+        var legacyDataAtCutover = legacyAtCutover.Exists ? legacyAtCutover.ToDictionary() : [];
+        if (Long(legacyDataAtCutover, "reservedCreditMicros") == 0
+            && Long(legacyDataAtCutover, "settledCreditMicros") == 0)
+            _initializedGlobalQuotaDays.TryAdd(date, shardedCap);
+        return shardedCap;
+    }
+
+    internal static int GlobalUsageShardIndex(
+        string date,
+        string userId,
+        string requestId,
+        int shardCount)
+    {
+        if (shardCount <= 0)
+            throw new ArgumentOutOfRangeException(nameof(shardCount));
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes($"{date}:{userId}:{requestId}"));
+        return (int)(System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(hash) % (uint)shardCount);
+    }
+
+    internal static long GlobalUsageShardCap(long globalDailyCap, int shardCount, int shardIndex)
+    {
+        if (globalDailyCap <= 0)
+            throw new ArgumentOutOfRangeException(nameof(globalDailyCap));
+        if (shardCount <= 0 || shardIndex < 0 || shardIndex >= shardCount)
+            throw new ArgumentOutOfRangeException(nameof(shardIndex));
+        var baseCap = globalDailyCap / shardCount;
+        var remainder = globalDailyCap % shardCount;
+        return checked(baseCap + (shardIndex < remainder ? 1 : 0));
+    }
+
+    private static Dictionary<string, object> UsageEvidenceMap(
+        ProviderUsage usage,
+        long actualCreditMicros,
+        long providerCostUsdMicros)
+    {
+        var result = UsageMap(usage, "completed");
+        result["plannedChargeCreditMicros"] = actualCreditMicros;
+        result["providerCostUsdMicros"] = providerCostUsdMicros;
+        return result;
+    }
+
+    private static bool UsageEvidenceMatches(
+        IDictionary<string, object> data,
+        ProviderUsage usage)
+    {
+        foreach (var pair in UsageMap(usage, "completed"))
+        {
+            if (!data.TryGetValue(pair.Key, out var actual))
+                return false;
+            if (pair.Value is long expectedLong
+                && Convert.ToInt64(actual) != expectedLong)
+                return false;
+            if (pair.Value is bool expectedBool
+                && Convert.ToBoolean(actual) != expectedBool)
+                return false;
+            if (pair.Value is string expectedString
+                && !string.Equals(Convert.ToString(actual), expectedString, StringComparison.Ordinal))
+                return false;
+        }
+        return true;
+    }
+
+    private static Dictionary<string, object> UsageCheckpointMap(
+        ProviderUsage usage,
+        long estimatedCreditMicros,
+        long providerCostUsdMicros)
+    {
+        var result = UsageMap(usage, "checkpoint");
+        result["checkpointChargeCreditMicros"] = estimatedCreditMicros;
+        result["checkpointProviderCostUsdMicros"] = providerCostUsdMicros;
+        result["checkpointTotalTokens"] = usage.TotalTokens;
+        return result;
+    }
+
+    private static Dictionary<string, object> UsageMap(ProviderUsage usage, string prefix) => new()
+    {
+        [$"{prefix}InputTokens"] = usage.InputTokens,
+        [$"{prefix}OutputTokens"] = usage.OutputTokens,
+        [$"{prefix}CachedInputTokens"] = usage.CachedInputTokens,
+        [$"{prefix}ReasoningTokens"] = usage.ReasoningTokens,
+        [$"{prefix}ImageTokens"] = usage.ImageTokens,
+        [$"{prefix}AudioTokens"] = usage.AudioTokens,
+        [$"{prefix}TotalTokens"] = usage.TotalTokens,
+        [$"{prefix}InputAudioTokens"] = usage.InputAudioTokens,
+        [$"{prefix}OutputAudioTokens"] = usage.OutputAudioTokens,
+        [$"{prefix}InputImageTokens"] = usage.InputImageTokens,
+        [$"{prefix}OutputImageTokens"] = usage.OutputImageTokens,
+        [$"{prefix}ProviderRequestId"] = CleanProviderValue(usage.ProviderRequestId),
+        [$"{prefix}ProviderModelVersion"] = CleanProviderValue(usage.ProviderModelVersion),
+        [$"{prefix}Estimated"] = usage.Estimated,
+    };
+
+    private static string CleanProviderValue(string? value)
+    {
+        var cleaned = value?.Trim() ?? "";
+        return cleaned.Length <= 200 ? cleaned : cleaned[..200];
+    }
+
+    private static string CleanOutcome(string? value)
+    {
+        var cleaned = string.IsNullOrWhiteSpace(value) ? "provider_completed" : value.Trim();
+        return cleaned.Length <= 100 ? cleaned : cleaned[..100];
     }
 
     private DocumentReference Account(string userId) =>

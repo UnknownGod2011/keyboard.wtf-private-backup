@@ -4,11 +4,36 @@ using System.Text;
 using System.Net;
 using System.Text.Json;
 using KeyboardWtf.Services;
+using KeyboardWtf.Services.Ai;
 using KeyboardWtf.Services.PaidStaging;
+using KeyboardWtf.Models;
 using Xunit;
 
 public sealed class PaidStagingSecurityTests
 {
+    [Fact]
+    public void Paid_mode_routes_every_selectable_desktop_provider_through_cloud_accounting()
+    {
+        using var paid = new PaidAccountService(new PaidStagingConfiguration(
+            true,
+            false,
+            new Uri("https://paid-api.example.test/"),
+            new Uri("https://paid.example.test/")));
+        using var claude = new ClaudeApiService();
+        try
+        {
+            AiProviderRegistry.Initialize(claude, paid);
+
+            Assert.Equal("keyboard.wtf Cloud AI (staging)", AiProviderRegistry.Get(AiProvider.Gemini).DisplayName);
+            Assert.Equal("keyboard.wtf Cloud AI (staging)", AiProviderRegistry.Get(AiProvider.Claude).DisplayName);
+            Assert.Equal("keyboard.wtf Cloud AI (staging)", AiProviderRegistry.Get(AiProvider.OpenAi).DisplayName);
+        }
+        finally
+        {
+            AiProviderRegistry.Initialize(claude, null);
+        }
+    }
+
     [Fact]
     public void AppDataOverride_MustRemainUnderLocalAppData()
     {

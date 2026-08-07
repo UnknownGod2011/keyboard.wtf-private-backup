@@ -82,13 +82,10 @@ public sealed class VertexLiveProxyService
         WebSocket? client = null;
         var usage = new LiveUsageAccumulator(_options.LiveSessionMaxTrafficBytes);
         var providerConnected = false;
+        var providerDispatchStarted = false;
         var outcome = "cancelled";
         try
         {
-            await _store.MarkReservationProviderStartedAsync(
-                caller.UserId,
-                requestId,
-                cancellationToken);
             var accessToken = await _tokens.GetAsync(cancellationToken);
             provider = new ClientWebSocket();
             provider.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
@@ -107,16 +104,49 @@ public sealed class VertexLiveProxyService
                 $"projects/{_options.ProjectId}/locations/{_options.VertexLiveRegion}/" +
                 $"publishers/google/models/{_options.VertexLiveModel}");
             usage.ObserveClient(rewritten);
+            await _store.MarkReservationProviderStartedAsync(
+                caller.UserId,
+                requestId,
+                cancellationToken);
+            providerDispatchStarted = true;
             await SendTextAsync(provider, rewritten, cancellationToken);
 
             using var session = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             session.CancelAfter(TimeSpan.FromSeconds(_options.LiveSessionMaxSeconds));
-            var toProvider = RelayAsync(client, provider, usage.ObserveClient, session.Token);
-            var toClient = RelayAsync(provider, client, usage.ObserveProvider, session.Token);
-            await Task.WhenAny(toProvider, toClient);
+            void EnsureBudget()
+            {
+                var current = usage.Snapshot();
+                if (current.TotalTokens <= 0)
+                    return;
+                var (_, currentCharge) = _catalog.CalculateLiveActualCost(
+                    catalog.Pricing,
+                    current,
+                    _options.LiveEstimateSafetyBasisPoints);
+                if (currentCharge >= reservation.Reservation.ReservedCreditMicros)
+                    throw new InvalidOperationException("The Live session reached its approved server budget.");
+            }
+
+            var toProvider = RelayAsync(client, provider, message =>
+            {
+                usage.ObserveClient(message);
+                EnsureBudget();
+            }, session.Token);
+            var toClient = RelayAsync(provider, client, message =>
+            {
+                usage.ObserveProvider(message);
+                EnsureBudget();
+            }, session.Token);
+            var checkpoints = CheckpointUsageAsync(
+                caller.UserId,
+                requestId,
+                usage,
+                catalog.Pricing,
+                session.Token);
+            await Task.WhenAny(toProvider, toClient, checkpoints);
             session.Cancel();
             await IgnoreExpectedRelayEndAsync(toProvider);
             await IgnoreExpectedRelayEndAsync(toClient);
+            await IgnoreExpectedCheckpointEndAsync(checkpoints);
             outcome = cancellationToken.IsCancellationRequested ? "cancelled" : "completed";
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -132,8 +162,8 @@ public sealed class VertexLiveProxyService
             outcome = "provider_failed";
             _logger.LogWarning(
                 exception,
-                "Vertex Live session failed for request {RequestId} after connection={ProviderConnected}",
-                requestId,
+                "Vertex Live session failed for request {RequestHash} after connection={ProviderConnected}",
+                Crypto.Sha256(requestId)[..12],
                 providerConnected);
             await CloseQuietlyAsync(client, WebSocketCloseStatus.InternalServerError, "Live session ended.");
             if (client is null)
@@ -147,9 +177,36 @@ public sealed class VertexLiveProxyService
             client?.Dispose();
 
             var measured = usage.Snapshot();
-            if (providerConnected && measured.TotalTokens > 0)
+            switch (DetermineAccountingDisposition(providerDispatchStarted, measured.TotalTokens))
             {
-                var (providerCost, charge) = _catalog.CalculateActualCost(catalog.Pricing, measured);
+            case LiveAccountingDisposition.Settle:
+            {
+                var (providerCost, charge) = _catalog.CalculateLiveActualCost(
+                    catalog.Pricing,
+                    measured,
+                    _options.LiveEstimateSafetyBasisPoints);
+                try
+                {
+                    await _store.RecordProviderCompletionAsync(
+                        caller.UserId,
+                        requestId,
+                        measured,
+                        charge,
+                        providerCost,
+                        outcome,
+                        CancellationToken.None);
+                }
+                catch (Exception exception)
+                {
+                    await _store.MarkReservationForReconciliationAsync(
+                        caller.UserId,
+                        requestId,
+                        "live_provider_completion_evidence_write_failed",
+                        CancellationToken.None);
+                    throw new InvalidOperationException(
+                        "Live usage was incurred but its durable accounting evidence is pending reconciliation.",
+                        exception);
+                }
                 Exception? settlementError = null;
                 for (var attempt = 0; attempt <= _options.MaxRetries; attempt++)
                 {
@@ -177,17 +234,45 @@ public sealed class VertexLiveProxyService
                     throw new InvalidOperationException(
                         "Live usage was incurred but its accounting settlement is pending reconciliation.",
                         settlementError);
+                break;
             }
-            else
+            case LiveAccountingDisposition.Reconcile:
+            {
+                // A successful provider connection plus dispatched setup can
+                // still be billable even when the Live API supplies no usage
+                // metadata (for example when the client disconnects before a
+                // model turn).  Do not issue an automatic refund here: mark
+                // the reservation for the maintenance resolver, which keeps
+                // the ledger auditable and releases it only with proof that
+                // no billable provider work occurred.
+                await _store.MarkReservationForReconciliationAsync(
+                    caller.UserId,
+                    requestId,
+                    "live_provider_dispatch_without_usage_metadata",
+                    CancellationToken.None);
+                break;
+            }
+            default:
             {
                 await _store.ReleaseReservationAsync(
                     caller.UserId,
                     requestId,
                     outcome,
                     CancellationToken.None);
+                break;
+            }
             }
         }
     }
+
+    internal static LiveAccountingDisposition DetermineAccountingDisposition(
+        bool providerDispatchStarted,
+        long measuredTotalTokens) =>
+        measuredTotalTokens > 0
+            ? LiveAccountingDisposition.Settle
+            : providerDispatchStarted
+                ? LiveAccountingDisposition.Reconcile
+                : LiveAccountingDisposition.Release;
 
     internal static string RewriteSetup(string json, string model)
     {
@@ -264,6 +349,39 @@ public sealed class VertexLiveProxyService
         catch (WebSocketException) { }
     }
 
+    private static async Task IgnoreExpectedCheckpointEndAsync(Task task)
+    {
+        try { await task; }
+        catch (OperationCanceledException) { }
+    }
+
+    private async Task CheckpointUsageAsync(
+        string userId,
+        string requestId,
+        LiveUsageAccumulator usage,
+        PricingSnapshot pricing,
+        CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(_options.LiveUsageCheckpointSeconds));
+        while (await timer.WaitForNextTickAsync(cancellationToken))
+        {
+            var measured = usage.Snapshot();
+            if (measured.TotalTokens <= 0)
+                continue;
+            var (providerCost, charge) = _catalog.CalculateLiveActualCost(
+                pricing,
+                measured,
+                _options.LiveEstimateSafetyBasisPoints);
+            await _store.CheckpointReservationUsageAsync(
+                userId,
+                requestId,
+                measured,
+                charge,
+                providerCost,
+                cancellationToken);
+        }
+    }
+
     private static async Task CloseQuietlyAsync(
         WebSocket? socket,
         WebSocketCloseStatus status,
@@ -285,6 +403,13 @@ public sealed class VertexLiveProxyService
         && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-');
 }
 
+internal enum LiveAccountingDisposition
+{
+    Settle,
+    Reconcile,
+    Release,
+}
+
 internal sealed class LiveUsageAccumulator
 {
     private readonly long _maxTrafficBytes;
@@ -296,6 +421,15 @@ internal sealed class LiveUsageAccumulator
     private long _promptTokens;
     private long _candidateTokens;
     private long _totalTokens;
+    private long _reasoningTokens;
+    private long _inputAudioTokens;
+    private long _outputAudioTokens;
+    private long _inputImageTokens;
+    private long _outputImageTokens;
+    private int _usageMetadataSeen;
+    private readonly object _metadataLock = new();
+    private string? _providerRequestId;
+    private string? _providerModelVersion;
 
     public LiveUsageAccumulator(long maxTrafficBytes) =>
         _maxTrafficBytes = maxTrafficBytes;
@@ -311,20 +445,7 @@ internal sealed class LiveUsageAccumulator
                 && realtime.TryGetProperty("audio", out var audio)
                 && audio.TryGetProperty("data", out var data))
                 Interlocked.Add(ref _inputAudioBytes, Base64ByteCount(data.GetString()));
-            if (root.TryGetProperty("clientContent", out var content)
-                && content.TryGetProperty("turns", out var turns))
-            {
-                foreach (var turn in turns.EnumerateArray())
-                {
-                    if (!turn.TryGetProperty("parts", out var parts))
-                        continue;
-                    foreach (var part in parts.EnumerateArray())
-                    {
-                        if (part.TryGetProperty("text", out var text))
-                            Interlocked.Add(ref _inputTextCharacters, text.GetString()?.Length ?? 0);
-                    }
-                }
-            }
+            Interlocked.Add(ref _inputTextCharacters, CountTextCharacters(root));
         }
         catch (JsonException) { }
     }
@@ -338,9 +459,22 @@ internal sealed class LiveUsageAccumulator
             var root = document.RootElement;
             if (root.TryGetProperty("usageMetadata", out var usage))
             {
+                Interlocked.Exchange(ref _usageMetadataSeen, 1);
                 Max(ref _promptTokens, Number(usage, "promptTokenCount"));
                 Max(ref _candidateTokens, Number(usage, "candidatesTokenCount"));
                 Max(ref _totalTokens, Number(usage, "totalTokenCount"));
+                Max(ref _reasoningTokens, Number(usage, "thoughtsTokenCount"));
+                Max(ref _inputAudioTokens, Modality(usage, "promptTokensDetails", "AUDIO"));
+                Max(ref _outputAudioTokens, Modality(usage, "candidatesTokensDetails", "AUDIO"));
+                Max(ref _inputImageTokens, Modality(usage, "promptTokensDetails", "IMAGE"));
+                Max(ref _outputImageTokens, Modality(usage, "candidatesTokensDetails", "IMAGE"));
+            }
+            lock (_metadataLock)
+            {
+                if (root.TryGetProperty("responseId", out var responseId))
+                    _providerRequestId = responseId.GetString() ?? _providerRequestId;
+                if (root.TryGetProperty("modelVersion", out var modelVersion))
+                    _providerModelVersion = modelVersion.GetString() ?? _providerModelVersion;
             }
             if (root.TryGetProperty("serverContent", out var server)
                 && server.TryGetProperty("modelTurn", out var turn)
@@ -351,10 +485,9 @@ internal sealed class LiveUsageAccumulator
                     if (part.TryGetProperty("inlineData", out var inlineData)
                         && inlineData.TryGetProperty("data", out var data))
                         Interlocked.Add(ref _outputAudioBytes, Base64ByteCount(data.GetString()));
-                    if (part.TryGetProperty("text", out var text))
-                        Interlocked.Add(ref _outputTextCharacters, text.GetString()?.Length ?? 0);
                 }
             }
+            Interlocked.Add(ref _outputTextCharacters, CountTextCharacters(root));
         }
         catch (JsonException) { }
     }
@@ -369,20 +502,53 @@ internal sealed class LiveUsageAccumulator
         var estimatedOutputAudio = DivideRoundUp(Interlocked.Read(ref _outputAudioBytes), 1_920);
         var estimatedText = DivideRoundUp(Interlocked.Read(ref _inputTextCharacters), 4);
         var estimatedOutputText = DivideRoundUp(Interlocked.Read(ref _outputTextCharacters), 4);
-        var input = Math.Max(Interlocked.Read(ref _promptTokens), estimatedText + estimatedInputAudio);
+        var providerInput = Interlocked.Read(ref _promptTokens);
+        var providerOutput = Interlocked.Read(ref _candidateTokens);
+        var input = Math.Max(providerInput, estimatedText + estimatedInputAudio);
         var output = Math.Max(
-            Interlocked.Read(ref _candidateTokens),
+            providerOutput,
             estimatedOutputText + estimatedOutputAudio);
         var total = Math.Max(Interlocked.Read(ref _totalTokens), input + output);
+        var providerInputAudio = Interlocked.Read(ref _inputAudioTokens);
+        var providerOutputAudio = Interlocked.Read(ref _outputAudioTokens);
+        var inputAudio = Math.Clamp(
+            providerInputAudio > 0 ? providerInputAudio : estimatedInputAudio,
+            0,
+            input);
+        var outputAudio = Math.Clamp(
+            providerOutputAudio > 0 ? providerOutputAudio : estimatedOutputAudio,
+            0,
+            output);
+        var inputImage = Math.Clamp(Interlocked.Read(ref _inputImageTokens), 0, input - inputAudio);
+        var outputImage = Math.Clamp(Interlocked.Read(ref _outputImageTokens), 0, output - outputAudio);
+        var exactMetadata = Volatile.Read(ref _usageMetadataSeen) == 1;
+        var estimated = !exactMetadata
+            || (estimatedInputAudio > 0 && providerInputAudio == 0)
+            || (estimatedOutputAudio > 0 && providerOutputAudio == 0)
+            || input > providerInput
+            || output > providerOutput;
+        string? requestId;
+        string? modelVersion;
+        lock (_metadataLock)
+        {
+            requestId = _providerRequestId;
+            modelVersion = _providerModelVersion;
+        }
         return new ProviderUsage(
             input,
             output,
             0,
-            0,
-            0,
-            estimatedInputAudio + estimatedOutputAudio,
+            Interlocked.Read(ref _reasoningTokens),
+            inputImage + outputImage,
+            inputAudio + outputAudio,
             total,
-            null);
+            requestId,
+            modelVersion,
+            inputAudio,
+            outputAudio,
+            inputImage,
+            outputImage,
+            estimated);
     }
 
     private void AddTraffic(string json)
@@ -405,6 +571,45 @@ internal sealed class LiveUsageAccumulator
         element.TryGetProperty(name, out var value) && value.TryGetInt64(out var number)
             ? number
             : 0;
+
+    private static long Modality(JsonElement element, string property, string modality)
+    {
+        if (!element.TryGetProperty(property, out var details)
+            || details.ValueKind != JsonValueKind.Array)
+            return 0;
+        long result = 0;
+        foreach (var detail in details.EnumerateArray())
+        {
+            if (detail.TryGetProperty("modality", out var kind)
+                && string.Equals(kind.GetString(), modality, StringComparison.OrdinalIgnoreCase)
+                && detail.TryGetProperty("tokenCount", out var count)
+                && count.TryGetInt64(out var tokens))
+                result += tokens;
+        }
+        return result;
+    }
+
+    private static long CountTextCharacters(JsonElement element)
+    {
+        long total = 0;
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (string.Equals(property.Name, "text", StringComparison.OrdinalIgnoreCase)
+                    && property.Value.ValueKind == JsonValueKind.String)
+                    total += property.Value.GetString()?.Length ?? 0;
+                else
+                    total += CountTextCharacters(property.Value);
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+                total += CountTextCharacters(item);
+        }
+        return total;
+    }
 
     private static long DivideRoundUp(long value, long divisor) =>
         value <= 0 ? 0 : (value + divisor - 1) / divisor;

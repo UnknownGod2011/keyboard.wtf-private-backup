@@ -248,6 +248,7 @@ public static class ApiEndpoints
         HttpContext context,
         IPaymentProvider payments,
         IAccountStore store,
+        ILoggerFactory loggerFactory,
         CancellationToken token)
     {
         const int maxWebhookBytes = 1024 * 1024;
@@ -269,7 +270,11 @@ public static class ApiEndpoints
         context.Request.Body.Position = 0;
         var signature = context.Request.Headers["X-Razorpay-Signature"].ToString();
         if (!payments.VerifyWebhookSignature(rawBody, signature))
+        {
+            loggerFactory.CreateLogger("PaymentWebhook")
+                .LogWarning("Razorpay webhook signature rejected");
             return TypedResults.Unauthorized();
+        }
 
         using var document = JsonDocument.Parse(rawBody);
         var root = document.RootElement;
@@ -293,7 +298,9 @@ public static class ApiEndpoints
             parsed.AmountMinor,
             parsed.Status,
             token,
-            parsed.SubscriptionCycleEndsAt);
+            parsed.SubscriptionCycleEndsAt,
+            parsed.Currency,
+            parsed.ProductSku);
         return result.Outcome == "unmatched"
             ? Results.Conflict(new
             {
@@ -353,7 +360,9 @@ public static class ApiEndpoints
         string? ProviderEventObjectId,
         long? AmountMinor,
         string Status,
-        DateTimeOffset? SubscriptionCycleEndsAt)
+        DateTimeOffset? SubscriptionCycleEndsAt,
+        string? Currency,
+        string? ProductSku)
         ParseWebhook(JsonElement root, string eventType)
     {
         var payload = root.TryGetProperty("payload", out var value) ? value : default;
@@ -375,7 +384,16 @@ public static class ApiEndpoints
             ?? paymentId;
         var amountMinor = Number(refund, "amount")
             ?? Number(dispute, "amount")
-            ?? Number(payment, "amount");
+            ?? Number(payment, "amount")
+            ?? Number(order, "amount_paid")
+            ?? Number(order, "amount");
+        var currency = Property(payment, "currency")
+            ?? Property(order, "currency")
+            ?? Property(refund, "currency")
+            ?? Property(dispute, "currency");
+        var productSku = Note(order, "product_sku")
+            ?? Note(subscription, "product_sku")
+            ?? Note(payment, "product_sku");
         var providerObjectId = subscriptionId
             ?? orderId
             ?? Property(refund, "payment_id")
@@ -401,7 +419,9 @@ public static class ApiEndpoints
             providerEventObjectId,
             amountMinor,
             status,
-            subscriptionCycleEndsAt);
+            subscriptionCycleEndsAt,
+            currency,
+            productSku);
     }
 
     private static JsonElement Entity(JsonElement payload, string name)

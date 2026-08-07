@@ -65,7 +65,10 @@ public sealed class CatalogService : ICatalogService
         int maxOutputTokens,
         long taskCapCreditMicros)
     {
-        var estimatedInput = Math.Max(1, (prompt.Length + 3L) / 4L);
+        // One UTF-16 code unit per token is intentionally conservative across
+        // languages and structured payloads. Reservation is a budget guard,
+        // not a client-visible estimate; unused credit is released at settle.
+        var estimatedInput = Math.Max(1, prompt.Length);
         var assumedUsage = new ProviderUsage(
             estimatedInput,
             Math.Clamp(maxOutputTokens, 1, 8192),
@@ -77,30 +80,62 @@ public sealed class CatalogService : ICatalogService
             null);
         var (_, charge) = CalculateActualCost(pricing, assumedUsage);
         var withSafetyMargin = checked(charge + Math.Max(10_000, charge / 4));
-        return Math.Clamp(withSafetyMargin, 1, taskCapCreditMicros);
+        if (withSafetyMargin > taskCapCreditMicros)
+            throw new InvalidOperationException(
+                "The request's conservative maximum cost exceeds its approved task budget.");
+
+        // Reserve the complete caller-approved/server-bounded task budget. This
+        // prevents a manipulated low estimate or unusual tokenisation from
+        // creating an unreserved provider charge; unused credit is released by
+        // the authoritative settlement transaction.
+        return taskCapCreditMicros;
     }
 
     public (long ProviderCostUsdMicros, long ChargeCreditMicros) CalculateActualCost(
         PricingSnapshot pricing,
         ProviderUsage usage)
     {
-        static decimal Cost(long tokens, long microsPerMillion) =>
-            tokens <= 0 ? 0 : (decimal)tokens * microsPerMillion / 1_000_000m;
-
         // Vertex promptTokenCount includes cachedContentTokenCount. Charge the
         // cached portion at its discounted rate instead of charging it twice.
         var cachedInput = Math.Clamp(usage.CachedInputTokens, 0, usage.InputTokens);
-        var regularInput = Math.Max(0, usage.InputTokens - cachedInput);
+        var inputAudio = Math.Clamp(usage.InputAudioTokens, 0, usage.InputTokens - cachedInput);
+        var regularInput = Math.Max(0, usage.InputTokens - cachedInput - inputAudio);
         var providerMicros = decimal.Ceiling(
             Cost(regularInput, pricing.InputUsdMicrosPerMillionTokens)
             + Cost(usage.OutputTokens, pricing.OutputUsdMicrosPerMillionTokens)
             + Cost(cachedInput, pricing.CachedInputUsdMicrosPerMillionTokens)
+            + Cost(inputAudio, pricing.InputAudioUsdMicrosPerMillionTokens)
             + Cost(usage.ReasoningTokens, pricing.ReasoningUsdMicrosPerMillionTokens));
         var providerCost = checked((long)providerMicros);
-        var inrPaise = decimal.Ceiling(
-            providerCost * (decimal)pricing.UsdToInrPaise / 1_000_000m);
-        var creditMicros = decimal.Ceiling(inrPaise * pricing.CreditMicrosPerInrPaise);
-        return (providerCost, Math.Max(1, checked((long)creditMicros)));
+        return (providerCost, CreditsForProviderCost(pricing, providerCost));
+    }
+
+    public (long ProviderCostUsdMicros, long ChargeCreditMicros) CalculateLiveActualCost(
+        PricingSnapshot pricing,
+        ProviderUsage usage,
+        int estimateSafetyBasisPoints)
+    {
+        var inputAudio = Math.Clamp(usage.InputAudioTokens, 0, usage.InputTokens);
+        var inputImage = Math.Clamp(
+            usage.InputImageTokens,
+            0,
+            Math.Max(0, usage.InputTokens - inputAudio));
+        var inputText = Math.Max(0, usage.InputTokens - inputAudio - inputImage);
+        var outputAudio = Math.Clamp(usage.OutputAudioTokens, 0, usage.OutputTokens);
+        var outputText = Math.Max(0, usage.OutputTokens - outputAudio);
+        var providerCost = checked((long)decimal.Ceiling(
+            Cost(inputText, pricing.LiveInputTextUsdMicrosPerMillionTokens)
+            + Cost(inputAudio, pricing.LiveInputAudioUsdMicrosPerMillionTokens)
+            + Cost(inputImage, pricing.LiveInputImageUsdMicrosPerMillionTokens)
+            + Cost(outputText, pricing.LiveOutputTextUsdMicrosPerMillionTokens)
+            + Cost(outputAudio, pricing.LiveOutputAudioUsdMicrosPerMillionTokens)
+            + Cost(usage.ReasoningTokens, pricing.LiveOutputTextUsdMicrosPerMillionTokens)));
+        var baseCharge = CreditsForProviderCost(pricing, providerCost);
+        var charge = usage.Estimated
+            ? checked((long)decimal.Ceiling(
+                (decimal)baseCharge * Math.Clamp(estimateSafetyBasisPoints, 10_000, 20_000) / 10_000m))
+            : baseCharge;
+        return (providerCost, Math.Max(1, charge));
     }
 
     private CatalogSnapshot FromDocument(DocumentSnapshot document)
@@ -114,13 +149,19 @@ public sealed class CatalogService : ICatalogService
             : new PricingSnapshot(
                 GetString(pricingMap, "version", "vertex-gemini-2.5-flash-2026-08"),
                 GetString(pricingMap, "model", _options.VertexModel),
-                GetLong(pricingMap, "inputUsdMicrosPerMillionTokens", 150_000),
-                GetLong(pricingMap, "outputUsdMicrosPerMillionTokens", 3_500_000),
-                GetLong(pricingMap, "cachedInputUsdMicrosPerMillionTokens", 37_500),
-                GetLong(pricingMap, "reasoningUsdMicrosPerMillionTokens", 3_500_000),
+                GetLong(pricingMap, "inputUsdMicrosPerMillionTokens", 300_000),
+                GetLong(pricingMap, "outputUsdMicrosPerMillionTokens", 2_500_000),
+                GetLong(pricingMap, "cachedInputUsdMicrosPerMillionTokens", 30_000),
+                GetLong(pricingMap, "reasoningUsdMicrosPerMillionTokens", 2_500_000),
                 GetLong(pricingMap, "usdToInrPaise", 8_700),
                 GetLong(pricingMap, "creditMicrosPerInrPaise", 10_000),
-                _clock.UtcNow);
+                _clock.UtcNow,
+                GetLong(pricingMap, "inputAudioUsdMicrosPerMillionTokens", 1_000_000),
+                GetLong(pricingMap, "liveInputTextUsdMicrosPerMillionTokens", 500_000),
+                GetLong(pricingMap, "liveInputAudioUsdMicrosPerMillionTokens", 3_000_000),
+                GetLong(pricingMap, "liveInputImageUsdMicrosPerMillionTokens", 3_000_000),
+                GetLong(pricingMap, "liveOutputTextUsdMicrosPerMillionTokens", 2_000_000),
+                GetLong(pricingMap, "liveOutputAudioUsdMicrosPerMillionTokens", 12_000_000));
 
         var products = new List<CatalogProduct>();
         if (data.TryGetValue("products", out var productsValue)
@@ -179,13 +220,30 @@ public sealed class CatalogService : ICatalogService
     private PricingSnapshot BootstrapPricing() => new(
         "vertex-gemini-2.5-flash-2026-08",
         _options.VertexModel,
-        150_000,
-        3_500_000,
-        37_500,
-        3_500_000,
+        300_000,
+        2_500_000,
+        30_000,
+        2_500_000,
         8_700,
         10_000,
-        _clock.UtcNow);
+        _clock.UtcNow,
+        1_000_000,
+        500_000,
+        3_000_000,
+        3_000_000,
+        2_000_000,
+        12_000_000);
+
+    private static decimal Cost(long tokens, long microsPerMillion) =>
+        tokens <= 0 ? 0 : (decimal)tokens * microsPerMillion / 1_000_000m;
+
+    private static long CreditsForProviderCost(PricingSnapshot pricing, long providerCostUsdMicros)
+    {
+        var inrPaise = decimal.Ceiling(
+            providerCostUsdMicros * (decimal)pricing.UsdToInrPaise / 1_000_000m);
+        var creditMicros = decimal.Ceiling(inrPaise * pricing.CreditMicrosPerInrPaise);
+        return Math.Max(1, checked((long)creditMicros));
+    }
 
     private static string GetString(IDictionary<string, object> map, string key, string? fallback) =>
         map.TryGetValue(key, out var value) && value is not null

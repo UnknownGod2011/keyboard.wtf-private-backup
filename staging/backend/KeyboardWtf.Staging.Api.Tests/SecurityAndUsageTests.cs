@@ -6,6 +6,8 @@ using KeyboardWtf.Staging.Api.Services;
 using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Firestore;
 using Microsoft.Extensions.Options;
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using Xunit;
 
@@ -98,6 +100,84 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
+    public async Task Razorpay_reconciliation_inspection_uses_server_authenticated_read_only_endpoints()
+    {
+        Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", "rzp_test_public");
+        Environment.SetEnvironmentVariable("RAZORPAY_KEY_SECRET", "unit_test_secret");
+        try
+        {
+            var handler = new RazorpayInspectionHandler();
+            var provider = new RazorpayPaymentProvider(new HttpClient(handler));
+
+            var order = await provider.InspectOrderAsync("order_123", CancellationToken.None);
+            var subscription = await provider.InspectSubscriptionAsync("sub_123", CancellationToken.None);
+            var refunds = await provider.InspectRefundsAsync("pay_123", CancellationToken.None);
+            var disputes = await provider.InspectDisputesAsync("pay_123", CancellationToken.None);
+            var repeatedDisputes = await provider.InspectDisputesAsync("pay_123", CancellationToken.None);
+
+            Assert.Equal("pur_123", order.PurchaseId);
+            Assert.Equal("credits_test", order.ProductSku);
+            Assert.Single(order.Payments);
+            Assert.True(order.Payments[0].Captured);
+            Assert.Equal("pur_123", subscription.PurchaseId);
+            Assert.Equal("monthly_test", subscription.ProductSku);
+            Assert.Single(subscription.Charges);
+            Assert.Equal("pay_123", Assert.Single(refunds).PaymentId);
+            Assert.Equal("pay_123", Assert.Single(disputes).PaymentId);
+            Assert.Equal(disputes, repeatedDisputes);
+            Assert.Equal(1, handler.Paths.Count(path => path == "disputes"));
+            Assert.All(handler.Paths, path => Assert.DoesNotContain("unit_test_secret", path, StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", null);
+            Environment.SetEnvironmentVariable("RAZORPAY_KEY_SECRET", null);
+        }
+    }
+
+    [Fact]
+    public async Task Razorpay_refund_inspection_reads_every_bounded_page()
+    {
+        Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", "rzp_test_public");
+        Environment.SetEnvironmentVariable("RAZORPAY_KEY_SECRET", "unit_test_secret");
+        try
+        {
+            var handler = new RazorpayPagedInspectionHandler();
+            var provider = new RazorpayPaymentProvider(new HttpClient(handler));
+
+            var refunds = await provider.InspectRefundsAsync("pay_123", CancellationToken.None);
+
+            Assert.Equal(101, refunds.Count);
+            Assert.Contains("payments/pay_123/refunds?count=100&skip=100", handler.Paths);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", null);
+            Environment.SetEnvironmentVariable("RAZORPAY_KEY_SECRET", null);
+        }
+    }
+
+    [Theory]
+    [InlineData("active", "subscription.activated")]
+    [InlineData("paused", "subscription.paused")]
+    [InlineData("cancelled", "subscription.cancelled")]
+    [InlineData("halted", "subscription.halted")]
+    public void Subscription_reconciliation_maps_provider_state_without_crediting_by_state_alone(
+        string status,
+        string expected) =>
+        Assert.Equal(expected, PaymentReconciliationService.SubscriptionLifecycleEvent(status));
+
+    [Fact]
+    public void Maintenance_job_selection_is_explicit_and_lease_expiry_is_deterministic()
+    {
+        Assert.Equal("payments", MaintenanceRunner.ParseJob(["--maintenance-job=payments"]));
+        Assert.Null(MaintenanceRunner.ParseJob(["--urls=http://localhost"]));
+        var now = DateTimeOffset.Parse("2026-08-04T00:00:00Z");
+        Assert.True(FirestoreMaintenanceLease.CanAcquire(now, now));
+        Assert.False(FirestoreMaintenanceLease.CanAcquire(now.AddSeconds(1), now));
+    }
+
+    [Fact]
     public void Partial_refund_reverses_only_the_proportional_credit()
     {
         Assert.Equal(
@@ -157,6 +237,75 @@ public sealed class SecurityAndUsageTests
         string purchaseKind,
         bool expected) =>
         Assert.Equal(expected, FirestoreAccountStore.IsCreditEvent(eventType, purchaseKind));
+
+    [Fact]
+    public void Payment_credit_requires_exact_server_owned_identity_amount_currency_and_sku()
+    {
+        var purchase = new Dictionary<string, object>
+        {
+            ["userId"] = "uid-owner",
+            ["providerObjectId"] = "order_expected",
+            ["providerPaymentId"] = "",
+            ["amountMinor"] = 4_900L,
+            ["currency"] = "INR",
+            ["productSku"] = "credits_test",
+        };
+
+        string? Validate(
+            string objectId = "order_expected",
+            long? amount = 4_900,
+            string? currency = "INR",
+            string? sku = "credits_test") =>
+            FirestoreAccountStore.PaymentEvidenceRejection(
+                "order.paid",
+                "credits",
+                "uid-owner",
+                purchase,
+                objectId,
+                objectId,
+                null,
+                "pay_expected",
+                amount,
+                currency,
+                sku);
+
+        Assert.Null(Validate());
+        Assert.Equal("provider_identity_mismatch", Validate(objectId: "order_other"));
+        Assert.Equal("payment_amount_mismatch", Validate(amount: 1));
+        Assert.Equal("payment_amount_missing", Validate(amount: null));
+        Assert.Equal("payment_currency_mismatch", Validate(currency: "USD"));
+        Assert.Equal("payment_currency_missing", Validate(currency: null));
+        Assert.Equal("payment_sku_mismatch", Validate(sku: "monthly_test"));
+        Assert.Equal("payment_sku_missing", Validate(sku: null));
+    }
+
+    [Fact]
+    public void Payment_credit_rejects_cross_account_purchase_ownership()
+    {
+        var purchase = new Dictionary<string, object>
+        {
+            ["userId"] = "uid-other",
+            ["providerObjectId"] = "order_expected",
+            ["amountMinor"] = 4_900L,
+            ["currency"] = "INR",
+            ["productSku"] = "credits_test",
+        };
+
+        Assert.Equal(
+            "purchase_owner_mismatch",
+            FirestoreAccountStore.PaymentEvidenceRejection(
+                "order.paid",
+                "credits",
+                "uid-owner",
+                purchase,
+                "order_expected",
+                "order_expected",
+                null,
+                "pay_expected",
+                4_900,
+                "INR",
+                "credits_test"));
+    }
 
     [Theory]
     [InlineData("none", "monthly_test", "active", true, "monthly_test")]
@@ -321,6 +470,55 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
+    public void Reservation_holds_the_full_approved_budget_and_rejects_an_unsafe_low_cap()
+    {
+        var service = new CatalogService(null!, Options.Create(TestOptions()), new FakeClock());
+        var pricing = new PricingSnapshot(
+            "test-pricing", "gemini-test", 300_000, 2_500_000, 30_000, 2_500_000,
+            8_700, 10_000, DateTimeOffset.Parse("2026-08-03T00:00:00Z"));
+
+        Assert.Equal(
+            25_000_000,
+            service.EstimateReservationCreditMicros(pricing, "hello", 128, 25_000_000));
+        Assert.Throws<InvalidOperationException>(() =>
+            service.EstimateReservationCreditMicros(pricing, new string('x', 50_000), 8192, 1));
+    }
+
+    [Fact]
+    public void Live_pricing_uses_modality_rates_and_safety_margin_only_for_estimates()
+    {
+        var service = new CatalogService(null!, Options.Create(TestOptions()), new FakeClock());
+        var pricing = new PricingSnapshot(
+            "test-pricing", "gemini-test", 300_000, 2_500_000, 30_000, 2_500_000,
+            8_700, 10_000, DateTimeOffset.Parse("2026-08-03T00:00:00Z"));
+        var exact = new ProviderUsage(
+            2_000, 1_000, 0, 0, 0, 2_000, 3_000, "provider-live", InputAudioTokens: 2_000,
+            OutputAudioTokens: 1_000);
+        var estimated = exact with { Estimated = true };
+
+        var exactCost = service.CalculateLiveActualCost(pricing, exact, 12_500);
+        var estimatedCost = service.CalculateLiveActualCost(pricing, estimated, 12_500);
+
+        Assert.Equal(18_000, exactCost.ProviderCostUsdMicros);
+        Assert.Equal(exactCost.ProviderCostUsdMicros, estimatedCost.ProviderCostUsdMicros);
+        Assert.True(estimatedCost.ChargeCreditMicros > exactCost.ChargeCreditMicros);
+    }
+
+    [Fact]
+    public void Global_quota_shards_are_deterministic_and_preserve_the_exact_daily_cap()
+    {
+        const long cap = 1_000_000_019;
+        const int shards = 32;
+        var first = FirestoreAccountStore.GlobalUsageShardIndex("20260804", "uid-1", "request-1", shards);
+        var again = FirestoreAccountStore.GlobalUsageShardIndex("20260804", "uid-1", "request-1", shards);
+
+        Assert.Equal(first, again);
+        Assert.InRange(first, 0, shards - 1);
+        Assert.Equal(cap, Enumerable.Range(0, shards)
+            .Sum(index => FirestoreAccountStore.GlobalUsageShardCap(cap, shards, index)));
+    }
+
+    [Fact]
     public void Payment_kill_switch_blocks_checkout_product_resolution()
     {
         var snapshot = new CatalogSnapshot(
@@ -350,8 +548,29 @@ public sealed class SecurityAndUsageTests
         Assert.True(result.Verified);
         Assert.Equal(1, store.ReserveCalls);
         Assert.Equal(1, store.ProviderStartedCalls);
+        Assert.Equal(1, store.ProviderCompletedCalls);
         Assert.Equal(1, store.SettleCalls);
         Assert.Equal(0, store.ReleaseCalls);
+        Assert.True(store.Calls.IndexOf("provider-completed") < store.Calls.IndexOf("settle"));
+    }
+
+    [Fact]
+    public async Task Provider_evidence_write_failure_never_settles_or_releases_usage()
+    {
+        var store = new FakeStore { Available = 1_000_000_000, FailProviderCompletion = true };
+        var service = CreateAi(store, new FakeVertex(new VertexGenerateResult(
+            "ok", new ProviderUsage(10, 5, 0, 0, 0, 0, 15, "provider-evidence"))));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.GenerateAsync(
+            Caller,
+            new GenerateRequest("request-evidence-failure", "hello", null, 128),
+            CancellationToken.None));
+
+        Assert.Contains("pending reconciliation", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, store.ProviderCompletedCalls);
+        Assert.Equal(0, store.SettleCalls);
+        Assert.Equal(0, store.ReleaseCalls);
+        Assert.Equal(1, store.ReconciliationCalls);
     }
 
     [Fact]
@@ -382,13 +601,19 @@ public sealed class SecurityAndUsageTests
                 store.GrantCreditsAsync(second.UserId, 2_000_000, "integration isolation", $"grant-b-{suffix}", "integration-test", CancellationToken.None));
 
             var reservations = await Task.WhenAll(
-                store.ReserveAsync(first, requestId, "gemini-test", "test", 100_000, 500_000, 12, 1, 10_000_000_000, CancellationToken.None),
-                store.ReserveAsync(second, requestId, "gemini-test", "test", 100_000, 500_000, 12, 1, 10_000_000_000, CancellationToken.None));
+                store.ReserveAsync(first, requestId, "gemini-test", "test", 100_000, 500_000, 12, 1, 1_000_000_000, CancellationToken.None),
+                store.ReserveAsync(second, requestId, "gemini-test", "test", 100_000, 500_000, 12, 1, 1_000_000_000, CancellationToken.None));
             Assert.All(reservations, result => Assert.True(result.Created));
             Assert.Equal(900_000, reservations[0].Account.AvailableCreditMicros);
             Assert.Equal(1_900_000, reservations[1].Account.AvailableCreditMicros);
 
             var zeroUsage = new ProviderUsage(0, 0, 0, 0, 0, 0, 0, "integration-test");
+            await Task.WhenAll(
+                store.MarkReservationProviderStartedAsync(first.UserId, requestId, CancellationToken.None),
+                store.MarkReservationProviderStartedAsync(second.UserId, requestId, CancellationToken.None));
+            await Task.WhenAll(
+                store.RecordProviderCompletionAsync(first.UserId, requestId, zeroUsage, 0, 0, "verified", CancellationToken.None),
+                store.RecordProviderCompletionAsync(second.UserId, requestId, zeroUsage, 0, 0, "verified", CancellationToken.None));
             var settlements = await Task.WhenAll(
                 store.SettleAsync(first.UserId, requestId, zeroUsage, 0, 0, "verified", CancellationToken.None),
                 store.SettleAsync(second.UserId, requestId, zeroUsage, 0, 0, "verified", CancellationToken.None));
@@ -448,7 +673,7 @@ public sealed class SecurityAndUsageTests
                         1_000_000,
                         12,
                         2,
-                        10_000_000_000,
+                        1_000_000_000,
                         CancellationToken.None), null);
                 }
                 catch (Exception error)
@@ -471,6 +696,87 @@ public sealed class SecurityAndUsageTests
                 success.RequestId,
                 "integration_cleanup",
                 CancellationToken.None);
+            var released = await store.GetAccountAsync(caller.UserId, CancellationToken.None);
+            Assert.Equal(1_000_000, released.AvailableCreditMicros);
+            Assert.Equal(0, released.ReservedCreditMicros);
+        }
+        finally
+        {
+            await DeleteIntegrationAccountAsync(db, caller.UserId);
+        }
+    }
+
+    [Fact]
+    public async Task Firestore_burst_reservations_enforce_account_concurrency_and_preserve_the_balance_when_enabled()
+    {
+        var accessToken = Environment.GetEnvironmentVariable("KEYBOARD_WTF_FIRESTORE_TEST_ACCESS_TOKEN");
+        if (string.IsNullOrWhiteSpace(accessToken))
+            return;
+
+        var db = new FirestoreDbBuilder
+        {
+            ProjectId = "keyboard-wtf-staging",
+            Credential = GoogleCredential.FromAccessToken(accessToken),
+        }.Build();
+        var store = new FirestoreAccountStore(db, new SystemClock(), Options.Create(TestOptions()));
+        var suffix = Guid.NewGuid().ToString("N");
+        var caller = new CallerIdentity(
+            $"integration-burst-{suffix}",
+            $"burst-{suffix}@example.invalid",
+            "Integration Burst",
+            "test");
+        try
+        {
+            await store.EnsureAccountAsync(caller, CancellationToken.None);
+            await store.GrantCreditsAsync(
+                caller.UserId,
+                1_000_000,
+                "integration burst",
+                $"grant-burst-{suffix}",
+                "integration-test",
+                CancellationToken.None);
+
+            async Task<(string RequestId, ReservationResult? Result, Exception? Error)> TryReserveAsync(int ordinal)
+            {
+                var requestId = $"burst-{ordinal}-{suffix}";
+                try
+                {
+                    var result = await store.ReserveAsync(
+                        caller,
+                        requestId,
+                        "gemini-test",
+                        "test",
+                        100_000,
+                        250_000,
+                        100,
+                        2,
+                        1_000_000_000,
+                        CancellationToken.None);
+                    return (requestId, result, null);
+                }
+                catch (Exception exception)
+                {
+                    return (requestId, null, exception);
+                }
+            }
+
+            var attempts = await Task.WhenAll(Enumerable.Range(0, 24).Select(TryReserveAsync));
+            var accepted = attempts.Where(attempt => attempt.Result?.Created == true).ToArray();
+            var rejected = attempts.Where(attempt => attempt.Error is not null).ToArray();
+            Assert.Equal(2, accepted.Length);
+            Assert.Equal(22, rejected.Length);
+            Assert.All(rejected, attempt => Assert.NotNull(attempt.Error));
+
+            var reserved = await store.GetAccountAsync(caller.UserId, CancellationToken.None);
+            Assert.Equal(800_000, reserved.AvailableCreditMicros);
+            Assert.Equal(200_000, reserved.ReservedCreditMicros);
+
+            await Task.WhenAll(accepted.Select(attempt =>
+                store.ReleaseReservationAsync(
+                    caller.UserId,
+                    attempt.RequestId,
+                    "integration_burst_cleanup",
+                    CancellationToken.None)));
             var released = await store.GetAccountAsync(caller.UserId, CancellationToken.None);
             Assert.Equal(1_000_000, released.AvailableCreditMicros);
             Assert.Equal(0, released.ReservedCreditMicros);
@@ -536,6 +842,23 @@ public sealed class SecurityAndUsageTests
                 "order",
                 CancellationToken.None);
 
+            var rejectedAmount = await store.ApplyPaymentWebhookAsync(
+                $"evt_bad_amount_{suffix}",
+                "order.paid",
+                orderId,
+                paymentOne,
+                orderId,
+                null,
+                creditPurchaseId,
+                paymentOne,
+                1,
+                "paid",
+                CancellationToken.None,
+                providerCurrency: "INR",
+                providerProductSku: "credits_integration");
+            Assert.Equal("payment_amount_mismatch", rejectedAmount.Outcome);
+            Assert.Equal(0, (await store.GetAccountAsync(caller.UserId, CancellationToken.None)).AvailableCreditMicros);
+
             var replay = await store.ApplyPaymentWebhookAsync(
                 $"evt_unmatched_{suffix}",
                 "order.paid",
@@ -547,7 +870,9 @@ public sealed class SecurityAndUsageTests
                 paymentOne,
                 4_900,
                 "paid",
-                CancellationToken.None);
+                CancellationToken.None,
+                providerCurrency: "INR",
+                providerProductSku: "credits_integration");
             Assert.Equal("credited", replay.Outcome);
             await store.ApplyPaymentWebhookAsync(
                 $"evt_same_payment_{suffix}",
@@ -560,7 +885,9 @@ public sealed class SecurityAndUsageTests
                 paymentOne,
                 4_900,
                 "captured",
-                CancellationToken.None);
+                CancellationToken.None,
+                providerCurrency: "INR",
+                providerProductSku: "credits_integration");
             Assert.Equal(100_000_000, (await store.GetAccountAsync(caller.UserId, CancellationToken.None)).AvailableCreditMicros);
 
             Assert.True(await store.BeginPurchaseAsync(
@@ -585,10 +912,12 @@ public sealed class SecurityAndUsageTests
 
             await store.ApplyPaymentWebhookAsync(
                 $"evt_charge_one_{suffix}", "subscription.charged", subscriptionId,
-                paymentOne, null, subscriptionId, subscriptionPurchaseId, paymentOne, 9_900, "active", CancellationToken.None);
+                paymentOne, null, subscriptionId, subscriptionPurchaseId, paymentOne, 9_900, "active", CancellationToken.None,
+                providerCurrency: "INR", providerProductSku: "monthly_integration");
             await store.ApplyPaymentWebhookAsync(
                 $"evt_charge_one_replay_{suffix}", "subscription.charged", subscriptionId,
-                paymentOne, null, subscriptionId, subscriptionPurchaseId, paymentOne, 9_900, "active", CancellationToken.None);
+                paymentOne, null, subscriptionId, subscriptionPurchaseId, paymentOne, 9_900, "active", CancellationToken.None,
+                providerCurrency: "INR", providerProductSku: "monthly_integration");
             var usageRequest = $"usage_between_cycles_{suffix}";
             await store.ReserveAsync(
                 caller,
@@ -599,13 +928,22 @@ public sealed class SecurityAndUsageTests
                 25_000_000,
                 12,
                 1,
-                10_000_000_000,
+                1_000_000_000,
                 CancellationToken.None);
             await store.MarkReservationProviderStartedAsync(caller.UserId, usageRequest, CancellationToken.None);
+            var cycleUsage = new ProviderUsage(10, 10, 0, 0, 0, 0, 20, "provider-cycle-test");
+            await store.RecordProviderCompletionAsync(
+                caller.UserId,
+                usageRequest,
+                cycleUsage,
+                10_000_000,
+                1_000,
+                "completed",
+                CancellationToken.None);
             await store.SettleAsync(
                 caller.UserId,
                 usageRequest,
-                new ProviderUsage(10, 10, 0, 0, 0, 0, 20, "provider-cycle-test"),
+                cycleUsage,
                 10_000_000,
                 1_000,
                 "completed",
@@ -616,7 +954,7 @@ public sealed class SecurityAndUsageTests
             await store.ApplyPaymentWebhookAsync(
                 $"evt_charge_two_{suffix}", "subscription.charged", subscriptionId,
                 paymentTwo, null, subscriptionId, subscriptionPurchaseId, paymentTwo, 9_900, "active", CancellationToken.None,
-                nextCycleEnd);
+                nextCycleEnd, "INR", "monthly_integration");
             var charged = await store.GetAccountAsync(caller.UserId, CancellationToken.None);
             Assert.Equal("monthly_integration", charged.PlanId);
             Assert.Equal(1_090_000_000, charged.AvailableCreditMicros);
@@ -828,6 +1166,23 @@ public sealed class SecurityAndUsageTests
             """{"clientContent":{"turnComplete":true}}""",
             "projects/test/locations/test/publishers/google/models/test"));
 
+    [Theory]
+    [InlineData(false, 0, "Release")]
+    [InlineData(true, 0, "Reconcile")]
+    [InlineData(false, 1, "Settle")]
+    [InlineData(true, 1, "Settle")]
+    public void Live_accounting_never_releases_after_provider_dispatch_without_usage_evidence(
+        bool providerDispatchStarted,
+        long totalTokens,
+        string expectedDisposition)
+    {
+        Assert.Equal(
+            Enum.Parse<LiveAccountingDisposition>(expectedDisposition),
+            VertexLiveProxyService.DetermineAccountingDisposition(
+                providerDispatchStarted,
+                totalTokens));
+    }
+
     [Fact]
     public void Live_usage_uses_conservative_audio_estimates_when_provider_counts_are_absent()
     {
@@ -855,8 +1210,11 @@ public sealed class SecurityAndUsageTests
         var snapshot = usage.Snapshot();
         Assert.Equal(1, snapshot.InputTokens);
         Assert.Equal(1, snapshot.OutputTokens);
+        Assert.Equal(1, snapshot.InputAudioTokens);
+        Assert.Equal(1, snapshot.OutputAudioTokens);
         Assert.Equal(2, snapshot.AudioTokens);
         Assert.Equal(2, snapshot.TotalTokens);
+        Assert.True(snapshot.Estimated);
     }
 
     [Fact]
@@ -871,6 +1229,38 @@ public sealed class SecurityAndUsageTests
         Assert.Equal(2, snapshot.InputTokens);
         Assert.Equal(3, snapshot.OutputTokens);
         Assert.Equal(5, snapshot.TotalTokens);
+        Assert.True(snapshot.Estimated);
+    }
+
+    [Fact]
+    public void Live_usage_prefers_provider_metadata_and_preserves_provider_identity()
+    {
+        var usage = new LiveUsageAccumulator(1_000_000);
+        usage.ObserveProvider("""
+            {
+              "responseId":"response-1",
+              "modelVersion":"live-version",
+              "usageMetadata":{
+                "promptTokenCount":30,
+                "candidatesTokenCount":20,
+                "thoughtsTokenCount":2,
+                "totalTokenCount":52,
+                "promptTokensDetails":[{"modality":"AUDIO","tokenCount":25}],
+                "candidatesTokensDetails":[{"modality":"AUDIO","tokenCount":15}]
+              }
+            }
+            """);
+
+        var snapshot = usage.Snapshot();
+
+        Assert.Equal(30, snapshot.InputTokens);
+        Assert.Equal(20, snapshot.OutputTokens);
+        Assert.Equal(25, snapshot.InputAudioTokens);
+        Assert.Equal(15, snapshot.OutputAudioTokens);
+        Assert.Equal(2, snapshot.ReasoningTokens);
+        Assert.Equal("response-1", snapshot.ProviderRequestId);
+        Assert.Equal("live-version", snapshot.ProviderModelVersion);
+        Assert.False(snapshot.Estimated);
     }
 
     private static readonly CallerIdentity Caller = new(
@@ -990,15 +1380,24 @@ public sealed class SecurityAndUsageTests
         public (long ProviderCostUsdMicros, long ChargeCreditMicros) CalculateActualCost(
             PricingSnapshot pricing,
             ProviderUsage usage) => (1_000, 20_000);
+
+        public (long ProviderCostUsdMicros, long ChargeCreditMicros) CalculateLiveActualCost(
+            PricingSnapshot pricing,
+            ProviderUsage usage,
+            int safetyBasisPoints) => (1_500, 30_000);
     }
 
     private sealed class FakeStore : IAccountStore
     {
         public long Available { get; set; }
         public bool ReserveCreated { get; set; } = true;
+        public bool FailProviderCompletion { get; set; }
         public bool SettlementCancellationRequested { get; private set; }
+        public List<string> Calls { get; } = [];
         public int ReserveCalls { get; private set; }
         public int ProviderStartedCalls { get; private set; }
+        public int ProviderCompletedCalls { get; private set; }
+        public int CheckpointCalls { get; private set; }
         public int SettleCalls { get; private set; }
         public int ReleaseCalls { get; private set; }
         public int ReconciliationCalls { get; private set; }
@@ -1032,6 +1431,7 @@ public sealed class SecurityAndUsageTests
             long providerCostUsdMicros, string outcome, CancellationToken cancellationToken)
         {
             SettleCalls++;
+            Calls.Add("settle");
             SettlementCancellationRequested = cancellationToken.IsCancellationRequested;
             return Task.FromResult(new SettlementResult(true, actualCreditMicros, 0, Account(userId)));
         }
@@ -1042,6 +1442,35 @@ public sealed class SecurityAndUsageTests
             CancellationToken cancellationToken)
         {
             ProviderStartedCalls++;
+            Calls.Add("provider-started");
+            return Task.CompletedTask;
+        }
+
+        public Task RecordProviderCompletionAsync(
+            string userId,
+            string requestId,
+            ProviderUsage usage,
+            long actualCreditMicros,
+            long providerCostUsdMicros,
+            string outcome,
+            CancellationToken cancellationToken)
+        {
+            ProviderCompletedCalls++;
+            Calls.Add("provider-completed");
+            if (FailProviderCompletion)
+                throw new InvalidOperationException("simulated provider evidence write failure");
+            return Task.CompletedTask;
+        }
+
+        public Task CheckpointReservationUsageAsync(
+            string userId,
+            string requestId,
+            ProviderUsage usage,
+            long estimatedCreditMicros,
+            long providerCostUsdMicros,
+            CancellationToken cancellationToken)
+        {
+            CheckpointCalls++;
             return Task.CompletedTask;
         }
 
@@ -1083,6 +1512,72 @@ public sealed class SecurityAndUsageTests
         public Task MarkPurchaseFailedAsync(string userId, string purchaseId, string outcome, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task CancelPendingPurchaseAsync(string userId, string purchaseId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task MarkCheckoutSignatureVerifiedAsync(string userId, string purchaseId, string providerObjectId, string providerPaymentId, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<PaymentWebhookResult> ApplyPaymentWebhookAsync(string eventId, string eventType, string providerObjectId, string? providerPaymentId, string? providerOrderId, string? providerSubscriptionId, string? purchaseId, string? providerEventObjectId, long? providerAmountMinor, string status, CancellationToken cancellationToken, DateTimeOffset? subscriptionCycleEndsAt = null) => throw new NotSupportedException();
+        public Task<PaymentWebhookResult> ApplyPaymentWebhookAsync(string eventId, string eventType, string providerObjectId, string? providerPaymentId, string? providerOrderId, string? providerSubscriptionId, string? purchaseId, string? providerEventObjectId, long? providerAmountMinor, string status, CancellationToken cancellationToken, DateTimeOffset? subscriptionCycleEndsAt = null, string? providerCurrency = null, string? providerProductSku = null) => throw new NotSupportedException();
+    }
+
+    private sealed class RazorpayInspectionHandler : HttpMessageHandler
+    {
+        public List<string> Paths { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal("Basic", request.Headers.Authorization?.Scheme);
+            var path = request.RequestUri!.PathAndQuery.TrimStart('/');
+            if (path.StartsWith("v1/", StringComparison.Ordinal))
+                path = path[3..];
+            Paths.Add(path);
+            var body = path switch
+            {
+                "orders/order_123" =>
+                    """{"id":"order_123","status":"paid","amount":4900,"currency":"INR","receipt":"pur_123","notes":{"product_sku":"credits_test"}}""",
+                "orders/order_123/payments" =>
+                    """{"items":[{"id":"pay_123","status":"captured","amount":4900,"currency":"INR","order_id":"order_123","captured":true,"created_at":1785790000}]}""",
+                "subscriptions/sub_123" =>
+                    """{"id":"sub_123","status":"active","current_end":1788382000,"notes":{"purchase_id":"pur_123","product_sku":"monthly_test"}}""",
+                "invoices?subscription_id=sub_123" =>
+                    """{"items":[{"id":"inv_123","payment_id":"pay_123","status":"paid"}]}""",
+                "payments/pay_123" =>
+                    """{"id":"pay_123","status":"captured","amount":4900,"currency":"INR","order_id":"order_123","subscription_id":"sub_123","captured":true,"created_at":1785790000}""",
+                "payments/pay_123/refunds?count=100&skip=0" =>
+                    """{"items":[{"id":"rfnd_123","payment_id":"pay_123","status":"processed","amount":1000,"created_at":1785790100}]}""",
+                "disputes" =>
+                    """{"items":[{"id":"disp_123","payment_id":"pay_123","status":"open","amount":4900,"created_at":1785790200},{"id":"disp_other","payment_id":"pay_other","status":"open","amount":1}]}""",
+                _ => throw new InvalidOperationException($"Unexpected Razorpay inspection path: {path}"),
+            };
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
+            });
+        }
+    }
+
+    private sealed class RazorpayPagedInspectionHandler : HttpMessageHandler
+    {
+        public List<string> Paths { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.PathAndQuery.TrimStart('/');
+            if (path.StartsWith("v1/", StringComparison.Ordinal))
+                path = path[3..];
+            Paths.Add(path);
+
+            var firstPage = path.EndsWith("skip=0", StringComparison.Ordinal);
+            var items = firstPage
+                ? string.Join(',', Enumerable.Range(0, 100).Select(index =>
+                    $"{{\"id\":\"rfnd_{index}\",\"payment_id\":\"pay_123\",\"status\":\"processed\",\"amount\":1}}"))
+                : path.EndsWith("skip=100", StringComparison.Ordinal)
+                    ? "{\"id\":\"rfnd_last\",\"payment_id\":\"pay_123\",\"status\":\"processed\",\"amount\":1}"
+                    : throw new InvalidOperationException($"Unexpected paged inspection path: {path}");
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent($"{{\"items\":[{items}]}}", Encoding.UTF8, "application/json"),
+            });
+        }
     }
 }

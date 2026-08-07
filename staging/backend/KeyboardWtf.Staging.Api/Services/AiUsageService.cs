@@ -126,6 +126,31 @@ public sealed class AiUsageService
         var outcome = string.IsNullOrWhiteSpace(generated.Text)
             ? "provider_completed_no_usable_output"
             : "completed";
+        try
+        {
+            // Persist authoritative provider evidence before changing balances.
+            // A maintenance worker can now finish settlement after a crash or
+            // client disconnect without guessing whether provider work occurred.
+            await _store.RecordProviderCompletionAsync(
+                caller.UserId,
+                request.RequestId,
+                generated.Usage,
+                charge,
+                providerCost,
+                outcome,
+                CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            await _store.MarkReservationForReconciliationAsync(
+                caller.UserId,
+                request.RequestId,
+                "provider_completed_evidence_write_failed",
+                CancellationToken.None);
+            throw new InvalidOperationException(
+                "Usage was generated but its durable accounting evidence is pending reconciliation.",
+                exception);
+        }
         SettlementResult? settled = null;
         for (var attempt = 0; attempt <= _options.MaxRetries; attempt++)
         {

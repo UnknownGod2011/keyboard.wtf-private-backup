@@ -136,17 +136,28 @@ public sealed class VertexAiClient : IVertexAiClient
         var requestId = headers.TryGetValues("x-request-id", out var values)
             ? values.FirstOrDefault()
             : null;
+        requestId ??= root.TryGetProperty("responseId", out var responseId)
+            ? responseId.GetString()
+            : null;
+        var inputImage = ReadModality(usage, "promptTokensDetails", "IMAGE");
+        var outputImage = ReadModality(usage, "candidatesTokensDetails", "IMAGE");
+        var inputAudio = ReadModality(usage, "promptTokensDetails", "AUDIO");
+        var outputAudio = ReadModality(usage, "candidatesTokensDetails", "AUDIO");
         return new ProviderUsage(
             Read(usage, "promptTokenCount"),
             Read(usage, "candidatesTokenCount"),
             Read(usage, "cachedContentTokenCount"),
             Read(usage, "thoughtsTokenCount"),
-            ReadModality(usage, "promptTokensDetails", "IMAGE"),
-            ReadModality(usage, "promptTokensDetails", "AUDIO"),
+            inputImage + outputImage,
+            inputAudio + outputAudio,
             Read(usage, "totalTokenCount"),
             requestId,
             root.TryGetProperty("modelVersion", out var modelVersion)
                 ? modelVersion.GetString()
-                : null);
+                : null,
+            inputAudio,
+            outputAudio,
+            inputImage,
+            outputImage);
     }
 }

@@ -280,6 +280,7 @@ export async function beginCheckout(product) {
         modal: {
           ondismiss: () => {
             if (checkoutHandlerStarted) return;
+            checkoutHandlerStarted = true;
             void cancelPendingCheckout().finally(() => reject(new Error("Checkout was cancelled.")));
           },
           escape: true,
@@ -307,7 +308,16 @@ export async function beginCheckout(product) {
       };
       Object.keys(options).forEach((key) => options[key] === undefined && delete options[key]);
       const razorpay = new window.Razorpay(options);
-      razorpay.on("payment.failed", (result) => reject(new Error(result.error?.description || "Payment failed.")));
+      razorpay.on("payment.failed", (result) => {
+        if (checkoutHandlerStarted) return;
+        // Record the locally observed terminal failure promptly. A later
+        // provider-authoritative webhook may still advance this purchase, but
+        // an abandoned failed checkout must not sit in `pending` until the
+        // account's long-term abandonment cleanup runs.
+        checkoutHandlerStarted = true;
+        void cancelPendingCheckout().finally(() =>
+          reject(new Error(result.error?.description || "Payment failed.")));
+      });
       razorpay.open();
     });
   } finally {

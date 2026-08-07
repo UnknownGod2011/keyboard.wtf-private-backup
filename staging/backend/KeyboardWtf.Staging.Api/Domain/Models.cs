@@ -97,7 +97,12 @@ public sealed record ProviderUsage(
     long AudioTokens,
     long TotalTokens,
     string? ProviderRequestId,
-    string? ProviderModelVersion = null);
+    string? ProviderModelVersion = null,
+    long InputAudioTokens = 0,
+    long OutputAudioTokens = 0,
+    long InputImageTokens = 0,
+    long OutputImageTokens = 0,
+    bool Estimated = false);
 
 public sealed record PricingSnapshot(
     string Version,
@@ -108,7 +113,13 @@ public sealed record PricingSnapshot(
     long ReasoningUsdMicrosPerMillionTokens,
     long UsdToInrPaise,
     long CreditMicrosPerInrPaise,
-    DateTimeOffset EffectiveAt);
+    DateTimeOffset EffectiveAt,
+    long InputAudioUsdMicrosPerMillionTokens = 1_000_000,
+    long LiveInputTextUsdMicrosPerMillionTokens = 500_000,
+    long LiveInputAudioUsdMicrosPerMillionTokens = 3_000_000,
+    long LiveInputImageUsdMicrosPerMillionTokens = 3_000_000,
+    long LiveOutputTextUsdMicrosPerMillionTokens = 2_000_000,
+    long LiveOutputAudioUsdMicrosPerMillionTokens = 12_000_000);
 
 public sealed record CatalogProduct(
     string Sku,
@@ -173,3 +184,63 @@ public sealed record PaymentSubscription(
     string Status);
 
 public sealed record PaymentWebhookResult(bool Duplicate, string EventId, string Outcome);
+
+public sealed record ProviderPayment(
+    string Id,
+    string Status,
+    long AmountMinor,
+    string Currency,
+    string? OrderId,
+    string? SubscriptionId,
+    bool Captured,
+    DateTimeOffset? CreatedAt);
+
+public sealed record ProviderRefund(
+    string Id,
+    string PaymentId,
+    string Status,
+    long AmountMinor,
+    DateTimeOffset? CreatedAt);
+
+public sealed record ProviderDispute(
+    string Id,
+    string PaymentId,
+    string Status,
+    long AmountMinor,
+    DateTimeOffset? CreatedAt);
+
+public sealed record ProviderOrderInspection(
+    string Id,
+    string Status,
+    long AmountMinor,
+    string Currency,
+    string? PurchaseId,
+    string? ProductSku,
+    IReadOnlyList<ProviderPayment> Payments);
+
+public sealed record ProviderSubscriptionInspection(
+    string Id,
+    string Status,
+    string? PurchaseId,
+    string? ProductSku,
+    DateTimeOffset? CurrentCycleEndsAt,
+    IReadOnlyList<ProviderPayment> Charges);
+
+public sealed record ReconciliationRunResult(
+    string Job,
+    string RunId,
+    int Examined,
+    int Repaired,
+    int Quarantined,
+    int Unchanged,
+    bool LeaseAcquired,
+    DateTimeOffset StartedAt,
+    DateTimeOffset CompletedAt);
+
+public sealed record InvariantValidationResult(
+    string RunId,
+    int AccountsExamined,
+    int Violations,
+    IReadOnlyList<string> ViolationCategories,
+    DateTimeOffset StartedAt,
+    DateTimeOffset CompletedAt);
