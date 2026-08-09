@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -15,6 +16,7 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
     // purchase rather than decide it is complete from an incomplete page set.
     private const int InspectionPageSize = 100;
     private const int MaxInspectionPages = 50;
+    private const int MaxTransientReadAttempts = 3;
     private readonly HttpClient _httpClient;
     private readonly string _keyId;
     private readonly string _keySecret;
@@ -232,17 +234,41 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
         object? payload,
         CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(method, relativeUri);
         var auth = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{_keyId}:{_keySecret}"));
-        request.Headers.Authorization = new AuthenticationHeaderValue("Basic", auth);
-        if (payload is not null)
-            request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Razorpay returned {(int)response.StatusCode}.");
-        return JsonDocument.Parse(body);
+        var serializedPayload = payload is null ? null : JsonSerializer.Serialize(payload);
+        var attempts = method == HttpMethod.Get ? MaxTransientReadAttempts : 1;
+        for (var attempt = 1; attempt <= attempts; attempt++)
+        {
+            using var request = new HttpRequestMessage(method, relativeUri);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Basic", auth);
+            if (serializedPayload is not null)
+                request.Content = new StringContent(serializedPayload, Encoding.UTF8, "application/json");
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (response.IsSuccessStatusCode)
+                return JsonDocument.Parse(body);
+            if (attempt < attempts && IsTransientInspectionStatus(response.StatusCode))
+            {
+                var providerDelay = response.Headers.RetryAfter?.Delta;
+                var boundedDelay = providerDelay is { } requested && requested > TimeSpan.Zero
+                    ? TimeSpan.FromMilliseconds(Math.Min(requested.TotalMilliseconds, 2_000))
+                    : TimeSpan.FromMilliseconds(250 * (1 << (attempt - 1)));
+                await Task.Delay(boundedDelay, cancellationToken);
+                continue;
+            }
+            throw new RazorpayProviderHttpException((int)response.StatusCode);
+        }
+
+        throw new InvalidOperationException("Razorpay inspection exhausted its bounded attempts.");
     }
+
+    internal static bool IsTransientInspectionStatus(HttpStatusCode statusCode) =>
+        statusCode is HttpStatusCode.RequestTimeout
+            or HttpStatusCode.TooManyRequests
+            or HttpStatusCode.InternalServerError
+            or HttpStatusCode.BadGateway
+            or HttpStatusCode.ServiceUnavailable
+            or HttpStatusCode.GatewayTimeout;
 
     private async Task<ProviderPayment> InspectPaymentAsync(
         string paymentId,
@@ -366,6 +392,7 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
     private static long Number(JsonElement element, string name) =>
         element.ValueKind == JsonValueKind.Object
         && element.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.Number
         && value.TryGetInt64(out var number)
             ? number
             : 0;
@@ -404,5 +431,11 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
     {
         if (!IsConfigured)
             throw new InvalidOperationException("Razorpay Test Mode is not configured.");
+    }
+
+    internal sealed class RazorpayProviderHttpException(int statusCode)
+        : InvalidOperationException("Razorpay returned a non-success status.")
+    {
+        public int StatusCode { get; } = statusCode;
     }
 }

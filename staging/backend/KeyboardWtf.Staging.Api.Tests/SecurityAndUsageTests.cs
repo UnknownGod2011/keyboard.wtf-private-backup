@@ -326,6 +326,60 @@ public sealed class SecurityAndUsageTests
         }
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task Razorpay_read_only_inspection_retries_bounded_transient_failures(
+        HttpStatusCode transientStatus)
+    {
+        Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", "rzp_test_public");
+        Environment.SetEnvironmentVariable("RAZORPAY_KEY_SECRET", "unit_test_secret");
+        try
+        {
+            var handler = new RazorpayTransientInspectionHandler(transientStatus, failuresBeforeSuccess: 2);
+            var provider = new RazorpayPaymentProvider(
+                new HttpClient(handler),
+                Options.Create(TestOptions()));
+
+            var subscription = await provider.InspectSubscriptionAsync("sub_123", CancellationToken.None);
+
+            Assert.Equal("cancelled", subscription.Status);
+            Assert.Equal(4, handler.RequestCount);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", null);
+            Environment.SetEnvironmentVariable("RAZORPAY_KEY_SECRET", null);
+        }
+    }
+
+    [Fact]
+    public async Task Razorpay_read_only_inspection_stops_after_bounded_transient_failures()
+    {
+        Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", "rzp_test_public");
+        Environment.SetEnvironmentVariable("RAZORPAY_KEY_SECRET", "unit_test_secret");
+        try
+        {
+            var handler = new RazorpayTransientInspectionHandler(
+                HttpStatusCode.TooManyRequests,
+                failuresBeforeSuccess: int.MaxValue);
+            var provider = new RazorpayPaymentProvider(
+                new HttpClient(handler),
+                Options.Create(TestOptions()));
+
+            var error = await Assert.ThrowsAsync<RazorpayPaymentProvider.RazorpayProviderHttpException>(() =>
+                provider.InspectSubscriptionAsync("sub_123", CancellationToken.None));
+
+            Assert.Equal(429, error.StatusCode);
+            Assert.Equal(3, handler.RequestCount);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", null);
+            Environment.SetEnvironmentVariable("RAZORPAY_KEY_SECRET", null);
+        }
+    }
+
     [Fact]
     public async Task Razorpay_refund_inspection_reads_every_bounded_page()
     {
@@ -1962,6 +2016,38 @@ public sealed class SecurityAndUsageTests
                     """{"id":"sub_123","status":"active","current_end":1788382000,"notes":{"purchase_id":"pur_123","product_sku":"monthly_test"}}""",
                 "invoices?subscription_id=sub_123" =>
                     """{"items":[{"id":"inv_wrong","subscription_id":"sub_other","payment_id":"pay_123","status":"paid"}]}""",
+                _ => throw new InvalidOperationException($"Unexpected Razorpay inspection path: {path}"),
+            };
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
+            });
+        }
+    }
+
+    private sealed class RazorpayTransientInspectionHandler(
+        HttpStatusCode transientStatus,
+        int failuresBeforeSuccess) : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            if (RequestCount <= failuresBeforeSuccess)
+                return Task.FromResult(new HttpResponseMessage(transientStatus));
+
+            var path = request.RequestUri!.PathAndQuery.TrimStart('/');
+            if (path.StartsWith("v1/", StringComparison.Ordinal))
+                path = path[3..];
+            var body = path switch
+            {
+                "subscriptions/sub_123" =>
+                    """{"id":"sub_123","status":"cancelled","current_end":null,"notes":{"purchase_id":"pur_123","product_sku":"monthly_test"}}""",
+                "invoices?subscription_id=sub_123" =>
+                    """{"items":[{"id":"inv_123","subscription_id":"sub_123","payment_id":null,"status":"cancelled"}]}""",
                 _ => throw new InvalidOperationException($"Unexpected Razorpay inspection path: {path}"),
             };
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)

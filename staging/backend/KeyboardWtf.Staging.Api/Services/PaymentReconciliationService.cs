@@ -94,9 +94,12 @@ public sealed class PaymentReconciliationService
                         ? staged.Stage
                         : "unknown";
                     var failureCategory = $"reconciliation_{SafeStatus(failureStage)}_failed";
-                    var failureType = exception is PaymentReconciliationStageException { InnerException: not null } wrapped
-                        ? wrapped.InnerException!.GetType().Name
-                        : exception.GetType().Name;
+                    var rootFailure = exception is PaymentReconciliationStageException { InnerException: not null } wrapped
+                        ? wrapped.InnerException!
+                        : exception;
+                    var failureType = rootFailure is RazorpayPaymentProvider.RazorpayProviderHttpException providerFailure
+                        ? $"http_{providerFailure.StatusCode}"
+                        : rootFailure.GetType().Name;
                     quarantined++;
                     await QuarantineAsync(
                         purchase,
