@@ -34,9 +34,10 @@ public sealed class LedgerInvariantService
         const string job = "ledger-invariants";
         var startedAt = _clock.UtcNow;
         var runId = $"invariant_{startedAt:yyyyMMddHHmmss}_{Crypto.RandomToken(6)}";
+        var leaseDuration = TimeSpan.FromSeconds(_options.ReconciliationLeaseSeconds);
         await using var lease = await _leases.TryAcquireAsync(
             job,
-            TimeSpan.FromSeconds(_options.ReconciliationLeaseSeconds),
+            leaseDuration,
             cancellationToken);
         if (lease is null)
             return new InvariantValidationResult(runId, 0, 0, [], startedAt, _clock.UtcNow);
@@ -51,6 +52,8 @@ public sealed class LedgerInvariantService
         var completedScan = false;
         while (accountsExamined < _options.ReconciliationMaxRecordsPerRun)
         {
+            if (!await lease.RenewAsync(leaseDuration, cancellationToken))
+                throw new InvalidOperationException("Ledger validation lost its maintenance lease.");
             var pageSize = Math.Min(
                 _options.ReconciliationBatchSize,
                 _options.ReconciliationMaxRecordsPerRun - accountsExamined);

@@ -32,7 +32,11 @@ jobs:
         run: dotnet build KeyboardWtf.sln -c Release --no-restore
 
       - name: Test
-        run: dotnet test KeyboardWtf.sln -c Release --no-restore --no-build --logger "trx;LogFileName=release-tests.trx"
+        run: dotnet test KeyboardWtf.sln -c Release --no-restore --no-build --filter "Category!=FirestoreIntegration" --logger "trx;LogFileName=release-tests.trx"
+
+      # Real Firestore transaction tests are intentionally not represented as
+      # unit-test passes. Run scripts/staging/run-firestore-integration.ps1
+      # against the isolated staging project as a separate release gate.
 
       - name: Check vulnerable dependencies
         shell: pwsh

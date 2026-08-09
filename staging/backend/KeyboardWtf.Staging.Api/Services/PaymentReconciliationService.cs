@@ -40,9 +40,10 @@ public sealed class PaymentReconciliationService
         const string job = "razorpay-reconciliation";
         var startedAt = _clock.UtcNow;
         var runId = $"payrec_{startedAt:yyyyMMddHHmmss}_{Crypto.RandomToken(6)}";
+        var leaseDuration = TimeSpan.FromSeconds(_options.ReconciliationLeaseSeconds);
         await using var lease = await _leases.TryAcquireAsync(
             job,
-            TimeSpan.FromSeconds(_options.ReconciliationLeaseSeconds),
+            leaseDuration,
             cancellationToken);
         if (lease is null)
             return new ReconciliationRunResult(
@@ -62,6 +63,8 @@ public sealed class PaymentReconciliationService
         var completedScan = false;
         while (examined < _options.ReconciliationMaxRecordsPerRun)
         {
+            if (!await lease.RenewAsync(leaseDuration, cancellationToken))
+                throw new InvalidOperationException("Payment reconciliation lost its maintenance lease.");
             var pageSize = Math.Min(
                 _options.ReconciliationBatchSize,
                 _options.ReconciliationMaxRecordsPerRun - examined);
@@ -212,7 +215,7 @@ public sealed class PaymentReconciliationService
                 stage = "apply_subscription_lifecycle";
                 var lifecycleEvent = SubscriptionLifecycleEvent(subscription.Status);
                 var lifecycle = await _store.ApplyPaymentWebhookAsync(
-                    $"reconcile:{objectId}:{String(data, "status", "unknown")}:to:{subscription.Status}",
+                    $"reconcile:v2:{objectId}:{String(data, "status", "unknown")}:to:{subscription.Status}",
                     lifecycleEvent,
                     objectId,
                     null,
@@ -236,6 +239,25 @@ public sealed class PaymentReconciliationService
                         await QuarantineAsync(purchase, "subscription_charge_mismatch", runId, payment.Status, cancellationToken);
                         return PurchaseReconciliationResult.Quarantined;
                     }
+                    DateTimeOffset? chargeCycleEndsAt = null;
+                    if (payment.Captured
+                        || string.Equals(payment.Status, "captured", StringComparison.OrdinalIgnoreCase))
+                    {
+                        chargeCycleEndsAt = await ResolveSubscriptionChargeCycleEndAsync(
+                            subscription,
+                            payment,
+                            cancellationToken);
+                        if (chargeCycleEndsAt is null)
+                        {
+                            await QuarantineAsync(
+                                purchase,
+                                "subscription_charge_cycle_unverifiable",
+                                runId,
+                                payment.Status,
+                                cancellationToken);
+                            return PurchaseReconciliationResult.Quarantined;
+                        }
+                    }
                     repaired |= await ReconcilePaymentAsync(
                         purchase,
                         purchaseId,
@@ -243,7 +265,7 @@ public sealed class PaymentReconciliationService
                         objectId,
                         payment,
                         cancellationToken,
-                        subscription.CurrentCycleEndsAt);
+                        chargeCycleEndsAt);
                 }
             }
             else
@@ -291,7 +313,7 @@ public sealed class PaymentReconciliationService
             ? captured ? "subscription.charged" : $"payment.{SafeStatus(payment.Status)}"
             : captured ? "payment.captured" : $"payment.{SafeStatus(payment.Status)}";
         var result = await _store.ApplyPaymentWebhookAsync(
-            $"reconcile:{eventType}:{payment.Id}",
+            $"reconcile:v2:{eventType}:{payment.Id}",
             eventType,
             providerObjectId,
             payment.Id,
@@ -331,16 +353,18 @@ public sealed class PaymentReconciliationService
 
         foreach (var dispute in await _provider.InspectDisputesAsync(payment.Id, cancellationToken))
         {
+            if (!DisputeRequiresCreditReversal(dispute.Status, dispute.AmountDeductedMinor))
+                continue;
             var disputeResult = await _store.ApplyPaymentWebhookAsync(
                 $"reconcile:dispute:{dispute.Id}",
-                "dispute.created",
+                "dispute.lost",
                 providerObjectId,
                 payment.Id,
                 payment.OrderId,
                 subscriptionId,
                 purchaseId,
                 dispute.Id,
-                dispute.AmountMinor,
+                dispute.AmountDeductedMinor,
                 dispute.Status,
                 cancellationToken,
                 cycleEndsAt,
@@ -349,6 +373,54 @@ public sealed class PaymentReconciliationService
             changed |= !disputeResult.Duplicate;
         }
         return changed;
+    }
+
+    internal static bool DisputeRequiresCreditReversal(string? status, long amountDeductedMinor) =>
+        amountDeductedMinor > 0
+        && string.Equals(status?.Trim(), "lost", StringComparison.OrdinalIgnoreCase);
+
+    private async Task<DateTimeOffset?> ResolveSubscriptionChargeCycleEndAsync(
+        ProviderSubscriptionInspection subscription,
+        ProviderPayment payment,
+        CancellationToken cancellationToken)
+    {
+        var fulfillmentId = FirestoreAccountStore.RecurringFulfillmentId(
+            "subscription.charged",
+            payment.Id,
+            payment.Id);
+        if (fulfillmentId is not null)
+        {
+            var existing = await _db.Collection("paymentFulfillments")
+                .Document(fulfillmentId)
+                .GetSnapshotAsync(cancellationToken);
+            if (existing.Exists)
+            {
+                var cycleEndUnix = Long(existing.ToDictionary(), "cycleEndsAtUnix");
+                if (cycleEndUnix > 0)
+                    return DateTimeOffset.FromUnixTimeSeconds(cycleEndUnix);
+            }
+        }
+
+        var chargedAt = payment.InvoicePaidAt ?? payment.CreatedAt ?? payment.InvoiceIssuedAt;
+        return IsChargeInCurrentSubscriptionCycle(
+            chargedAt,
+            subscription.CurrentCycleStartsAt,
+            subscription.CurrentCycleEndsAt)
+                ? subscription.CurrentCycleEndsAt
+                : null;
+    }
+
+    internal static bool IsChargeInCurrentSubscriptionCycle(
+        DateTimeOffset? chargedAt,
+        DateTimeOffset? cycleStartsAt,
+        DateTimeOffset? cycleEndsAt)
+    {
+        if (chargedAt is null || cycleStartsAt is null || cycleEndsAt is null
+            || cycleEndsAt <= cycleStartsAt)
+            return false;
+        var timingTolerance = TimeSpan.FromHours(24);
+        return chargedAt >= cycleStartsAt.Value - timingTolerance
+            && chargedAt < cycleEndsAt.Value;
     }
 
     private Task MarkCheckedAsync(

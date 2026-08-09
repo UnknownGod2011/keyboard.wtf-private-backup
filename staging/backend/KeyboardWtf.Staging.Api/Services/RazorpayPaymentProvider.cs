@@ -154,14 +154,19 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
                 StringComparison.Ordinal)))
             throw new InvalidOperationException(
                 "Razorpay returned an invoice outside the requested subscription.");
-        var paymentIds = invoices
-            .Select(invoice => TextOrNull(invoice, "payment_id"))
-            .Where(id => !string.IsNullOrWhiteSpace(id))
-            .Distinct(StringComparer.Ordinal)
+        var invoicesByPaymentId = invoices
+            .Select(invoice => new { Invoice = invoice, PaymentId = TextOrNull(invoice, "payment_id") })
+            .Where(item => !string.IsNullOrWhiteSpace(item.PaymentId))
+            .GroupBy(item => item.PaymentId!, StringComparer.Ordinal)
             .ToArray();
-        var charges = new List<ProviderPayment>(paymentIds.Length);
-        foreach (var paymentId in paymentIds)
+        if (invoicesByPaymentId.Any(group => group.Count() != 1))
+            throw new InvalidOperationException(
+                "Razorpay returned duplicate subscription invoices for one payment.");
+        var charges = new List<ProviderPayment>(invoicesByPaymentId.Length);
+        foreach (var invoiceGroup in invoicesByPaymentId)
         {
+            var paymentId = invoiceGroup.Key;
+            var invoice = invoiceGroup.Single().Invoice;
             var payment = await InspectPaymentAsync(paymentId!, cancellationToken);
             if (!string.IsNullOrWhiteSpace(payment.SubscriptionId)
                 && !string.Equals(payment.SubscriptionId, subscriptionId, StringComparison.Ordinal))
@@ -171,13 +176,19 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
             // subscription_id. The subscription-scoped invoice is the
             // authoritative relationship, so carry that already-validated
             // association into reconciliation.
-            charges.Add(payment with { SubscriptionId = subscriptionId });
+            charges.Add(payment with
+            {
+                SubscriptionId = subscriptionId,
+                InvoiceIssuedAt = UnixTime(invoice, "issued_at"),
+                InvoicePaidAt = UnixTime(invoice, "paid_at"),
+            });
         }
         return new ProviderSubscriptionInspection(
             Text(root, "id"),
             Text(root, "status"),
             Note(root, "purchase_id"),
             Note(root, "product_sku"),
+            UnixTime(root, "current_start"),
             UnixTime(root, "current_end"),
             charges.OrderBy(charge => charge.CreatedAt).ToArray());
     }
@@ -356,6 +367,7 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
                 TextOrNull(item, "payment_id") ?? "",
                 Text(item, "status"),
                 Number(item, "amount"),
+                Number(item, "amount_deducted"),
                 UnixTime(item, "created_at")))
             .Where(dispute => !string.IsNullOrWhiteSpace(dispute.PaymentId))
             .ToArray();

@@ -37,9 +37,10 @@ public sealed class UsageReconciliationService
         const string job = "vertex-reservation-reconciliation";
         var startedAt = _clock.UtcNow;
         var runId = $"usagerec_{startedAt:yyyyMMddHHmmss}_{Crypto.RandomToken(6)}";
+        var leaseDuration = TimeSpan.FromSeconds(_options.ReconciliationLeaseSeconds);
         await using var lease = await _leases.TryAcquireAsync(
             job,
-            TimeSpan.FromSeconds(_options.ReconciliationLeaseSeconds),
+            leaseDuration,
             cancellationToken);
         if (lease is null)
             return new ReconciliationRunResult(
@@ -57,6 +58,8 @@ public sealed class UsageReconciliationService
         var completedScan = false;
         while (examined < _options.ReconciliationMaxRecordsPerRun)
         {
+            if (!await lease.RenewAsync(leaseDuration, cancellationToken))
+                throw new InvalidOperationException("Usage reconciliation lost its maintenance lease.");
             var pageSize = Math.Min(
                 _options.ReconciliationBatchSize,
                 _options.ReconciliationMaxRecordsPerRun - examined);

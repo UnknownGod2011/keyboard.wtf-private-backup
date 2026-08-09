@@ -21,6 +21,10 @@ mono_crash.*
 [Dd]ebugPublic/
 [Rr]elease/
 [Rr]eleases/
+# Release build output is ignored, but source-controlled release tooling lives
+# under scripts/release and must remain available to clean CI checkouts.
+!scripts/[Rr]elease/
+!scripts/[Rr]elease/*.ps1
 dist/
 x64/
 x86/

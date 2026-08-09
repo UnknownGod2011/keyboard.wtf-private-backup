@@ -1652,6 +1652,19 @@ public sealed class FirestoreAccountStore : IAccountStore
             var purchaseData = purchase.ToDictionary();
             var accountData = account.ToDictionary();
             var purchaseKind = String(purchaseData, "kind", "credits");
+            var recurringCharge = string.Equals(eventType, "subscription.charged", StringComparison.Ordinal);
+            var subscriptionLifecycleEvent = eventType.StartsWith("subscription.", StringComparison.Ordinal)
+                && !recurringCharge;
+            var recurringAlreadyFulfilled = recurringFulfillment?.Exists == true
+                || IsPreviouslyFulfilledRecurringCharge(
+                    eventType,
+                    providerPaymentId,
+                    String(purchaseData, "providerPaymentId", ""),
+                    Bool(purchaseData, "credited", false));
+            var purchaseCredited = Bool(purchaseData, "credited", false);
+            var creditAlreadyFulfilled = recurringCharge
+                ? recurringAlreadyFulfilled
+                : purchaseCredited;
             var evidenceRejection = PaymentEvidenceRejection(
                 eventType,
                 purchaseKind,
@@ -1667,7 +1680,8 @@ public sealed class FirestoreAccountStore : IAccountStore
                 DeploymentSafety.ProviderEnvironment(_options.DeploymentEnvironment),
                 subscriptionCycleEndsAt,
                 Long(accountData, "availableCreditMicros"),
-                _options.MaxAccountCreditMicros);
+                _options.MaxAccountCreditMicros,
+                creditAlreadyFulfilled);
             if (evidenceRejection is not null)
             {
                 transaction.Update(purchaseRef, new Dictionary<string, object>
@@ -1703,20 +1717,21 @@ public sealed class FirestoreAccountStore : IAccountStore
                 }, SetOptions.MergeAll);
                 return evidenceRejection;
             }
-            var recurringCharge = string.Equals(eventType, "subscription.charged", StringComparison.Ordinal);
-            var subscriptionLifecycleEvent = eventType.StartsWith("subscription.", StringComparison.Ordinal)
-                && !recurringCharge;
-            var recurringAlreadyFulfilled = recurringFulfillment?.Exists == true
-                || IsPreviouslyFulfilledRecurringCharge(
-                    eventType,
-                    providerPaymentId,
-                    String(purchaseData, "providerPaymentId", ""),
-                    Bool(purchaseData, "credited", false));
             var shouldCredit = IsCreditEvent(eventType, purchaseKind)
                 && (recurringCharge
                     ? !recurringAlreadyFulfilled
-                    : !Bool(purchaseData, "credited", false));
-            var purchaseCredited = Bool(purchaseData, "credited", false);
+                    : !purchaseCredited);
+            var incomingSubscriptionId = string.Equals(purchaseKind, "subscription", StringComparison.Ordinal)
+                ? providerSubscriptionId ?? providerObjectId
+                : "";
+            var shouldApplySubscriptionState = string.Equals(purchaseKind, "subscription", StringComparison.Ordinal)
+                && ShouldApplySubscriptionAccountState(
+                    String(accountData, "activeSubscriptionProviderObjectId", ""),
+                    incomingSubscriptionId,
+                    status,
+                    purchaseCredited || shouldCredit,
+                    Date(accountData, "cycleEndsAt"),
+                    subscriptionCycleEndsAt);
             var recurringReversalHasEvidence = purchaseKind != "subscription"
                 || recurringFulfillment?.Exists == true
                 || IsPreviouslyFulfilledRecurringCharge(
@@ -1864,7 +1879,8 @@ public sealed class FirestoreAccountStore : IAccountStore
             }
 
             if (shouldCredit || reversalCreditMicros > 0
-                || (purchaseKind == "subscription" && subscriptionLifecycleEvent))
+                || (purchaseKind == "subscription" && subscriptionLifecycleEvent)
+                || (shouldApplySubscriptionState && recurringCharge && recurringAlreadyFulfilled))
             {
                 var accountUpdates = new Dictionary<string, object>
                 {
@@ -1884,15 +1900,30 @@ public sealed class FirestoreAccountStore : IAccountStore
                     if (subscriptionCycleEndsAt is DateTimeOffset cycleEnd)
                         accountUpdates["cycleEndsAt"] = Ts(cycleEnd);
                 }
-                if (purchaseKind == "subscription"
+                if (shouldApplySubscriptionState
                     && (subscriptionLifecycleEvent || recurringCharge))
                 {
+                    var subscriptionFulfilled = purchaseCredited || shouldCredit;
                     accountUpdates["planId"] = PlanAfterSubscriptionStatus(
                         String(accountData, "planId", "none"),
                         String(purchaseData, "productSku", "none"),
                         status,
-                        purchaseCredited || shouldCredit);
+                        subscriptionFulfilled);
                     accountUpdates["subscriptionStatus"] = status;
+                    if (string.Equals(status, "active", StringComparison.OrdinalIgnoreCase)
+                        && subscriptionFulfilled)
+                    {
+                        accountUpdates["activeSubscriptionProviderObjectId"] = incomingSubscriptionId;
+                        accountUpdates["activeSubscriptionPurchaseId"] = purchase.Id;
+                        if (subscriptionCycleEndsAt is DateTimeOffset activeCycleEnd)
+                            accountUpdates["cycleEndsAt"] = Ts(activeCycleEnd);
+                    }
+                    else if (IsTerminalSubscriptionStatus(status))
+                    {
+                        accountUpdates["activeSubscriptionProviderObjectId"] = FieldValue.Delete;
+                        accountUpdates["activeSubscriptionPurchaseId"] = FieldValue.Delete;
+                        accountUpdates["cycleEndsAt"] = FieldValue.Delete;
+                    }
                 }
                 transaction.Update(accountRef, accountUpdates);
             }
@@ -1902,7 +1933,7 @@ public sealed class FirestoreAccountStore : IAccountStore
                 purchaseKind,
                 purchaseCredited,
                 eventType);
-            transaction.Update(purchaseRef, new Dictionary<string, object>
+            var purchaseUpdates = new Dictionary<string, object>
             {
                 ["status"] = purchaseStatus,
                 ["providerPaymentId"] = providerPaymentId ?? String(purchaseData, "providerPaymentId", ""),
@@ -1912,7 +1943,10 @@ public sealed class FirestoreAccountStore : IAccountStore
                     || (reversalCreditMicros > 0
                         && Long(purchaseData, "reversedCreditMicros") + reversalCreditMicros >= creditMicros),
                 ["updatedAt"] = Ts(now),
-            });
+            };
+            if (purchaseKind == "subscription" && subscriptionCycleEndsAt is DateTimeOffset purchaseCycleEnd)
+                purchaseUpdates["cycleEndsAt"] = Ts(purchaseCycleEnd);
+            transaction.Update(purchaseRef, purchaseUpdates);
             transaction.Set(eventRef, new Dictionary<string, object>
             {
                 ["provider"] = "razorpay",
@@ -1955,7 +1989,8 @@ public sealed class FirestoreAccountStore : IAccountStore
         string? expectedEnvironment = null,
         DateTimeOffset? subscriptionCycleEndsAt = null,
         long? currentAvailableCreditMicros = null,
-        long? maxAccountCreditMicros = null)
+        long? maxAccountCreditMicros = null,
+        bool creditAlreadyFulfilled = false)
     {
         var recordedUserId = String(purchase, "userId", accountUserId);
         if (!string.Equals(recordedUserId, accountUserId, StringComparison.Ordinal))
@@ -1986,7 +2021,8 @@ public sealed class FirestoreAccountStore : IAccountStore
         var creditEvent = IsCreditEvent(eventType, purchaseKind);
         if (creditEvent)
         {
-            if (currentAvailableCreditMicros is long available
+            if (!creditAlreadyFulfilled
+                && currentAvailableCreditMicros is long available
                 && maxAccountCreditMicros is long maximum
                 && maximum > 0
                 && available + Long(purchase, "creditMicros") > maximum)
@@ -2344,6 +2380,30 @@ public sealed class FirestoreAccountStore : IAccountStore
             _ => currentPlan,
         };
 
+    internal static bool ShouldApplySubscriptionAccountState(
+        string currentSubscriptionId,
+        string incomingSubscriptionId,
+        string? status,
+        bool fulfilled,
+        DateTimeOffset currentCycleEndsAt,
+        DateTimeOffset? incomingCycleEndsAt)
+    {
+        if (string.IsNullOrWhiteSpace(incomingSubscriptionId))
+            return false;
+        if (string.Equals(currentSubscriptionId, incomingSubscriptionId, StringComparison.Ordinal))
+            return true;
+        if (!string.Equals(status?.Trim(), "active", StringComparison.OrdinalIgnoreCase)
+            || !fulfilled)
+            return false;
+        if (string.IsNullOrWhiteSpace(currentSubscriptionId))
+            return true;
+        return incomingCycleEndsAt is DateTimeOffset incomingEnd
+            && incomingEnd > currentCycleEndsAt;
+    }
+
+    private static bool IsTerminalSubscriptionStatus(string? status) =>
+        status?.Trim().ToLowerInvariant() is "cancelled" or "completed" or "expired" or "halted";
+
     internal static string? RecurringFulfillmentId(
         string eventType,
         string? providerPaymentId,
@@ -2395,7 +2455,7 @@ public sealed class FirestoreAccountStore : IAccountStore
 
     private static bool IsReversalEvent(string eventType) =>
         eventType.Contains("refund.processed", StringComparison.OrdinalIgnoreCase)
-        || eventType.Contains("dispute.created", StringComparison.OrdinalIgnoreCase)
+        || eventType.Contains("dispute.lost", StringComparison.OrdinalIgnoreCase)
         || eventType.Contains("chargeback", StringComparison.OrdinalIgnoreCase);
 
     internal static long ReversalCreditMicros(
@@ -2404,11 +2464,8 @@ public sealed class FirestoreAccountStore : IAccountStore
         long purchaseAmountMinor,
         long purchasedCreditMicros)
     {
-        if (purchasedCreditMicros <= 0)
+        if (!IsReversalEvent(eventType) || purchasedCreditMicros <= 0)
             return 0;
-        if (eventType.Contains("chargeback", StringComparison.OrdinalIgnoreCase)
-            || eventType.Contains("dispute", StringComparison.OrdinalIgnoreCase))
-            return purchasedCreditMicros;
         if (providerAmountMinor is null || providerAmountMinor <= 0 || purchaseAmountMinor <= 0)
             return 0;
         var boundedAmount = Math.Min(providerAmountMinor.Value, purchaseAmountMinor);

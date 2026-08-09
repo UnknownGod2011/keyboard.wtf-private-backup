@@ -1,6 +1,7 @@
 using KeyboardWtf.Staging.Api.Configuration;
 using KeyboardWtf.Staging.Api.Contracts;
 using KeyboardWtf.Staging.Api.Domain;
+using KeyboardWtf.Staging.Api.Endpoints;
 using KeyboardWtf.Staging.Api.Infrastructure;
 using KeyboardWtf.Staging.Api.Services;
 using Google.Apis.Auth.OAuth2;
@@ -251,6 +252,37 @@ public sealed class SecurityAndUsageTests
                 "production"));
     }
 
+    [Fact]
+    public void Replayed_fulfilled_payment_is_not_rejected_by_the_balance_cap()
+    {
+        var purchase = new Dictionary<string, object>
+        {
+            ["userId"] = "uid-1",
+            ["environment"] = "staging",
+            ["providerObjectId"] = "order_123",
+            ["amountMinor"] = 4_900L,
+            ["currency"] = "INR",
+            ["productSku"] = "credits_test_100",
+            ["creditMicros"] = 100_000_000L,
+        };
+        Assert.Null(FirestoreAccountStore.PaymentEvidenceRejection(
+            "payment.captured",
+            "credits",
+            "uid-1",
+            purchase,
+            "order_123",
+            "order_123",
+            null,
+            "pay_123",
+            4_900,
+            "INR",
+            "credits_test_100",
+            "staging",
+            currentAvailableCreditMicros: 950_000_000,
+            maxAccountCreditMicros: 1_000_000_000,
+            creditAlreadyFulfilled: true));
+    }
+
     [Theory]
     [InlineData(400, true)]
     [InlineData(500, true)]
@@ -290,8 +322,13 @@ public sealed class SecurityAndUsageTests
             Assert.Equal("monthly_test", subscription.ProductSku);
             Assert.Single(subscription.Charges);
             Assert.Equal("sub_123", subscription.Charges[0].SubscriptionId);
+            Assert.NotNull(subscription.CurrentCycleStartsAt);
+            Assert.NotNull(subscription.CurrentCycleEndsAt);
+            Assert.NotNull(subscription.Charges[0].InvoicePaidAt);
             Assert.Equal("pay_123", Assert.Single(refunds).PaymentId);
-            Assert.Equal("pay_123", Assert.Single(disputes).PaymentId);
+            var dispute = Assert.Single(disputes);
+            Assert.Equal("pay_123", dispute.PaymentId);
+            Assert.Equal(0, dispute.AmountDeductedMinor);
             Assert.Equal(disputes, repeatedDisputes);
             Assert.Equal(1, handler.Paths.Count(path => path == "disputes"));
             Assert.All(handler.Paths, path => Assert.DoesNotContain("unit_test_secret", path, StringComparison.Ordinal));
@@ -431,11 +468,45 @@ public sealed class SecurityAndUsageTests
             250_000,
             FirestoreAccountStore.ReversalCreditMicros("refund.processed", 25, 100, 1_000_000));
         Assert.Equal(
-            1_000_000,
-            FirestoreAccountStore.ReversalCreditMicros("payment.dispute.created", null, 100, 1_000_000));
+            500_000,
+            FirestoreAccountStore.ReversalCreditMicros("dispute.lost", 50, 100, 1_000_000));
         Assert.Equal(
             0,
             FirestoreAccountStore.ReversalCreditMicros("refund.processed", null, 100, 1_000_000));
+    }
+
+    [Theory]
+    [InlineData("open", 4_900, false)]
+    [InlineData("under_review", 4_900, false)]
+    [InlineData("won", 0, false)]
+    [InlineData("closed", 0, false)]
+    [InlineData("lost", 0, false)]
+    [InlineData("lost", 4_900, true)]
+    public void Only_an_authoritatively_deducted_lost_dispute_reverses_credit(
+        string status,
+        long amountDeductedMinor,
+        bool expected) =>
+        Assert.Equal(
+            expected,
+            PaymentReconciliationService.DisputeRequiresCreditReversal(status, amountDeductedMinor));
+
+    [Fact]
+    public void Historical_subscription_charges_are_not_assigned_to_the_current_cycle()
+    {
+        var cycleStart = DateTimeOffset.Parse("2026-08-01T00:00:00Z");
+        var cycleEnd = DateTimeOffset.Parse("2026-09-01T00:00:00Z");
+        Assert.True(PaymentReconciliationService.IsChargeInCurrentSubscriptionCycle(
+            cycleStart,
+            cycleStart,
+            cycleEnd));
+        Assert.False(PaymentReconciliationService.IsChargeInCurrentSubscriptionCycle(
+            cycleStart.AddMonths(-1),
+            cycleStart,
+            cycleEnd));
+        Assert.False(PaymentReconciliationService.IsChargeInCurrentSubscriptionCycle(
+            null,
+            cycleStart,
+            cycleEnd));
     }
 
     [Fact]
@@ -571,6 +642,56 @@ public sealed class SecurityAndUsageTests
         Assert.Equal(
             expected,
             FirestoreAccountStore.PlanAfterSubscriptionStatus(currentPlan, productSku, status, fulfilled));
+
+    [Theory]
+    [InlineData("", "sub_old", "cancelled", false, 0, 0, false)]
+    [InlineData("", "sub_old", "cancelled", true, 0, 0, false)]
+    [InlineData("sub_current", "sub_old", "cancelled", true, 10, 20, false)]
+    [InlineData("sub_current", "sub_current", "cancelled", true, 10, 10, true)]
+    [InlineData("sub_current", "sub_new", "active", true, 10, 20, true)]
+    [InlineData("sub_current", "sub_old", "active", true, 20, 10, false)]
+    [InlineData("sub_current", "sub_new", "active", false, 10, 20, false)]
+    [InlineData("sub_current", "sub_current", "paused", true, 10, 10, true)]
+    public void Only_the_owned_or_newly_fulfilled_subscription_updates_account_state(
+        string currentSubscriptionId,
+        string incomingSubscriptionId,
+        string status,
+        bool fulfilled,
+        long currentCycleDay,
+        long incomingCycleDay,
+        bool expected) =>
+        Assert.Equal(
+            expected,
+            FirestoreAccountStore.ShouldApplySubscriptionAccountState(
+                currentSubscriptionId,
+                incomingSubscriptionId,
+                status,
+                fulfilled,
+                DateTimeOffset.UnixEpoch.AddDays(currentCycleDay),
+                incomingCycleDay <= 0 ? null : DateTimeOffset.UnixEpoch.AddDays(incomingCycleDay)));
+
+    [Fact]
+    public void Lost_dispute_is_a_reversal_event_and_open_dispute_is_not()
+    {
+        Assert.Equal(
+            500_000,
+            FirestoreAccountStore.ReversalCreditMicros("dispute.lost", 50, 100, 1_000_000));
+        Assert.Equal(
+            0,
+            FirestoreAccountStore.ReversalCreditMicros("dispute.open", null, 100, 1_000_000));
+    }
+
+    [Fact]
+    public void Dispute_webhook_uses_authoritative_deducted_amount_not_the_claimed_amount()
+    {
+        using var document = JsonDocument.Parse(
+            """{"payload":{"dispute":{"entity":{"id":"disp_1","payment_id":"pay_1","status":"lost","amount":4900,"amount_deducted":1200,"currency":"INR"}}}}""");
+        var parsed = ApiEndpoints.ParseWebhook(document.RootElement, "payment.dispute.lost");
+        Assert.Equal("pay_1", parsed.ProviderObjectId);
+        Assert.Equal("disp_1", parsed.ProviderEventObjectId);
+        Assert.Equal(1_200, parsed.AmountMinor);
+        Assert.Equal("lost", parsed.Status);
+    }
 
     [Fact]
     public void Recurring_fulfillment_is_idempotent_by_provider_charge_not_webhook_event()
@@ -869,6 +990,7 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
+    [Trait("Category", "FirestoreIntegration")]
     public async Task Firestore_multi_account_reservations_are_isolated_when_enabled()
     {
         var accessToken = Environment.GetEnvironmentVariable("KEYBOARD_WTF_FIRESTORE_TEST_ACCESS_TOKEN");
@@ -926,6 +1048,7 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
+    [Trait("Category", "FirestoreIntegration")]
     public async Task Firestore_concurrent_reservations_cannot_overspend_one_account_when_enabled()
     {
         var accessToken = Environment.GetEnvironmentVariable("KEYBOARD_WTF_FIRESTORE_TEST_ACCESS_TOKEN");
@@ -1002,6 +1125,7 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
+    [Trait("Category", "FirestoreIntegration")]
     public async Task Firestore_burst_reservations_enforce_account_concurrency_and_preserve_the_balance_when_enabled()
     {
         var accessToken = Environment.GetEnvironmentVariable("KEYBOARD_WTF_FIRESTORE_TEST_ACCESS_TOKEN");
@@ -1083,6 +1207,7 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
+    [Trait("Category", "FirestoreIntegration")]
     public async Task Firestore_payment_events_are_reorder_safe_and_subscription_cycles_are_independent_when_enabled()
     {
         var accessToken = Environment.GetEnvironmentVariable("KEYBOARD_WTF_FIRESTORE_TEST_ACCESS_TOKEN");
@@ -1105,6 +1230,7 @@ public sealed class SecurityAndUsageTests
         var creditPurchaseId = $"pur_credit_{suffix}";
         var subscriptionId = $"sub_{suffix}";
         var subscriptionPurchaseId = $"pur_subscription_{suffix}";
+        var creditPayment = $"pay_credit_{suffix}";
         var paymentOne = $"pay_one_{suffix}";
         var paymentTwo = $"pay_two_{suffix}";
         try
@@ -1113,11 +1239,11 @@ public sealed class SecurityAndUsageTests
                 $"evt_unmatched_{suffix}",
                 "order.paid",
                 orderId,
-                paymentOne,
+                creditPayment,
                 orderId,
                 null,
                 null,
-                paymentOne,
+                creditPayment,
                 4_900,
                 "paid",
                 CancellationToken.None);
@@ -1141,11 +1267,11 @@ public sealed class SecurityAndUsageTests
                 $"evt_bad_amount_{suffix}",
                 "order.paid",
                 orderId,
-                paymentOne,
+                creditPayment,
                 orderId,
                 null,
                 creditPurchaseId,
-                paymentOne,
+                creditPayment,
                 1,
                 "paid",
                 CancellationToken.None,
@@ -1158,11 +1284,11 @@ public sealed class SecurityAndUsageTests
                 $"evt_unmatched_{suffix}",
                 "order.paid",
                 orderId,
-                paymentOne,
+                creditPayment,
                 orderId,
                 null,
                 creditPurchaseId,
-                paymentOne,
+                creditPayment,
                 4_900,
                 "paid",
                 CancellationToken.None,
@@ -1173,11 +1299,11 @@ public sealed class SecurityAndUsageTests
                 $"evt_same_payment_{suffix}",
                 "payment.captured",
                 orderId,
-                paymentOne,
+                creditPayment,
                 orderId,
                 null,
                 creditPurchaseId,
-                paymentOne,
+                creditPayment,
                 4_900,
                 "captured",
                 CancellationToken.None,
@@ -1204,15 +1330,25 @@ public sealed class SecurityAndUsageTests
             var activated = await store.GetAccountAsync(caller.UserId, CancellationToken.None);
             Assert.Equal("none", activated.PlanId);
             Assert.Equal(100_000_000, activated.AvailableCreditMicros);
+            var activatedPurchase = await db.Collection("accounts").Document(caller.UserId)
+                .Collection("purchases").Document(subscriptionPurchaseId)
+                .GetSnapshotAsync();
+            Assert.Equal("subscription", activatedPurchase.GetValue<string>("kind"));
+            Assert.False(activatedPurchase.GetValue<bool>("credited"));
 
-            await store.ApplyPaymentWebhookAsync(
+            var firstCycleEnd = DateTimeOffset.Parse("2026-09-01T00:00:00Z");
+            var firstCharge = await store.ApplyPaymentWebhookAsync(
                 $"evt_charge_one_{suffix}", "subscription.charged", subscriptionId,
                 paymentOne, null, subscriptionId, subscriptionPurchaseId, paymentOne, 9_900, "active", CancellationToken.None,
-                providerCurrency: "INR", providerProductSku: "monthly_integration");
+                firstCycleEnd, "INR", "monthly_integration");
+            Assert.Equal("credited", firstCharge.Outcome);
+            Assert.Equal(
+                600_000_000,
+                (await store.GetAccountAsync(caller.UserId, CancellationToken.None)).AvailableCreditMicros);
             await store.ApplyPaymentWebhookAsync(
                 $"evt_charge_one_replay_{suffix}", "subscription.charged", subscriptionId,
                 paymentOne, null, subscriptionId, subscriptionPurchaseId, paymentOne, 9_900, "active", CancellationToken.None,
-                providerCurrency: "INR", providerProductSku: "monthly_integration");
+                firstCycleEnd, "INR", "monthly_integration");
             var usageRequest = $"usage_between_cycles_{suffix}";
             await store.ReserveAsync(
                 caller,
@@ -1263,7 +1399,11 @@ public sealed class SecurityAndUsageTests
                 $"evt_refund_two_{suffix}", "refund.processed", subscriptionId,
                 paymentTwo, null, subscriptionId, subscriptionPurchaseId, $"rfnd_two_{suffix}", 9_900, "processed", CancellationToken.None);
             var refunded = await store.GetAccountAsync(caller.UserId, CancellationToken.None);
-            Assert.Equal(90_000_000, refunded.AvailableCreditMicros);
+            Assert.Equal(100_000_000, refunded.AvailableCreditMicros);
+            Assert.Equal(100_000_000, refunded.TopUpCreditMicros);
+            Assert.Equal(0, refunded.SubscriptionAllowanceCreditMicros);
+            var refundedAccount = await db.Collection("accounts").Document(caller.UserId).GetSnapshotAsync();
+            Assert.Equal(10_000_000, refundedAccount.GetValue<long>("creditDebtMicros"));
             Assert.Equal("monthly_integration", refunded.PlanId);
             Assert.Equal("active", refunded.SubscriptionStatus);
         }
@@ -1649,14 +1789,54 @@ public sealed class SecurityAndUsageTests
     private static async Task DeleteIntegrationAccountAsync(FirestoreDb db, string userId)
     {
         var account = db.Collection("accounts").Document(userId);
-        foreach (var collectionName in new[] { "ledger", "reservations", "usage", "purchases", "devices", "sessions" })
+        var reconciliationResourceHashes = new HashSet<string>(StringComparer.Ordinal);
+        var globalUsageAdjustments = new Dictionary<string, (long Reserved, long Settled)>(StringComparer.Ordinal);
+        foreach (var collectionName in new[] { "ledger", "reservations", "usage", "purchases", "devices", "sessions", "dailyUsage" })
         {
             var documents = await account.Collection(collectionName).Limit(100).GetSnapshotAsync();
             if (documents.Count == 0)
                 continue;
+            if (collectionName is "reservations" or "purchases")
+            {
+                foreach (var document in documents.Documents)
+                    reconciliationResourceHashes.Add(Crypto.Sha256(document.Reference.Path));
+            }
+            if (collectionName == "reservations")
+            {
+                foreach (var document in documents.Documents)
+                {
+                    var data = document.ToDictionary();
+                    var shardId = Convert.ToString(data.GetValueOrDefault("globalUsageShardId")) ?? "";
+                    if (string.IsNullOrWhiteSpace(shardId))
+                        continue;
+                    var status = Convert.ToString(data.GetValueOrDefault("status")) ?? "";
+                    var reserved = Convert.ToInt64(data.GetValueOrDefault("reservedCreditMicros") ?? 0L);
+                    var charged = Convert.ToInt64(data.GetValueOrDefault("chargedCreditMicros") ?? 0L);
+                    var current = globalUsageAdjustments.GetValueOrDefault(shardId);
+                    globalUsageAdjustments[shardId] = string.Equals(status, "settled", StringComparison.Ordinal)
+                        ? (current.Reserved, checked(current.Settled + charged))
+                        : status is "released" or "failed"
+                            ? current
+                            : (checked(current.Reserved + reserved), current.Settled);
+                }
+            }
             var batch = db.StartBatch();
             foreach (var document in documents.Documents)
                 batch.Delete(document.Reference);
+            await batch.CommitAsync();
+        }
+        if (globalUsageAdjustments.Count > 0)
+        {
+            var batch = db.StartBatch();
+            foreach (var (shardId, adjustment) in globalUsageAdjustments)
+            {
+                batch.Set(db.Collection("globalUsageShards").Document(shardId), new Dictionary<string, object>
+                {
+                    ["reservedCreditMicros"] = FieldValue.Increment(-adjustment.Reserved),
+                    ["settledCreditMicros"] = FieldValue.Increment(-adjustment.Settled),
+                    ["updatedAt"] = Timestamp.FromDateTime(DateTime.UtcNow),
+                }, SetOptions.MergeAll);
+            }
             await batch.CommitAsync();
         }
 
@@ -1682,6 +1862,19 @@ public sealed class SecurityAndUsageTests
             var batch = db.StartBatch();
             foreach (var document in documents.Documents)
                 batch.Delete(document.Reference);
+            await batch.CommitAsync();
+        }
+        foreach (var resourcePathHash in reconciliationResourceHashes)
+        {
+            var issues = await db.Collection("reconciliationIssues")
+                .WhereEqualTo("resourcePathHash", resourcePathHash)
+                .Limit(100)
+                .GetSnapshotAsync();
+            if (issues.Count == 0)
+                continue;
+            var batch = db.StartBatch();
+            foreach (var issue in issues.Documents)
+                batch.Delete(issue.Reference);
             await batch.CommitAsync();
         }
         await account.DeleteAsync();
@@ -1955,15 +2148,15 @@ public sealed class SecurityAndUsageTests
                 "orders/order_123/payments" =>
                     """{"items":[{"id":"pay_123","status":"captured","amount":4900,"currency":"INR","order_id":"order_123","captured":true,"created_at":1785790000}]}""",
                 "subscriptions/sub_123" =>
-                    """{"id":"sub_123","status":"active","current_end":1788382000,"notes":{"purchase_id":"pur_123","product_sku":"monthly_test"}}""",
+                    """{"id":"sub_123","status":"active","current_start":1785790000,"current_end":1788382000,"notes":{"purchase_id":"pur_123","product_sku":"monthly_test"}}""",
                 "invoices?subscription_id=sub_123" =>
-                    """{"items":[{"id":"inv_123","subscription_id":"sub_123","payment_id":"pay_123","status":"paid"}]}""",
+                    """{"items":[{"id":"inv_123","subscription_id":"sub_123","payment_id":"pay_123","status":"paid","issued_at":1785789900,"paid_at":1785790000}]}""",
                 "payments/pay_123" =>
                     """{"id":"pay_123","status":"captured","amount":4900,"currency":"INR","order_id":"order_123","captured":true,"created_at":1785790000}""",
                 "payments/pay_123/refunds?count=100&skip=0" =>
                     """{"items":[{"id":"rfnd_123","payment_id":"pay_123","status":"processed","amount":1000,"created_at":1785790100}]}""",
                 "disputes" =>
-                    """{"items":[{"id":"disp_123","payment_id":"pay_123","status":"open","amount":4900,"created_at":1785790200},{"id":"disp_other","payment_id":"pay_other","status":"open","amount":1}]}""",
+                    """{"items":[{"id":"disp_123","payment_id":"pay_123","status":"open","amount":4900,"amount_deducted":0,"created_at":1785790200},{"id":"disp_other","payment_id":"pay_other","status":"open","amount":1,"amount_deducted":0}]}""",
                 _ => throw new InvalidOperationException($"Unexpected Razorpay inspection path: {path}"),
             };
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)

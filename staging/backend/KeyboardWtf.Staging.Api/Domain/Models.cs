@@ -218,7 +218,9 @@ public sealed record ProviderPayment(
     string? OrderId,
     string? SubscriptionId,
     bool Captured,
-    DateTimeOffset? CreatedAt);
+    DateTimeOffset? CreatedAt,
+    DateTimeOffset? InvoiceIssuedAt = null,
+    DateTimeOffset? InvoicePaidAt = null);
 
 public sealed record ProviderRefund(
     string Id,
@@ -232,6 +234,7 @@ public sealed record ProviderDispute(
     string PaymentId,
     string Status,
     long AmountMinor,
+    long AmountDeductedMinor,
     DateTimeOffset? CreatedAt);
 
 public sealed record ProviderOrderInspection(
@@ -248,6 +251,7 @@ public sealed record ProviderSubscriptionInspection(
     string Status,
     string? PurchaseId,
     string? ProductSku,
+    DateTimeOffset? CurrentCycleStartsAt,
     DateTimeOffset? CurrentCycleEndsAt,
     IReadOnlyList<ProviderPayment> Charges);
 

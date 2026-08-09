@@ -15,6 +15,14 @@ Production rejects the staging credit-grant endpoint regardless of this list.
   materialized view.
 - Payment credit is keyed by Razorpay event and, for subscriptions, by the
   unique recurring payment ID. Browser callbacks never grant credit.
+- Account subscription state is owned by one provider subscription ID. A
+  historical cancelled subscription cannot deactivate a newer active one, and
+  a different active subscription can take ownership only with a later verified
+  billing-cycle end.
+- Refund reconciliation keeps a stable provider-refund idempotency key across
+  code revisions. Disputes reverse allowance only after Razorpay reports a
+  `lost` status with a positive authoritative `amount_deducted`; ambiguous
+  dispute transitions remain an operator reconciliation item.
 - AI usage first reserves the complete approved task budget. Provider dispatch
   and completion evidence are written durably before settlement. A provider
   completion cannot be settled with different usage or pricing evidence.

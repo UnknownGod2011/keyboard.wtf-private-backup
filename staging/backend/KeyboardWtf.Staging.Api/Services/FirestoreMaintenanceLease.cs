@@ -85,6 +85,31 @@ internal sealed class MaintenanceLeaseHandle : IAsyncDisposable
         _clock = clock;
     }
 
+    public async Task<bool> RenewAsync(TimeSpan duration, CancellationToken cancellationToken)
+    {
+        if (duration <= TimeSpan.Zero || Volatile.Read(ref _released) != 0)
+            return false;
+        var now = _clock.UtcNow;
+        return await _db.RunTransactionAsync(async transaction =>
+        {
+            var snapshot = await transaction.GetSnapshotAsync(_reference, cancellationToken);
+            if (!snapshot.Exists
+                || !string.Equals(snapshot.GetValue<string>("owner"), _owner, StringComparison.Ordinal))
+                return false;
+            var expiresAt = snapshot.TryGetValue<Timestamp>("expiresAt", out var expiry)
+                ? new DateTimeOffset(expiry.ToDateTime())
+                : DateTimeOffset.UnixEpoch;
+            if (expiresAt <= now)
+                return false;
+            transaction.Update(_reference, new Dictionary<string, object>
+            {
+                ["expiresAt"] = Timestamp.FromDateTime(now.Add(duration).UtcDateTime),
+                ["updatedAt"] = Timestamp.FromDateTime(now.UtcDateTime),
+            });
+            return true;
+        }, cancellationToken: cancellationToken);
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _released, 1) != 0)

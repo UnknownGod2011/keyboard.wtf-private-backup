@@ -21,6 +21,14 @@ if (-not $iscc) {
     throw "Inno Setup 6 was not found in a supported installation path."
 }
 
+$dirty = @(git -C $root status --porcelain --untracked-files=normal)
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not verify the release source state."
+}
+if ($dirty.Count -ne 0) {
+    throw "Release packaging requires a clean committed worktree."
+}
+
 if (Test-Path -LiteralPath $publishDir) {
     Remove-Item -LiteralPath $publishDir -Recurse -Force
 }
@@ -28,10 +36,18 @@ if (Test-Path -LiteralPath $publishDir) {
 New-Item -ItemType Directory -Path $publishDir -Force | Out-Null
 New-Item -ItemType Directory -Path $installerDir -Force | Out-Null
 
+dotnet restore $project `
+    --runtime win-x64 `
+    --locked-mode
+if ($LASTEXITCODE -ne 0) {
+    throw "Locked win-x64 restore failed with exit code $LASTEXITCODE"
+}
+
 dotnet publish $project `
     --configuration $Configuration `
     --runtime win-x64 `
     --self-contained true `
+    --no-restore `
     --output $publishDir `
     -p:PublishSingleFile=true `
     -p:PublishTrimmed=false `

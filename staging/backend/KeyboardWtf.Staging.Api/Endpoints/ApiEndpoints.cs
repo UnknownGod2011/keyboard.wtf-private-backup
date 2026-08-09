@@ -394,7 +394,7 @@ public static class ApiEndpoints
         await identities.AuthenticateAsync(context, cancellationToken)
         ?? throw new AuthenticationRequiredException("A valid sign-in is required.");
 
-    private static (
+    internal static (
         string ProviderObjectId,
         string? PaymentId,
         string? OrderId,
@@ -426,11 +426,12 @@ public static class ApiEndpoints
         var providerEventObjectId = Property(refund, "id")
             ?? Property(dispute, "id")
             ?? paymentId;
-        var amountMinor = Number(refund, "amount")
-            ?? Number(dispute, "amount")
-            ?? Number(payment, "amount")
-            ?? Number(order, "amount_paid")
-            ?? Number(order, "amount");
+        var amountMinor = eventType.Contains("dispute", StringComparison.OrdinalIgnoreCase)
+            ? Number(dispute, "amount_deducted")
+            : Number(refund, "amount")
+                ?? Number(payment, "amount")
+                ?? Number(order, "amount_paid")
+                ?? Number(order, "amount");
         var currency = Property(payment, "currency")
             ?? Property(order, "currency")
             ?? Property(refund, "currency")
