@@ -85,6 +85,7 @@ public sealed class AppSettings
     public int BrowserAutomationConsentVersion { get; set; }
     public string BrowserAutomationModel { get; set; } = "gemini-3.1-flash-lite-preview";
     public bool BrowserAutomationMemoryEnabled { get; set; }
+    public string UpdateChannel { get; set; } = "stable";
 }
 
 public sealed class SettingsService
@@ -177,6 +178,9 @@ public sealed class SettingsService
         MigrateLegacyHotkeys();
         Current.CustomPrompts ??= new Dictionary<string, string>();
         Current.JarvisWorkflows ??= new List<JarvisWorkflowSettings>();
+        Current.UpdateChannel = string.Equals(Current.UpdateChannel, "beta", StringComparison.OrdinalIgnoreCase)
+            ? "beta"
+            : "stable";
         if (!hadSettingsFile || !settingsJson.Contains("\"StartWithWindows\"", StringComparison.OrdinalIgnoreCase))
             Current.StartWithWindows = true;
         Current.GeminiVoice = SanitizeGeminiVoice(Current.GeminiVoice);
@@ -312,6 +316,13 @@ public sealed class SettingsService
     public void SaveBrowserAutomationMemoryEnabled(bool value)
     {
         Current.BrowserAutomationMemoryEnabled = value;
+        Save();
+    }
+    public void SaveUpdateChannel(string channel)
+    {
+        Current.UpdateChannel = string.Equals(channel, "beta", StringComparison.OrdinalIgnoreCase)
+            ? "beta"
+            : "stable";
         Save();
     }
     public void SavePreferredBrowser(string value)

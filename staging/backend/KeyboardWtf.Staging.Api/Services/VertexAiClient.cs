@@ -26,6 +26,7 @@ public sealed class VertexAiClient : IVertexAiClient
 
     public async Task<VertexGenerateResult> GenerateAsync(
         string model,
+        string location,
         string prompt,
         string? systemInstruction,
         int maxOutputTokens,
@@ -34,7 +35,7 @@ public sealed class VertexAiClient : IVertexAiClient
         CancellationToken cancellationToken)
     {
         var endpoint =
-            $"https://{_options.Region}-aiplatform.googleapis.com/v1/projects/{Uri.EscapeDataString(_options.ProjectId)}/locations/{Uri.EscapeDataString(_options.Region)}/publishers/google/models/{Uri.EscapeDataString(model)}:generateContent";
+            $"https://{Uri.EscapeDataString(location)}-aiplatform.googleapis.com/v1/projects/{Uri.EscapeDataString(_options.ProjectId)}/locations/{Uri.EscapeDataString(location)}/publishers/google/models/{Uri.EscapeDataString(model)}:generateContent";
         var parts = new List<object> { new { text = prompt } };
         if (images is not null)
         {

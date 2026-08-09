@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Net.WebSockets;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -62,6 +63,9 @@ internal sealed record PaidInlineImage(string MimeType, string Data);
 
 internal sealed class PaidAccountService : IDisposable
 {
+    private const string DesktopVersionHeader = "X-Keyboard-Wtf-Desktop-Version";
+    private static readonly string DesktopVersion =
+        (typeof(PaidAccountService).Assembly.GetName().Version ?? new Version(0, 0, 0)).ToString(3);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -265,6 +269,7 @@ internal sealed class PaidAccountService : IDisposable
         var socket = new ClientWebSocket();
         socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
         socket.Options.SetRequestHeader("Authorization", $"Bearer {accessToken}");
+        socket.Options.SetRequestHeader(DesktopVersionHeader, DesktopVersion);
         try
         {
             await socket.ConnectAsync(builder.Uri, cancellationToken);
@@ -355,6 +360,7 @@ internal sealed class PaidAccountService : IDisposable
     {
         EnsureEnabled();
         using var request = new HttpRequestMessage(method, new Uri(_configuration.BackendBaseUri, path));
+        request.Headers.TryAddWithoutValidation(DesktopVersionHeader, DesktopVersion);
         if (authenticated)
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         if (body is not null)

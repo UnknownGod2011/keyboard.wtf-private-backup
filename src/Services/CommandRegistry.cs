@@ -72,12 +72,40 @@ public sealed class CommandRegistry
         }
         _ = _capture.ToggleCommandModeAsync(HandleSmartExecutionAsync);
     }
-    public void ToggleConversation() => _ = _liveConversation?.ToggleAsync();
-    public void ToggleJarvisMode() => _ = _liveConversation?.ToggleAsync();
+    public void ToggleConversation() => ToggleJarvisMode();
+    public void ToggleJarvisMode()
+    {
+        if (_liveConversation == null)
+            return;
+        if (_liveConversation.IsActive || _liveConversation.IsStarting)
+        {
+            _ = _liveConversation.StopAsync();
+            return;
+        }
+        if (ShouldUseLocalJarvisPreflight(_liveConversation.UsesPaidBackend, _liveConversation.IsActive))
+        {
+            // A paid provider socket is opened only after local speech has
+            // produced a real user turn. Merely opening Jarvis therefore costs
+            // zero, and silence/cancellation never reserves paid allowance.
+            _ = _capture.ToggleJarvisPreflightAsync(StartPaidJarvisTurnAsync);
+            return;
+        }
+        _ = _liveConversation.StartAsync();
+    }
     public void CancelCurrent() => _ = CancelCurrentAsync();
     public void QuickSendDefault() => _ = _capture.QuickSendAsync(_settings.Current.DefaultDestination ?? "Clipboard");
     public void OpenSettings() => _app.OpenSettings();
     public object PendingSensitiveAction => _automation?.PendingSnapshot();
+
+    internal static bool ShouldUseLocalJarvisPreflight(bool usesPaidBackend, bool isLiveActive) =>
+        usesPaidBackend && !isLiveActive;
+
+    private async Task StartPaidJarvisTurnAsync(string transcript)
+    {
+        if (string.IsNullOrWhiteSpace(transcript))
+            return;
+        await _app.SendJarvisTextTurnAsync(transcript);
+    }
     public void ObserveJarvisTranscript(string text) =>
         TryPreRouteJarvisTranscript(text);
 

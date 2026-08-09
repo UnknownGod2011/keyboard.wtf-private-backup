@@ -34,6 +34,7 @@ public sealed record DesktopLoginExchangeRequest(
 public sealed record SessionRefreshRequest(string RefreshToken);
 public sealed record LogoutRequest(string? SessionId, bool AllDevices = false);
 public sealed record RevokeDeviceRequest(string DeviceId);
+public sealed record DeleteAccountRequest(bool ConfirmPermanentDeletion);
 
 public sealed record GenerateRequest(
     string RequestId,

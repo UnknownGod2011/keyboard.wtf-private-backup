@@ -2,11 +2,21 @@ using System.ComponentModel.DataAnnotations;
 
 namespace KeyboardWtf.Staging.Api.Configuration;
 
+public enum PaidDeploymentEnvironment
+{
+    Development,
+    Staging,
+    Production,
+}
+
 public sealed class PaidSystemOptions
 {
     public const string SectionName = "PaidSystem";
 
     public bool Enabled { get; init; } = true;
+
+    public PaidDeploymentEnvironment DeploymentEnvironment { get; init; } =
+        PaidDeploymentEnvironment.Staging;
 
     [Required]
     public string ProjectId { get; init; } = "keyboard-wtf-staging";
@@ -15,7 +25,12 @@ public sealed class PaidSystemOptions
     public string Region { get; init; } = "asia-south1";
 
     [Required]
-    public string VertexModel { get; init; } = "gemini-2.5-flash";
+    public string VertexModel { get; init; } = "gemini-3.5-flash-lite";
+
+    public int ModelRoutingCacheSeconds { get; init; } = 180;
+
+    [Required]
+    public string MinimumLiveDesktopVersion { get; init; } = "1.3.0";
 
     [Required]
     public string VertexLiveRegion { get; init; } = "us-central1";
@@ -36,10 +51,14 @@ public sealed class PaidSystemOptions
     public int MaxConcurrentRequestsPerUser { get; init; } = 1;
     public int MaxRequestsPerMinutePerUser { get; init; } = 12;
     public long GlobalDailyCreditMicrosCap { get; init; } = 1_000_000_000;
+    public long PerUserDailyCreditMicrosCap { get; init; } = 100_000_000;
+    public long MaxAccountCreditMicros { get; init; } = 10_000_000_000;
     public int GlobalUsageShardCount { get; init; } = 32;
     public long DefaultTaskCreditMicrosCap { get; init; } = 25_000_000;
     public long LiveSessionCreditMicrosCap { get; init; } = 5_000_000;
+    public long LiveReservationWindowCreditMicros { get; init; } = 1_000_000;
     public int LiveSessionMaxSeconds { get; init; } = 600;
+    public int LiveSessionIdleSeconds { get; init; } = 30;
     public long LiveSessionMaxTrafficBytes { get; init; } = 64 * 1024 * 1024;
     public int LiveUsageCheckpointSeconds { get; init; } = 30;
     public int LiveEstimateSafetyBasisPoints { get; init; } = 12_500;

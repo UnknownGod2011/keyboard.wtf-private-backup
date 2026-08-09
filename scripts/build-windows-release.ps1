@@ -1,5 +1,6 @@
 param(
-    [string]$Configuration = "Release"
+    [string]$Configuration = "Release",
+    [switch]$SkipSiteHashUpdate
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,10 +10,15 @@ $publishDir = Join-Path $root "dist\release\keyboard-wtf-win-x64"
 $installerScript = Join-Path $root "installer\keyboard-wtf.iss"
 $installerDir = Join-Path $root "dist\installer"
 $siteIndex = Join-Path $root "site\index.html"
-$iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
+$isccCandidates = @(
+    (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
+    (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
+    (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe")
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+$iscc = $isccCandidates | Select-Object -First 1
 
-if (-not (Test-Path -LiteralPath $iscc)) {
-    throw "Inno Setup 6 was not found at $iscc"
+if (-not $iscc) {
+    throw "Inno Setup 6 was not found in a supported installation path."
 }
 
 if (Test-Path -LiteralPath $publishDir) {
@@ -44,15 +50,17 @@ if ($LASTEXITCODE -ne 0) {
 $installer = Join-Path $installerDir "keyboard-wtf-setup.exe"
 $hash = Get-FileHash -LiteralPath $installer -Algorithm SHA256
 $sizeMb = [Math]::Round((Get-Item -LiteralPath $installer).Length / 1MB, 1)
-$siteHtml = Get-Content -LiteralPath $siteIndex -Raw
-$updatedSiteHtml = $siteHtml -replace 'SHA256 [A-Fa-f0-9]{64}', "SHA256 $($hash.Hash)"
-if ($updatedSiteHtml -eq $siteHtml -and $siteHtml -notmatch "SHA256 $($hash.Hash)") {
-    throw "Could not update the website installer hash"
+if (-not $SkipSiteHashUpdate) {
+    $siteHtml = Get-Content -LiteralPath $siteIndex -Raw
+    $updatedSiteHtml = $siteHtml -replace 'SHA256 [A-Fa-f0-9]{64}', "SHA256 $($hash.Hash)"
+    if ($updatedSiteHtml -eq $siteHtml -and $siteHtml -notmatch "SHA256 $($hash.Hash)") {
+        throw "Could not update the website installer hash"
+    }
+    [System.IO.File]::WriteAllText(
+        $siteIndex,
+        $updatedSiteHtml,
+        [System.Text.UTF8Encoding]::new($false))
 }
-[System.IO.File]::WriteAllText(
-    $siteIndex,
-    $updatedSiteHtml,
-    [System.Text.UTF8Encoding]::new($false))
 
 Write-Host "Built: $installer"
 Write-Host "Size: $sizeMb MB"

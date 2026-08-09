@@ -17,11 +17,12 @@ public static class ApiEndpoints
             TypedResults.Ok(new
             {
                 status = options.Value.Enabled ? "ready" : "disabled",
-                environment = "staging",
+                environment = DeploymentSafety.ProviderEnvironment(
+                    options.Value.DeploymentEnvironment),
                 project = options.Value.ProjectId,
             }));
 
-        var api = app.MapGroup("/v1");
+        var api = app.MapGroup("/v1").RequireRateLimiting("api");
         api.MapGet("/catalog", async (ICatalogService catalog, CancellationToken token) =>
         {
             var snapshot = await catalog.GetAsync(token);
@@ -46,7 +47,8 @@ public static class ApiEndpoints
             DesktopLoginStartRequest request,
             DesktopLoginService login,
             CancellationToken token) =>
-            TypedResults.Ok(await login.StartAsync(request, token)));
+            TypedResults.Ok(await login.StartAsync(request, token)))
+            .RequireRateLimiting("login");
 
         api.MapPost("/desktop-login/authorize", async (
             DesktopLoginAuthorizeRequest request,
@@ -65,13 +67,15 @@ public static class ApiEndpoints
             DesktopLoginExchangeRequest request,
             DesktopLoginService login,
             CancellationToken token) =>
-            TypedResults.Ok(await login.ExchangeAsync(request, token)));
+            TypedResults.Ok(await login.ExchangeAsync(request, token)))
+            .RequireRateLimiting("login");
 
         api.MapPost("/sessions/refresh", async (
             SessionRefreshRequest request,
             DesktopLoginService login,
             CancellationToken token) =>
-            TypedResults.Ok(await login.RefreshAsync(request, token)));
+            TypedResults.Ok(await login.RefreshAsync(request, token)))
+            .RequireRateLimiting("login");
 
         api.MapGet("/account", async (
             HttpContext context,
@@ -98,6 +102,10 @@ public static class ApiEndpoints
                 account.RecentUsage,
                 account.RecentPurchases,
                 account.SubscriptionStatus,
+                account.SubscriptionAllowanceCreditMicros,
+                account.TopUpCreditMicros,
+                account.OtherAllowanceCreditMicros,
+                account.AllowanceRulesVersion,
                 IsAdmin = options.Value.AdminEmails.Contains(
                     caller.Email,
                     StringComparer.OrdinalIgnoreCase),
@@ -128,6 +136,18 @@ public static class ApiEndpoints
             return TypedResults.Ok(new { status = "revoked", request.DeviceId });
         });
 
+        api.MapPost("/account/delete", async (
+            DeleteAccountRequest request,
+            HttpContext context,
+            IIdentityService identities,
+            AccountDeletionService deletion,
+            CancellationToken token) =>
+        {
+            var caller = await RequireCallerAsync(context, identities, token);
+            await deletion.DeleteAsync(caller, request.ConfirmPermanentDeletion, token);
+            return TypedResults.Ok(new { status = "deleted" });
+        });
+
         api.MapPost("/ai/generate", async (
             GenerateRequest request,
             HttpContext context,
@@ -136,7 +156,11 @@ public static class ApiEndpoints
             CancellationToken token) =>
         {
             var caller = await RequireCallerAsync(context, identities, token);
-            return TypedResults.Ok(await ai.GenerateAsync(caller, request, token));
+            return TypedResults.Ok(await ai.GenerateAsync(
+                caller,
+                request,
+                context.Request.Headers[ClientCompatibility.DesktopVersionHeader].ToString(),
+                token));
         });
         api.Map("/ai/live", async (
             HttpContext context,
@@ -248,6 +272,7 @@ public static class ApiEndpoints
         HttpContext context,
         IPaymentProvider payments,
         IAccountStore store,
+        IOptions<PaidSystemOptions> options,
         ILoggerFactory loggerFactory,
         CancellationToken token)
     {
@@ -286,6 +311,19 @@ public static class ApiEndpoints
             ? Crypto.Sha256(rawBody)
             : headerEventId;
         var parsed = ParseWebhook(root, eventType);
+        var expectedEnvironment = DeploymentSafety.ProviderEnvironment(
+            options.Value.DeploymentEnvironment);
+        if (!string.IsNullOrWhiteSpace(parsed.Environment)
+            && !string.Equals(parsed.Environment, expectedEnvironment, StringComparison.Ordinal))
+        {
+            loggerFactory.CreateLogger("PaymentWebhook")
+                .LogWarning("Razorpay webhook environment rejected");
+            return Results.Conflict(new
+            {
+                status = "environment_mismatch",
+                message = "The payment event belongs to another environment.",
+            });
+        }
         var result = await store.ApplyPaymentWebhookAsync(
             eventId,
             eventType,
@@ -319,8 +357,13 @@ public static class ApiEndpoints
         CancellationToken token)
     {
         var caller = await RequireCallerAsync(context, identities, token);
+        if (options.Value.DeploymentEnvironment == PaidDeploymentEnvironment.Production)
+            throw new UnauthorizedAccessException("Administrative credit grants are disabled in production.");
         if (!options.Value.AdminEmails.Contains(caller.Email, StringComparer.OrdinalIgnoreCase))
             throw new UnauthorizedAccessException("This endpoint is restricted to staging administrators.");
+        if (!string.Equals(caller.AuthenticationKind, "firebase", StringComparison.Ordinal)
+            || !AccountDeletionService.IsRecentAuthentication(caller.AuthenticatedAt, DateTimeOffset.UtcNow))
+            throw new UnauthorizedAccessException("Sign in with Google again before making an administrative grant.");
         if (!System.Net.Mail.MailAddress.TryCreate(request.RecipientEmail, out _))
             throw new ArgumentException("A valid recipient email is required.");
         if (string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Length > 300)
@@ -362,7 +405,8 @@ public static class ApiEndpoints
         string Status,
         DateTimeOffset? SubscriptionCycleEndsAt,
         string? Currency,
-        string? ProductSku)
+        string? ProductSku,
+        string? Environment)
         ParseWebhook(JsonElement root, string eventType)
     {
         var payload = root.TryGetProperty("payload", out var value) ? value : default;
@@ -394,6 +438,9 @@ public static class ApiEndpoints
         var productSku = Note(order, "product_sku")
             ?? Note(subscription, "product_sku")
             ?? Note(payment, "product_sku");
+        var environment = Note(order, "environment")
+            ?? Note(subscription, "environment")
+            ?? Note(payment, "environment");
         var providerObjectId = subscriptionId
             ?? orderId
             ?? Property(refund, "payment_id")
@@ -421,7 +468,8 @@ public static class ApiEndpoints
             status,
             subscriptionCycleEndsAt,
             currency,
-            productSku);
+            productSku,
+            environment);
     }
 
     private static JsonElement Entity(JsonElement payload, string name)

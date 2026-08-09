@@ -21,6 +21,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KeyboardWtf.Staging.Api", "
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KeyboardWtf.Staging.Api.Tests", "staging\backend\KeyboardWtf.Staging.Api.Tests\KeyboardWtf.Staging.Api.Tests.csproj", "{1E6CE32B-D192-483C-9BAC-C9B3198FF58A}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{A31FF46C-11D3-4B18-B466-4D0543E99F9C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KeyboardWtf.ReleaseSigner", "tools\KeyboardWtf.ReleaseSigner\KeyboardWtf.ReleaseSigner.csproj", "{883B0E49-30A3-4C9F-B5AB-C7187E8EB20B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -43,6 +47,10 @@ Global
 		{1E6CE32B-D192-483C-9BAC-C9B3198FF58A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{1E6CE32B-D192-483C-9BAC-C9B3198FF58A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{1E6CE32B-D192-483C-9BAC-C9B3198FF58A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{883B0E49-30A3-4C9F-B5AB-C7187E8EB20B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{883B0E49-30A3-4C9F-B5AB-C7187E8EB20B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{883B0E49-30A3-4C9F-B5AB-C7187E8EB20B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{883B0E49-30A3-4C9F-B5AB-C7187E8EB20B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -54,5 +62,6 @@ Global
 		{B17857C4-D2C6-46E3-B1F4-E9B31B0E9629} = {3C65B127-1925-433A-83D8-8C2A83AE5BC1}
 		{BE028DCD-D91E-49E8-B449-BD59C060DC11} = {B17857C4-D2C6-46E3-B1F4-E9B31B0E9629}
 		{1E6CE32B-D192-483C-9BAC-C9B3198FF58A} = {B17857C4-D2C6-46E3-B1F4-E9B31B0E9629}
+		{883B0E49-30A3-4C9F-B5AB-C7187E8EB20B} = {A31FF46C-11D3-4B18-B466-4D0543E99F9C}
 	EndGlobalSection
 EndGlobal

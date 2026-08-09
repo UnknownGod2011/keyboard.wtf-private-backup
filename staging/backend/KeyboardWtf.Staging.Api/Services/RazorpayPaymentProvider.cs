@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using KeyboardWtf.Staging.Api.Domain;
 using KeyboardWtf.Staging.Api.Infrastructure;
+using KeyboardWtf.Staging.Api.Configuration;
+using Microsoft.Extensions.Options;
 
 namespace KeyboardWtf.Staging.Api.Services;
 
@@ -17,16 +19,21 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
     private readonly string _keyId;
     private readonly string _keySecret;
     private readonly string _webhookSecret;
+    private readonly string _environment;
     private readonly SemaphoreSlim _disputesGate = new(1, 1);
     private Task<IReadOnlyList<ProviderDispute>>? _disputesSnapshotTask;
 
-    public RazorpayPaymentProvider(HttpClient httpClient)
+    public RazorpayPaymentProvider(
+        HttpClient httpClient,
+        IOptions<PaidSystemOptions> options)
     {
         _httpClient = httpClient;
         _httpClient.BaseAddress = new Uri("https://api.razorpay.com/v1/");
         _keyId = Environment.GetEnvironmentVariable("RAZORPAY_KEY_ID") ?? "";
         _keySecret = Environment.GetEnvironmentVariable("RAZORPAY_KEY_SECRET") ?? "";
         _webhookSecret = Environment.GetEnvironmentVariable("RAZORPAY_WEBHOOK_SECRET") ?? "";
+        DeploymentSafety.Validate(options.Value, _keyId);
+        _environment = DeploymentSafety.ProviderEnvironment(options.Value.DeploymentEnvironment);
     }
 
     public string Name => "razorpay";
@@ -48,7 +55,7 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
             {
                 ["purchase_id"] = purchaseId,
                 ["product_sku"] = product.Sku,
-                ["environment"] = "staging",
+                ["environment"] = _environment,
             },
         };
         using var document = await SendAsync(HttpMethod.Post, "orders", payload, cancellationToken);
@@ -81,7 +88,7 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
             {
                 ["purchase_id"] = purchaseId,
                 ["product_sku"] = product.Sku,
-                ["environment"] = "staging",
+                ["environment"] = _environment,
             },
         };
         using var document = await SendAsync(HttpMethod.Post, "subscriptions", payload, cancellationToken);

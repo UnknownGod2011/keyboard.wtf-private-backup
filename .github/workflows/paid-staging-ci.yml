@@ -1,0 +1,90 @@
+name: paid-staging-ci
+
+on:
+  push:
+    branches: [paid-staging]
+  pull_request:
+    branches: [paid-staging]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-windows-release:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install .NET 8
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore KeyboardWtf.sln --locked-mode
+
+      - name: Build
+        run: dotnet build KeyboardWtf.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test KeyboardWtf.sln -c Release --no-restore --no-build --logger "trx;LogFileName=release-tests.trx"
+
+      - name: Check vulnerable dependencies
+        shell: pwsh
+        run: |
+          $result = dotnet list KeyboardWtf.sln package --vulnerable --include-transitive
+          $result | Write-Host
+          if ($LASTEXITCODE -ne 0 -or $result -match 'has the following vulnerable packages') { throw 'Vulnerable package gate failed.' }
+
+      - name: Scan tracked source for secrets
+        shell: pwsh
+        run: scripts/security/scan-secrets.ps1
+
+      - name: Validate frontend and extension JavaScript
+        shell: pwsh
+        run: |
+          node --check staging/site/app.js
+          node --check staging/site/account.js
+          Get-ChildItem extensions/keyboard-wtf-browser-helper-v2 -Filter *.js -Recurse | ForEach-Object { node --check $_.FullName }
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Package exact tested source
+        shell: pwsh
+        run: scripts/build-windows-release.ps1 -SkipSiteHashUpdate
+
+      - name: Generate SBOM
+        shell: pwsh
+        run: scripts/release/generate-sbom.ps1 -BuildDirectory dist/release/keyboard-wtf-win-x64 -Version 1.3.0
+
+      - name: Record provenance
+        shell: pwsh
+        run: |
+          $installer = Get-Item dist/installer/keyboard-wtf-setup.exe
+          $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          [ordered]@{
+            sourceCommit = $env:GITHUB_SHA
+            version = '1.3.0'
+            buildDateUtc = [DateTimeOffset]::UtcNow.ToString('O')
+            installer = $installer.Name
+            installerSha256 = $hash
+            signingKeyId = 'kwt-release-2026-01'
+          } | ConvertTo-Json | Set-Content -Encoding utf8 dist/release-provenance.json
+
+      - name: Upload verified candidate artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: keyboard-wtf-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/installer/keyboard-wtf-setup.exe
+            dist/release-provenance.json
+            dist/sbom/**
+            **/release-tests.trx

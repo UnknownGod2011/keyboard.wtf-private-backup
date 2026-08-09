@@ -244,6 +244,16 @@ public sealed class KeyboardWtfApp : IDisposable
         return true;
     }
 
+    public void RequestExitForUpdate()
+    {
+        _commands?.CancelCurrent();
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(350);
+            Application.Exit();
+        });
+    }
+
     private void RegisterBrowserNativeHost()
     {
         try

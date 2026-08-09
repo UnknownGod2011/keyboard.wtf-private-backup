@@ -7,6 +7,11 @@ namespace KeyboardWtf.Staging.Api.Services;
 
 public sealed class CatalogService : ICatalogService
 {
+    // RBI/FBIL reference was about INR 95.72 per USD on 2026-07-29.
+    // INR 100 is a deliberately versioned launch floor with a buffer. It is
+    // updated deliberately in server configuration, never fetched per request.
+    internal const long ConservativeUsdToInrPaise = 10_000;
+    internal const int MaximumProviderCostShareBasisPoints = 4_000;
     private readonly FirestoreDb _db;
     private readonly PaidSystemOptions _options;
     private readonly IClock _clock;
@@ -147,13 +152,13 @@ public sealed class CatalogService : ICatalogService
         var pricing = pricingMap is null
             ? BootstrapPricing()
             : new PricingSnapshot(
-                GetString(pricingMap, "version", "vertex-gemini-2.5-flash-2026-08"),
+                GetString(pricingMap, "version", "vertex-gemini-2.5-live-fx100-2026-08-09"),
                 GetString(pricingMap, "model", _options.VertexModel),
                 GetLong(pricingMap, "inputUsdMicrosPerMillionTokens", 300_000),
                 GetLong(pricingMap, "outputUsdMicrosPerMillionTokens", 2_500_000),
                 GetLong(pricingMap, "cachedInputUsdMicrosPerMillionTokens", 30_000),
                 GetLong(pricingMap, "reasoningUsdMicrosPerMillionTokens", 2_500_000),
-                GetLong(pricingMap, "usdToInrPaise", 8_700),
+                Math.Max(GetLong(pricingMap, "usdToInrPaise", ConservativeUsdToInrPaise), ConservativeUsdToInrPaise),
                 GetLong(pricingMap, "creditMicrosPerInrPaise", 10_000),
                 _clock.UtcNow,
                 GetLong(pricingMap, "inputAudioUsdMicrosPerMillionTokens", 1_000_000),
@@ -183,6 +188,11 @@ public sealed class CatalogService : ICatalogService
 
         if (products.Count == 0 && _options.AllowBootstrapCatalog)
             products.AddRange(BootstrapProducts());
+        if (_options.DeploymentEnvironment == PaidDeploymentEnvironment.Production)
+        {
+            foreach (var product in products)
+                ValidateProductionProduct(product, pricing);
+        }
 
         return new CatalogSnapshot(
             GetString(data, "version", "bootstrap-2026-08"),
@@ -199,7 +209,7 @@ public sealed class CatalogService : ICatalogService
         if (!_options.AllowBootstrapCatalog)
             throw new InvalidOperationException("The server catalog is not configured.");
         return new CatalogSnapshot(
-            "vertex-gemini-2.5-flash-2026-08",
+            "vertex-gemini-2.5-live-fx100-2026-08-09",
             BootstrapProducts(),
             BootstrapPricing(),
             false,
@@ -208,7 +218,10 @@ public sealed class CatalogService : ICatalogService
 
     private IReadOnlyList<CatalogProduct> BootstrapProducts()
     {
-        var monthlyPlanId = Environment.GetEnvironmentVariable("RAZORPAY_TEST_MONTHLY_PLAN_ID");
+        var monthlyPlanId = Environment.GetEnvironmentVariable(
+            _options.DeploymentEnvironment == PaidDeploymentEnvironment.Production
+                ? "RAZORPAY_LIVE_MONTHLY_PLAN_ID"
+                : "RAZORPAY_TEST_MONTHLY_PLAN_ID");
         return
         [
             new("credits_test_100", "credits", "100 staging credits", 4_900, "INR", 100_000_000, null, true),
@@ -218,13 +231,13 @@ public sealed class CatalogService : ICatalogService
     }
 
     private PricingSnapshot BootstrapPricing() => new(
-        "vertex-gemini-2.5-flash-2026-08",
+        "vertex-gemini-2.5-live-fx100-2026-08-09",
         _options.VertexModel,
         300_000,
         2_500_000,
         30_000,
         2_500_000,
-        8_700,
+        ConservativeUsdToInrPaise,
         10_000,
         _clock.UtcNow,
         1_000_000,
@@ -233,6 +246,29 @@ public sealed class CatalogService : ICatalogService
         3_000_000,
         2_000_000,
         12_000_000);
+
+    internal static void ValidateProductionProduct(
+        CatalogProduct product,
+        PricingSnapshot pricing)
+    {
+        if (!product.Enabled)
+            return;
+        if (product.Sku.Contains("test", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(product.Currency, "INR", StringComparison.Ordinal)
+            || product.AmountMinor <= 0
+            || product.CreditMicros <= 0)
+            throw new InvalidOperationException("The production catalog contains an invalid or staging product.");
+        if (string.Equals(product.Kind, "subscription", StringComparison.Ordinal)
+            && string.IsNullOrWhiteSpace(product.RazorpayPlanId))
+            throw new InvalidOperationException("A production subscription requires a Razorpay plan ID.");
+        var maximumProviderBudgetPaise = decimal.Floor(
+            product.AmountMinor * (decimal)MaximumProviderCostShareBasisPoints / 10_000m);
+        var allowanceProviderBudgetPaise = decimal.Ceiling(
+            product.CreditMicros / (decimal)pricing.CreditMicrosPerInrPaise);
+        if (allowanceProviderBudgetPaise > maximumProviderBudgetPaise)
+            throw new InvalidOperationException(
+                "The production allowance can consume more than the approved provider-cost share of revenue.");
+    }
 
     private static decimal Cost(long tokens, long microsPerMillion) =>
         tokens <= 0 ? 0 : (decimal)tokens * microsPerMillion / 1_000_000m;

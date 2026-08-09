@@ -33,6 +33,7 @@ public sealed class GeminiLiveConversationService : IDisposable
     private TaskCompletionSource<bool> _turnComplete = CompletedTurn();
     private bool _autoEnding;
     private bool _disposed;
+    private int _startInProgress;
 
     public GeminiLiveConversationService(
         NotificationService notifications,
@@ -55,6 +56,8 @@ public sealed class GeminiLiveConversationService : IDisposable
     }
 
     public bool IsActive => _socket?.State == WebSocketState.Open && _microphone != null;
+    public bool IsStarting => Volatile.Read(ref _startInProgress) == 1;
+    public bool UsesPaidBackend => _paidAccount?.Enabled == true;
 
     public void SetToolExecutor(Func<string, JsonElement, CancellationToken, Task<Dictionary<string, object>>> executor) =>
         _toolExecutor = executor;
@@ -67,7 +70,7 @@ public sealed class GeminiLiveConversationService : IDisposable
 
     public async Task ToggleAsync()
     {
-        if (IsActive)
+        if (IsActive || IsStarting)
         {
             await StopAsync();
             return;
@@ -78,6 +81,10 @@ public sealed class GeminiLiveConversationService : IDisposable
 
     public async Task StartAsync()
     {
+        if (Interlocked.CompareExchange(ref _startInProgress, 1, 0) != 0)
+            return;
+        try
+        {
         if (_paidAccount?.Enabled == true)
         {
             if (!_paidAccount.IsSignedIn)
@@ -178,6 +185,11 @@ public sealed class GeminiLiveConversationService : IDisposable
             await StopAsync(showDone: false);
             KeyboardWtfState.SetUi(VoiceUiPhase.Error, "Jarvis mode failed", FriendlyError(ex));
             _notifications.Error("Jarvis mode failed", FriendlyError(ex));
+        }
+        }
+        finally
+        {
+            Volatile.Write(ref _startInProgress, 0);
         }
     }
 

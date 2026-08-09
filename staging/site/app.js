@@ -4,6 +4,7 @@ import {
   getAuth,
   GoogleAuthProvider,
   onAuthStateChanged,
+  reauthenticateWithPopup,
   setPersistence,
   signInWithPopup,
   signOut,
@@ -93,6 +94,14 @@ function forgetPendingPurchase(userId, purchaseId) {
   writePendingPurchases(byUser);
 }
 
+function forgetAllPendingPurchases(userId) {
+  if (!userId) return;
+  const byUser = pendingPurchasesByUser();
+  if (!(userId in byUser)) return;
+  delete byUser[userId];
+  writePendingPurchases(byUser);
+}
+
 export function getPendingPurchaseIds() {
   const userId = auth.currentUser?.uid;
   if (!userId) return [];
@@ -171,6 +180,7 @@ export async function api(path, options = {}) {
   const {
     authenticated = false,
     retryAuthentication = true,
+    forceAuthenticationRefresh = false,
     ...fetchOptions
   } = options;
   const user = await waitForAuthInitialization();
@@ -187,7 +197,7 @@ export async function api(path, options = {}) {
       path,
       fetchOptions,
       authenticated ? user : null,
-      false,
+      forceAuthenticationRefresh,
     );
     if (response.status === 401 && authenticated && user && retryAuthentication)
       response = await sendApiRequest(path, fetchOptions, user, true);
@@ -228,6 +238,25 @@ export async function revokeDevice(deviceId) {
     body: JSON.stringify({ deviceId }),
   });
   return loadAccount();
+}
+
+export async function deleteAccountPermanently() {
+  const user = await waitForAuthInitialization();
+  if (!user)
+    throw new Error("Sign in with Google to continue.");
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: "select_account" });
+  await reauthenticateWithPopup(user, provider);
+  await api("/v1/account/delete", {
+    authenticated: true,
+    retryAuthentication: false,
+    forceAuthenticationRefresh: true,
+    method: "POST",
+    body: JSON.stringify({ confirmPermanentDeletion: true }),
+  });
+  forgetAllPendingPurchases(user.uid);
+  await signOut(auth);
+  state.account = null;
 }
 
 export async function grantTestCredits(recipientEmail, creditMicros, reason) {

@@ -29,6 +29,31 @@ public sealed class VertexAccessTokenProvider : IVertexAccessTokenProvider
 public sealed class VertexLiveProxyService
 {
     private const int MaxMessageBytes = 2 * 1024 * 1024;
+    private const int MaxSystemInstructionCharacters = 20_000;
+    private const int MaxToolDeclarations = 64;
+    private const string ServerSafetyInstruction =
+        "This is keyboard.wtf Jarvis. Follow the user's current request, but never expose credentials, " +
+        "bypass authentication or security controls, or claim a local action succeeded without a tool result. " +
+        "Passwords, OTPs, CAPTCHAs, payments, destructive actions, and public sends/submissions require explicit user control.";
+    private static readonly HashSet<string> AllowedVoiceNames = new(StringComparer.Ordinal)
+    {
+        "Kore", "Orus", "Puck", "Charon", "Aoede", "Zephyr", "Leda", "Fenrir",
+    };
+    private static readonly HashSet<string> AllowedToolNames = new(StringComparer.Ordinal)
+    {
+        "open_app", "open_folder", "open_path", "open_url", "window_action", "browser_action",
+        "web_search", "browser_automation", "browser_automation_status", "browser_automation_control",
+        "get_desktop_context", "get_clipboard_text", "get_selected_text", "replace_selected_text",
+        "type_text", "press_key", "search_files", "save_note", "add_todo", "list_todos",
+        "complete_todo", "set_timer", "cancel_timer", "list_timers", "system_control", "system_status",
+        "play_media", "open_service_page", "open_camera", "take_photo", "take_screenshot", "inspect_screen",
+        "virtual_desktop_action", "windows_recording_action", "create_workflow", "remember_routine",
+        "list_workflows", "run_workflow", "delete_workflow", "remember_app_alias", "remember_path_alias",
+        "remember_link_alias", "remember_workflow_alias", "list_learned_mappings", "forget_learned_mapping",
+        "set_browser_preference", "request_sensitive_action", "confirm_sensitive_action",
+        "cancel_sensitive_action", "open_gmail_draft", "prepare_whatsapp_message", "copy_text",
+        "remember_intent", "recall_intent", "list_intent_memory", "forget_intent_memory", "end_conversation",
+    };
     private readonly IAccountStore _store;
     private readonly ICatalogService _catalog;
     private readonly IVertexAccessTokenProvider _tokens;
@@ -56,6 +81,9 @@ public sealed class VertexLiveProxyService
     {
         if (!context.WebSockets.IsWebSocketRequest)
             throw new ArgumentException("A WebSocket upgrade is required.");
+        ClientCompatibility.Require(
+            context.Request.Headers[ClientCompatibility.DesktopVersionHeader].ToString(),
+            _options.MinimumLiveDesktopVersion);
         var requestId = context.Request.Query["requestId"].ToString();
         if (!IsSafeRequestId(requestId))
             throw new ArgumentException("A stable live-session request ID is required.");
@@ -64,12 +92,15 @@ public sealed class VertexLiveProxyService
         if (catalog.KillSwitch)
             throw new InvalidOperationException(catalog.KillSwitchMessage ?? "Paid AI is temporarily unavailable.");
         await _store.EnsureAccountAsync(caller, cancellationToken);
+        var initialReservation = Math.Min(
+            _options.LiveReservationWindowCreditMicros,
+            _options.LiveSessionCreditMicrosCap);
         var reservation = await _store.ReserveAsync(
             caller,
             requestId,
             _options.VertexLiveModel,
             catalog.Pricing.Version,
-            _options.LiveSessionCreditMicrosCap,
+            initialReservation,
             _options.LiveSessionCreditMicrosCap,
             _options.MaxRequestsPerMinutePerUser,
             _options.MaxConcurrentRequestsPerUser,
@@ -113,7 +144,8 @@ public sealed class VertexLiveProxyService
 
             using var session = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             session.CancelAfter(TimeSpan.FromSeconds(_options.LiveSessionMaxSeconds));
-            void EnsureBudget()
+            long reservedCreditMicros = reservation.Reservation.ReservedCreditMicros;
+            async Task EnsureBudgetAsync(CancellationToken token)
             {
                 var current = usage.Snapshot();
                 if (current.TotalTokens <= 0)
@@ -122,19 +154,33 @@ public sealed class VertexLiveProxyService
                     catalog.Pricing,
                     current,
                     _options.LiveEstimateSafetyBasisPoints);
-                if (currentCharge >= reservation.Reservation.ReservedCreditMicros)
+                if (currentCharge >= _options.LiveSessionCreditMicrosCap)
                     throw new InvalidOperationException("The Live session reached its approved server budget.");
+                var target = RequiredLiveReservation(
+                    currentCharge,
+                    _options.LiveReservationWindowCreditMicros,
+                    _options.LiveSessionCreditMicrosCap);
+                if (target <= Interlocked.Read(ref reservedCreditMicros))
+                    return;
+                var ensured = await _store.EnsureReservationCapacityAsync(
+                    caller.UserId,
+                    requestId,
+                    target,
+                    token);
+                Max(ref reservedCreditMicros, ensured);
             }
 
-            var toProvider = RelayAsync(client, provider, message =>
+            var toProvider = RelayAsync(client, provider, async (message, token) =>
             {
                 usage.ObserveClient(message);
-                EnsureBudget();
+                await EnsureBudgetAsync(token);
             }, session.Token);
-            var toClient = RelayAsync(provider, client, message =>
+            var activity = new LiveActivityTracker();
+            var toClient = RelayAsync(provider, client, async (message, token) =>
             {
                 usage.ObserveProvider(message);
-                EnsureBudget();
+                activity.ObserveProvider(message);
+                await EnsureBudgetAsync(token);
             }, session.Token);
             var checkpoints = CheckpointUsageAsync(
                 caller.UserId,
@@ -142,11 +188,16 @@ public sealed class VertexLiveProxyService
                 usage,
                 catalog.Pricing,
                 session.Token);
-            await Task.WhenAny(toProvider, toClient, checkpoints);
+            var idle = WaitForPostTurnIdleAsync(
+                activity,
+                TimeSpan.FromSeconds(_options.LiveSessionIdleSeconds),
+                session.Token);
+            await Task.WhenAny(toProvider, toClient, checkpoints, idle);
             session.Cancel();
             await IgnoreExpectedRelayEndAsync(toProvider);
             await IgnoreExpectedRelayEndAsync(toClient);
             await IgnoreExpectedCheckpointEndAsync(checkpoints);
+            await IgnoreExpectedCheckpointEndAsync(idle);
             outcome = cancellationToken.IsCancellationRequested ? "cancelled" : "completed";
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -274,6 +325,20 @@ public sealed class VertexLiveProxyService
                 ? LiveAccountingDisposition.Reconcile
                 : LiveAccountingDisposition.Release;
 
+    internal static long RequiredLiveReservation(
+        long currentChargeCreditMicros,
+        long windowCreditMicros,
+        long sessionCapCreditMicros)
+    {
+        if (currentChargeCreditMicros < 0
+            || windowCreditMicros <= 0
+            || sessionCapCreditMicros <= 0)
+            throw new ArgumentOutOfRangeException(nameof(currentChargeCreditMicros));
+        return Math.Min(
+            sessionCapCreditMicros,
+            checked(currentChargeCreditMicros + windowCreditMicros));
+    }
+
     internal static string RewriteSetup(string json, string model)
     {
         if (Encoding.UTF8.GetByteCount(json) > MaxMessageBytes)
@@ -288,16 +353,109 @@ public sealed class VertexLiveProxyService
         {
             throw new ArgumentException("The Live setup is invalid.");
         }
-        if (root["setup"] is not JsonObject setup)
+        if (root.Count != 1 || root["setup"] is not JsonObject setup)
             throw new ArgumentException("The first Live message must be setup.");
-        setup["model"] = model;
-        return root.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
+
+        var voiceName = ReadVoiceName(setup);
+        var clientInstruction = ReadSystemInstruction(setup);
+        var tools = ValidateAndCloneTools(setup["tools"]);
+        var rewritten = new JsonObject
+        {
+            ["setup"] = new JsonObject
+            {
+                ["model"] = model,
+                ["generationConfig"] = new JsonObject
+                {
+                    ["responseModalities"] = new JsonArray("AUDIO"),
+                    ["speechConfig"] = new JsonObject
+                    {
+                        ["voiceConfig"] = new JsonObject
+                        {
+                            ["prebuiltVoiceConfig"] = new JsonObject
+                            {
+                                ["voiceName"] = voiceName,
+                            },
+                        },
+                    },
+                },
+                ["tools"] = tools,
+                // Transcripts are needed by the current desktop for turn state
+                // and visible feedback. Their presence is controlled here, not
+                // by a modified desktop client.
+                ["inputAudioTranscription"] = new JsonObject(),
+                ["outputAudioTranscription"] = new JsonObject(),
+                ["realtimeInputConfig"] = new JsonObject
+                {
+                    ["automaticActivityDetection"] = new JsonObject
+                    {
+                        ["disabled"] = false,
+                        ["prefixPaddingMs"] = 80,
+                        ["silenceDurationMs"] = 550,
+                    },
+                },
+                ["systemInstruction"] = new JsonObject
+                {
+                    ["parts"] = new JsonArray(
+                        new JsonObject
+                        {
+                            ["text"] = ServerSafetyInstruction + "\n\nDesktop context:\n" + clientInstruction,
+                        }),
+                },
+            },
+        };
+        return rewritten.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
+    }
+
+    private static string ReadVoiceName(JsonObject setup)
+    {
+        var voice = setup["generationConfig"]?["speechConfig"]?["voiceConfig"]?
+            ["prebuiltVoiceConfig"]?["voiceName"]?.GetValue<string>();
+        return voice is not null && AllowedVoiceNames.Contains(voice) ? voice : "Kore";
+    }
+
+    private static string ReadSystemInstruction(JsonObject setup)
+    {
+        var parts = setup["systemInstruction"]?["parts"] as JsonArray;
+        var text = parts?.FirstOrDefault()?["text"]?.GetValue<string>() ?? "";
+        if (text.Length > MaxSystemInstructionCharacters)
+            throw new ArgumentException("The Live system instruction is too large.");
+        return text;
+    }
+
+    private static JsonArray ValidateAndCloneTools(JsonNode? node)
+    {
+        if (node is not JsonArray tools || tools.Count == 0 || tools.Count > 4)
+            throw new ArgumentException("The Live tool catalog is missing or invalid.");
+
+        var result = new JsonArray();
+        var declarationCount = 0;
+        foreach (var toolNode in tools)
+        {
+            if (toolNode is not JsonObject tool
+                || tool.Count != 1
+                || tool["functionDeclarations"] is not JsonArray declarations)
+                throw new ArgumentException("The Live tool catalog contains an unsupported tool type.");
+            var clonedDeclarations = new JsonArray();
+            foreach (var declarationNode in declarations)
+            {
+                declarationCount++;
+                if (declarationCount > MaxToolDeclarations
+                    || declarationNode is not JsonObject declaration
+                    || declaration["name"] is not JsonValue nameValue
+                    || !nameValue.TryGetValue<string>(out var name)
+                    || !AllowedToolNames.Contains(name))
+                    throw new ArgumentException("The Live tool catalog contains an unapproved function.");
+                clonedDeclarations.Add(declaration.DeepClone());
+            }
+            result.Add(new JsonObject { ["functionDeclarations"] = clonedDeclarations });
+        }
+        return result;
     }
 
     private static async Task RelayAsync(
         WebSocket source,
         WebSocket destination,
-        Action<string> observe,
+        Func<string, CancellationToken, Task> observe,
         CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested
@@ -305,7 +463,7 @@ public sealed class VertexLiveProxyService
                && destination.State == WebSocketState.Open)
         {
             var message = await ReceiveTextAsync(source, MaxMessageBytes, cancellationToken);
-            observe(message);
+            await observe(message, cancellationToken);
             await SendTextAsync(destination, message, cancellationToken);
         }
     }
@@ -382,6 +540,20 @@ public sealed class VertexLiveProxyService
         }
     }
 
+    private static async Task WaitForPostTurnIdleAsync(
+        LiveActivityTracker activity,
+        TimeSpan idleTimeout,
+        CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        while (await timer.WaitForNextTickAsync(cancellationToken))
+        {
+            var completedAt = activity.LastCompletedTurnAt;
+            if (completedAt is not null && DateTimeOffset.UtcNow - completedAt >= idleTimeout)
+                return;
+        }
+    }
+
     private static async Task CloseQuietlyAsync(
         WebSocket? socket,
         WebSocketCloseStatus status,
@@ -401,6 +573,17 @@ public sealed class VertexLiveProxyService
         !string.IsNullOrWhiteSpace(value)
         && value.Length is >= 16 and <= 120
         && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-');
+
+    private static void Max(ref long target, long value)
+    {
+        long current;
+        do
+        {
+            current = Interlocked.Read(ref target);
+            if (value <= current)
+                return;
+        } while (Interlocked.CompareExchange(ref target, value, current) != current);
+    }
 }
 
 internal enum LiveAccountingDisposition
@@ -408,6 +591,51 @@ internal enum LiveAccountingDisposition
     Settle,
     Reconcile,
     Release,
+}
+
+internal sealed class LiveActivityTracker
+{
+    private long _completedTurnUnixMilliseconds;
+
+    public DateTimeOffset? LastCompletedTurnAt
+    {
+        get
+        {
+            var value = Interlocked.Read(ref _completedTurnUnixMilliseconds);
+            return value <= 0 ? null : DateTimeOffset.FromUnixTimeMilliseconds(value);
+        }
+    }
+
+    public void ObserveProvider(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("serverContent", out var server))
+                return;
+
+            // A transcript or model turn means the conversation is active
+            // again. Raw microphone packets are deliberately ignored because
+            // they continue while the user is silent.
+            if (server.TryGetProperty("inputTranscription", out var transcription)
+                && transcription.TryGetProperty("text", out var text)
+                && !string.IsNullOrWhiteSpace(text.GetString()))
+                Interlocked.Exchange(ref _completedTurnUnixMilliseconds, 0);
+            if (server.TryGetProperty("modelTurn", out _))
+                Interlocked.Exchange(ref _completedTurnUnixMilliseconds, 0);
+            if (server.TryGetProperty("turnComplete", out var complete)
+                && complete.ValueKind == JsonValueKind.True)
+                Interlocked.Exchange(
+                    ref _completedTurnUnixMilliseconds,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        }
+        catch (JsonException)
+        {
+            // Relay validation/accounting handles malformed provider frames;
+            // idle tracking must never make the WebSocket loop less reliable.
+        }
+    }
 }
 
 internal sealed class LiveUsageAccumulator
@@ -502,13 +730,22 @@ internal sealed class LiveUsageAccumulator
         var estimatedOutputAudio = DivideRoundUp(Interlocked.Read(ref _outputAudioBytes), 1_920);
         var estimatedText = DivideRoundUp(Interlocked.Read(ref _inputTextCharacters), 4);
         var estimatedOutputText = DivideRoundUp(Interlocked.Read(ref _outputTextCharacters), 4);
+        var exactMetadata = Volatile.Read(ref _usageMetadataSeen) == 1;
         var providerInput = Interlocked.Read(ref _promptTokens);
         var providerOutput = Interlocked.Read(ref _candidateTokens);
-        var input = Math.Max(providerInput, estimatedText + estimatedInputAudio);
-        var output = Math.Max(
-            providerOutput,
-            estimatedOutputText + estimatedOutputAudio);
-        var total = Math.Max(Interlocked.Read(ref _totalTokens), input + output);
+        // Vertex documents Live usageMetadata as session-to-date. The high-water
+        // marks above therefore reject duplicates and out-of-order snapshots.
+        // Once metadata exists, provider token totals are authoritative; local
+        // byte estimates classify missing modalities but never inflate totals.
+        var input = exactMetadata
+            ? providerInput
+            : estimatedText + estimatedInputAudio;
+        var output = exactMetadata
+            ? providerOutput
+            : estimatedOutputText + estimatedOutputAudio;
+        var total = exactMetadata
+            ? Math.Max(Interlocked.Read(ref _totalTokens), input + output)
+            : input + output;
         var providerInputAudio = Interlocked.Read(ref _inputAudioTokens);
         var providerOutputAudio = Interlocked.Read(ref _outputAudioTokens);
         var inputAudio = Math.Clamp(
@@ -521,12 +758,9 @@ internal sealed class LiveUsageAccumulator
             output);
         var inputImage = Math.Clamp(Interlocked.Read(ref _inputImageTokens), 0, input - inputAudio);
         var outputImage = Math.Clamp(Interlocked.Read(ref _outputImageTokens), 0, output - outputAudio);
-        var exactMetadata = Volatile.Read(ref _usageMetadataSeen) == 1;
         var estimated = !exactMetadata
-            || (estimatedInputAudio > 0 && providerInputAudio == 0)
-            || (estimatedOutputAudio > 0 && providerOutputAudio == 0)
-            || input > providerInput
-            || output > providerOutput;
+            || (input > 0 && providerInputAudio == 0 && estimatedInputAudio > 0)
+            || (output > 0 && providerOutputAudio == 0 && estimatedOutputAudio > 0);
         string? requestId;
         string? modelVersion;
         lock (_metadataLock)

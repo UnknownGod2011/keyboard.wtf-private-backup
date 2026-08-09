@@ -15,6 +15,17 @@ namespace KeyboardWtf.Staging.Api.Tests;
 
 public sealed class SecurityAndUsageTests
 {
+    [Fact]
+    public void Account_deletion_requires_a_recent_non_future_authentication()
+    {
+        var now = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000);
+
+        Assert.True(AccountDeletionService.IsRecentAuthentication(now.AddMinutes(-4), now));
+        Assert.False(AccountDeletionService.IsRecentAuthentication(now.AddMinutes(-6), now));
+        Assert.False(AccountDeletionService.IsRecentAuthentication(now.AddMinutes(2), now));
+        Assert.False(AccountDeletionService.IsRecentAuthentication(null, now));
+    }
+
     [Theory]
     [InlineData("http://127.0.0.1:49152/keyboard-wtf/callback", true)]
     [InlineData("http://localhost:49152/keyboard-wtf/callback", true)]
@@ -82,7 +93,9 @@ public sealed class SecurityAndUsageTests
         Environment.SetEnvironmentVariable("RAZORPAY_WEBHOOK_SECRET", secret);
         try
         {
-            var provider = new RazorpayPaymentProvider(new HttpClient());
+            var provider = new RazorpayPaymentProvider(
+                new HttpClient(),
+                Options.Create(TestOptions()));
             var checkout = Crypto.HmacSha256Hex(secret, "order_123|pay_456");
             var subscription = Crypto.HmacSha256Hex(secret, "pay_456|sub_123");
             var webhook = Crypto.HmacSha256Hex(secret, "{\"event\":\"order.paid\"}");
@@ -99,6 +112,158 @@ public sealed class SecurityAndUsageTests
         }
     }
 
+    [Theory]
+    [InlineData(PaidDeploymentEnvironment.Staging, "rzp_test_public", true)]
+    [InlineData(PaidDeploymentEnvironment.Development, "rzp_test_public", true)]
+    [InlineData(PaidDeploymentEnvironment.Production, "rzp_live_public", true)]
+    [InlineData(PaidDeploymentEnvironment.Staging, "rzp_live_public", false)]
+    [InlineData(PaidDeploymentEnvironment.Production, "rzp_test_public", false)]
+    [InlineData(PaidDeploymentEnvironment.Staging, "unknown_public", false)]
+    public void Razorpay_key_environment_must_match_the_server_environment(
+        PaidDeploymentEnvironment environment,
+        string keyId,
+        bool valid)
+    {
+        var options = environment == PaidDeploymentEnvironment.Production
+            ? TestOptions(environment, allowBootstrapCatalog: false, useStagingIdentifiers: false)
+            : TestOptions(environment);
+        if (valid)
+            Assert.True(DeploymentSafety.Validate(options, keyId));
+        else
+            Assert.Throws<InvalidOperationException>(() => DeploymentSafety.Validate(options, keyId));
+    }
+
+    [Fact]
+    public void Production_rejects_bootstrap_and_staging_identifiers()
+    {
+        var options = TestOptions(
+            PaidDeploymentEnvironment.Production,
+            allowBootstrapCatalog: true,
+            useStagingIdentifiers: false);
+        Assert.Throws<InvalidOperationException>(() =>
+            DeploymentSafety.Validate(options, "rzp_live_public"));
+    }
+
+    [Theory]
+    [InlineData("browser-plan", "browser_planner")]
+    [InlineData("browser-vision-recovery", "browser_planner")]
+    [InlineData("screen-guidance", "screen_reasoning")]
+    [InlineData("desktop-structured", "agent_planner")]
+    [InlineData("desktop-reformat", "selected_text")]
+    [InlineData("unknown", "fast_text")]
+    public void Task_capabilities_map_to_server_owned_routes(string taskKind, string expected) =>
+        Assert.Equal(expected, ModelRoutingService.ResolveRouteName(taskKind));
+
+    [Fact]
+    public void Canary_selection_is_deterministic_and_preserves_a_stable_fallback()
+    {
+        var pricing = new FakeCatalog().Pricing;
+        var route = new ModelRouteSnapshot(
+            "fast_text", "v1", "vertex",
+            [
+                new ModelCandidateSnapshot("stable", "region", pricing with { Model = "stable" }),
+                new ModelCandidateSnapshot("canary", "region", pricing with { Model = "canary" }),
+            ],
+            true, false, 1000, 100, 30, 0, 10_000, "1.0.0", "test");
+
+        var selected = ModelRoutingService.ApplyCanary(route, "uid:request");
+
+        Assert.Equal("canary", selected.Candidates[0].Model);
+        Assert.Equal("stable", selected.Candidates[1].Model);
+        Assert.Equal(
+            selected.Candidates.Select(candidate => candidate.Model),
+            ModelRoutingService.ApplyCanary(route, "uid:request")
+                .Candidates.Select(candidate => candidate.Model));
+    }
+
+    [Fact]
+    public void A_new_server_model_cannot_inherit_another_models_price()
+    {
+        var row = new Dictionary<string, object>
+        {
+            ["primaryModel"] = "gemini-future",
+        };
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            ModelRoutingService.RequireExplicitPricing("primary", row));
+        Assert.Contains("explicit pricing", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("1.3.0")]
+    [InlineData("1.3.1")]
+    [InlineData("2.0.0")]
+    public void Compatible_desktop_versions_are_accepted(string supplied) =>
+        ClientCompatibility.Require(supplied, "1.3.0");
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("not-a-version")]
+    [InlineData("1.2.99")]
+    public void Missing_or_old_desktop_versions_fail_closed(string? supplied) =>
+        Assert.Throws<ClientUpgradeRequiredException>(() =>
+            ClientCompatibility.Require(supplied, "1.3.0"));
+
+    [Fact]
+    public async Task Outdated_desktop_is_rejected_before_reservation_or_provider_dispatch()
+    {
+        var store = new FakeStore { Available = 1_000_000_000 };
+        var vertex = new FakeVertex(new VertexGenerateResult(
+            "never", new ProviderUsage(1, 1, 0, 0, 0, 0, 2, null)));
+        var service = CreateAi(store, vertex);
+
+        await Assert.ThrowsAsync<ClientUpgradeRequiredException>(() => service.GenerateAsync(
+            Caller,
+            new GenerateRequest("request-old-desktop", "hello", null, 128),
+            "1.2.9",
+            CancellationToken.None));
+
+        Assert.Equal(0, store.ReserveCalls);
+        Assert.Equal(0, vertex.Calls);
+    }
+
+    [Fact]
+    public void Payment_evidence_from_another_environment_is_rejected()
+    {
+        var purchase = new Dictionary<string, object>
+        {
+            ["userId"] = "uid-1",
+            ["environment"] = "staging",
+            ["providerObjectId"] = "order_123",
+            ["amountMinor"] = 4_900L,
+            ["currency"] = "INR",
+            ["productSku"] = "credits_test_100",
+        };
+        Assert.Equal(
+            "purchase_environment_mismatch",
+            FirestoreAccountStore.PaymentEvidenceRejection(
+                "payment.captured",
+                "credits",
+                "uid-1",
+                purchase,
+                "order_123",
+                "order_123",
+                null,
+                "pay_123",
+                4_900,
+                "INR",
+                "credits_test_100",
+                "production"));
+    }
+
+    [Theory]
+    [InlineData(400, true)]
+    [InlineData(500, true)]
+    [InlineData(404, false)]
+    [InlineData(429, false)]
+    [InlineData(503, false)]
+    [InlineData(401, false)]
+    [InlineData(403, false)]
+    public void Model_fallback_is_bounded_to_definitive_non_billable_failures(
+        int statusCode,
+        bool expected) =>
+        Assert.Equal(expected, AiUsageService.IsSafeProviderFallback(statusCode));
+
     [Fact]
     public async Task Razorpay_reconciliation_inspection_uses_server_authenticated_read_only_endpoints()
     {
@@ -107,7 +272,9 @@ public sealed class SecurityAndUsageTests
         try
         {
             var handler = new RazorpayInspectionHandler();
-            var provider = new RazorpayPaymentProvider(new HttpClient(handler));
+            var provider = new RazorpayPaymentProvider(
+                new HttpClient(handler),
+                Options.Create(TestOptions()));
 
             var order = await provider.InspectOrderAsync("order_123", CancellationToken.None);
             var subscription = await provider.InspectSubscriptionAsync("sub_123", CancellationToken.None);
@@ -143,7 +310,9 @@ public sealed class SecurityAndUsageTests
         try
         {
             var handler = new RazorpayPagedInspectionHandler();
-            var provider = new RazorpayPaymentProvider(new HttpClient(handler));
+            var provider = new RazorpayPaymentProvider(
+                new HttpClient(handler),
+                Options.Create(TestOptions()));
 
             var refunds = await provider.InspectRefundsAsync("pay_123", CancellationToken.None);
 
@@ -470,6 +639,28 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
+    public void Production_catalog_limits_provider_allowance_to_forty_percent_of_gross_revenue()
+    {
+        var pricing = new FakeCatalog().Pricing with
+        {
+            UsdToInrPaise = CatalogService.ConservativeUsdToInrPaise,
+            CreditMicrosPerInrPaise = 10_000,
+        };
+        var safe = new CatalogProduct(
+            "credits_40", "credits", "40 credits", 10_000, "INR", 40_000_000, null, true);
+        CatalogService.ValidateProductionProduct(safe, pricing);
+
+        var unsafeProduct = safe with { CreditMicros = 40_010_000 };
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            CatalogService.ValidateProductionProduct(unsafeProduct, pricing));
+        Assert.Contains("provider-cost share", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Server_fx_floor_is_conservative_relative_to_the_recorded_RBI_reference() =>
+        Assert.True(CatalogService.ConservativeUsdToInrPaise >= 9_572);
+
+    [Fact]
     public void Reservation_holds_the_full_approved_budget_and_rejects_an_unsafe_low_cap()
     {
         var service = new CatalogService(null!, Options.Create(TestOptions()), new FakeClock());
@@ -516,6 +707,32 @@ public sealed class SecurityAndUsageTests
         Assert.InRange(first, 0, shards - 1);
         Assert.Equal(cap, Enumerable.Range(0, shards)
             .Sum(index => FirestoreAccountStore.GlobalUsageShardCap(cap, shards, index)));
+    }
+
+    [Fact]
+    public void Late_legacy_revision_usage_reduces_sharded_capacity_without_caching()
+    {
+        const long globalCap = 1_000;
+        const int shardCount = 4;
+        var marker = new Dictionary<string, object>
+        {
+            ["globalDailyCapCreditMicros"] = globalCap,
+            ["shardCount"] = (long)shardCount,
+            ["legacyCommittedCreditMicrosAtCutover"] = 100L,
+            ["shardedDailyCapCreditMicros"] = 900L,
+        };
+        var legacy = new Dictionary<string, object>
+        {
+            ["reservedCreditMicros"] = 150L,
+            ["settledCreditMicros"] = 50L,
+        };
+
+        var effective = FirestoreAccountStore.EffectiveShardedDailyCap(
+            marker, legacy, globalCap, shardCount);
+
+        Assert.Equal(800L, effective);
+        Assert.Equal(800L, Enumerable.Range(0, shardCount)
+            .Sum(index => FirestoreAccountStore.GlobalUsageShardCap(effective, shardCount, index)));
     }
 
     [Fact]
@@ -982,7 +1199,7 @@ public sealed class SecurityAndUsageTests
     public async Task Definite_provider_rejection_releases_the_reservation_and_never_settles()
     {
         var store = new FakeStore { Available = 1_000_000_000 };
-        var service = CreateAi(store, new FakeVertex(new VertexRequestRejectedException(429)));
+        var service = CreateAi(store, new FakeVertex(new VertexRequestRejectedException(500)));
         await Assert.ThrowsAsync<VertexRequestRejectedException>(() => service.GenerateAsync(
             Caller,
             new GenerateRequest("request-2", "hello", null, 128),
@@ -992,6 +1209,21 @@ public sealed class SecurityAndUsageTests
         Assert.Equal(0, store.SettleCalls);
         Assert.Equal(1, store.ReleaseCalls);
         Assert.Equal(0, store.ReconciliationCalls);
+    }
+
+    [Fact]
+    public async Task Ambiguous_provider_rejection_is_held_for_reconciliation()
+    {
+        var store = new FakeStore { Available = 1_000_000_000 };
+        var service = CreateAi(store, new FakeVertex(new VertexRequestRejectedException(429)));
+        await Assert.ThrowsAsync<VertexRequestRejectedException>(() => service.GenerateAsync(
+            Caller,
+            new GenerateRequest("request-ambiguous-rejection", "hello", null, 128),
+            CancellationToken.None));
+        Assert.Equal(1, store.ProviderStartedCalls);
+        Assert.Equal(0, store.SettleCalls);
+        Assert.Equal(0, store.ReleaseCalls);
+        Assert.Equal(1, store.ReconciliationCalls);
     }
 
     [Fact]
@@ -1144,21 +1376,35 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
-    public void Live_proxy_replaces_only_the_untrusted_model_identity()
+    public void Live_proxy_applies_server_owned_setup_policy()
     {
         const string expectedModel =
             "projects/keyboard-wtf-staging/locations/us-central1/publishers/google/models/gemini-live-test";
         var rewritten = VertexLiveProxyService.RewriteSetup(
-            """{"setup":{"model":"models/untrusted","generationConfig":{"responseModalities":["AUDIO"]},"tools":[{"functionDeclarations":[]}]}}""",
+            """{"setup":{"model":"models/untrusted","generationConfig":{"responseModalities":["TEXT"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Puck"}}}},"tools":[{"functionDeclarations":[{"name":"open_app","description":"Open an app"}]}],"systemInstruction":{"parts":[{"text":"client context"}]},"contextWindowCompression":{"triggerTokens":1}}}""",
             expectedModel);
         using var document = JsonDocument.Parse(rewritten);
-        Assert.Equal(expectedModel, document.RootElement.GetProperty("setup").GetProperty("model").GetString());
+        var setup = document.RootElement.GetProperty("setup");
+        Assert.Equal(expectedModel, setup.GetProperty("model").GetString());
         Assert.Equal(
             "AUDIO",
-            document.RootElement.GetProperty("setup").GetProperty("generationConfig")
+            setup.GetProperty("generationConfig")
                 .GetProperty("responseModalities")[0].GetString());
-        Assert.True(document.RootElement.GetProperty("setup").TryGetProperty("tools", out _));
+        Assert.Equal("Puck", setup.GetProperty("generationConfig").GetProperty("speechConfig")
+            .GetProperty("voiceConfig").GetProperty("prebuiltVoiceConfig")
+            .GetProperty("voiceName").GetString());
+        Assert.Contains("client context", setup.GetProperty("systemInstruction")
+            .GetProperty("parts")[0].GetProperty("text").GetString(), StringComparison.Ordinal);
+        Assert.False(setup.TryGetProperty("contextWindowCompression", out _));
+        Assert.True(setup.TryGetProperty("inputAudioTranscription", out _));
+        Assert.True(setup.TryGetProperty("outputAudioTranscription", out _));
     }
+
+    [Fact]
+    public void Live_proxy_rejects_unapproved_tool_exposure() =>
+        Assert.Throws<ArgumentException>(() => VertexLiveProxyService.RewriteSetup(
+            """{"setup":{"tools":[{"functionDeclarations":[{"name":"steal_credentials"}]}]}}""",
+            "projects/test/locations/test/publishers/google/models/test"));
 
     [Fact]
     public void Live_proxy_rejects_a_non_setup_first_message() =>
@@ -1263,14 +1509,64 @@ public sealed class SecurityAndUsageTests
         Assert.False(snapshot.Estimated);
     }
 
+    [Fact]
+    public void Live_usage_treats_provider_metadata_as_cumulative_high_water_marks()
+    {
+        var usage = new LiveUsageAccumulator(1_000_000);
+        usage.ObserveProvider("""{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}""");
+        usage.ObserveProvider("""{"usageMetadata":{"promptTokenCount":30,"candidatesTokenCount":20,"totalTokenCount":50}}""");
+        usage.ObserveProvider("""{"usageMetadata":{"promptTokenCount":30,"candidatesTokenCount":20,"totalTokenCount":50}}""");
+        usage.ObserveProvider("""{"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":7,"totalTokenCount":19}}""");
+
+        var snapshot = usage.Snapshot();
+
+        Assert.Equal(30, snapshot.InputTokens);
+        Assert.Equal(20, snapshot.OutputTokens);
+        Assert.Equal(50, snapshot.TotalTokens);
+    }
+
+    [Fact]
+    public void Live_idle_begins_only_after_a_completed_turn_and_resets_on_new_activity()
+    {
+        var activity = new LiveActivityTracker();
+        activity.ObserveProvider("""{"serverContent":{"turnComplete":true}}""");
+        Assert.NotNull(activity.LastCompletedTurnAt);
+
+        activity.ObserveProvider("""{"serverContent":{"inputTranscription":{"text":"continue"}}}""");
+        Assert.Null(activity.LastCompletedTurnAt);
+
+        activity.ObserveProvider("""{"serverContent":{"turnComplete":true}}""");
+        activity.ObserveProvider("""{"serverContent":{"modelTurn":{"parts":[{"text":"answer"}]}}}""");
+        Assert.Null(activity.LastCompletedTurnAt);
+    }
+
+    [Theory]
+    [InlineData(0, 1_000_000, 5_000_000, 1_000_000)]
+    [InlineData(750_000, 1_000_000, 5_000_000, 1_750_000)]
+    [InlineData(4_500_000, 1_000_000, 5_000_000, 5_000_000)]
+    public void Live_reservations_extend_in_bounded_rolling_windows(
+        long charged,
+        long window,
+        long cap,
+        long expected) =>
+        Assert.Equal(expected, VertexLiveProxyService.RequiredLiveReservation(charged, window, cap));
+
     private static readonly CallerIdentity Caller = new(
         "uid-1", "person@example.test", "Test Person", "firebase");
 
     private static AiUsageService CreateAi(
         FakeStore store,
         FakeVertex vertex,
-        FakeCatalog? catalog = null) =>
-        new(store, catalog ?? new FakeCatalog(), vertex, Options.Create(TestOptions()));
+        FakeCatalog? catalog = null)
+    {
+        var selectedCatalog = catalog ?? new FakeCatalog();
+        return new(
+            store,
+            selectedCatalog,
+            new FakeRouting(selectedCatalog.Pricing),
+            vertex,
+            Options.Create(TestOptions()));
+    }
 
     private static async Task DeleteIntegrationAccountAsync(FirestoreDb db, string userId)
     {
@@ -1313,15 +1609,24 @@ public sealed class SecurityAndUsageTests
         await account.DeleteAsync();
     }
 
-    private static PaidSystemOptions TestOptions() => new()
+    private static PaidSystemOptions TestOptions(
+        PaidDeploymentEnvironment environment = PaidDeploymentEnvironment.Staging,
+        bool allowBootstrapCatalog = true,
+        bool useStagingIdentifiers = true) => new()
     {
-        ProjectId = "keyboard-wtf-staging",
+        DeploymentEnvironment = environment,
+        ProjectId = useStagingIdentifiers ? "keyboard-wtf-staging" : "keyboard-wtf-prod",
         Region = "asia-south1",
         VertexModel = "gemini-test",
-        WebBaseUrl = "https://staging.example.test",
-        AllowedOrigins = ["https://staging.example.test"],
+        WebBaseUrl = useStagingIdentifiers
+            ? "https://staging.example.test"
+            : "https://keyboard.wtf",
+        AllowedOrigins = useStagingIdentifiers
+            ? ["https://staging.example.test"]
+            : ["https://keyboard.wtf"],
         MaxRequestSeconds = 5,
         DefaultTaskCreditMicrosCap = 25_000_000,
+        AllowBootstrapCatalog = allowBootstrapCatalog,
     };
 
     private sealed class FakeClock : IClock
@@ -1342,6 +1647,7 @@ public sealed class SecurityAndUsageTests
 
         public Task<VertexGenerateResult> GenerateAsync(
             string model,
+            string location,
             string prompt,
             string? systemInstruction,
             int maxOutputTokens,
@@ -1365,6 +1671,8 @@ public sealed class SecurityAndUsageTests
             "test-v1", "gemini-test", 100_000, 200_000, 25_000, 200_000, 8_500, 10_000,
             DateTimeOffset.Parse("2026-08-03T00:00:00Z"));
 
+        public PricingSnapshot Pricing => _pricing;
+
         public Task<CatalogSnapshot> GetAsync(CancellationToken cancellationToken) =>
             Task.FromResult(new CatalogSnapshot("test-v1", [], _pricing, KillSwitch, "disabled"));
 
@@ -1387,6 +1695,28 @@ public sealed class SecurityAndUsageTests
             int safetyBasisPoints) => (1_500, 30_000);
     }
 
+    private sealed class FakeRouting(PricingSnapshot pricing) : IModelRoutingService
+    {
+        public Task<ModelRouteSnapshot> ResolveAsync(
+            string? taskKind,
+            string routingKey,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new ModelRouteSnapshot(
+                ModelRoutingService.ResolveRouteName(taskKind),
+                "route-test-v1",
+                "vertex",
+                [new ModelCandidateSnapshot(pricing.Model, "test-region", pricing)],
+                true,
+                false,
+                200_000,
+                8_192,
+                5,
+                0,
+                0,
+                "1.3.0",
+                "test"));
+    }
+
     private sealed class FakeStore : IAccountStore
     {
         public long Available { get; set; }
@@ -1396,6 +1726,7 @@ public sealed class SecurityAndUsageTests
         public List<string> Calls { get; } = [];
         public int ReserveCalls { get; private set; }
         public int ProviderStartedCalls { get; private set; }
+        public int EnsureCapacityCalls { get; private set; }
         public int ProviderCompletedCalls { get; private set; }
         public int CheckpointCalls { get; private set; }
         public int SettleCalls { get; private set; }
@@ -1444,6 +1775,16 @@ public sealed class SecurityAndUsageTests
             ProviderStartedCalls++;
             Calls.Add("provider-started");
             return Task.CompletedTask;
+        }
+
+        public Task<long> EnsureReservationCapacityAsync(
+            string userId,
+            string requestId,
+            long targetReservedCreditMicros,
+            CancellationToken cancellationToken)
+        {
+            EnsureCapacityCalls++;
+            return Task.FromResult(targetReservedCreditMicros);
         }
 
         public Task RecordProviderCompletionAsync(
@@ -1505,6 +1846,7 @@ public sealed class SecurityAndUsageTests
         public Task<DesktopSessionTokens> RefreshSessionAsync(string refreshToken, TimeSpan accessLifetime, TimeSpan refreshLifetime, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task RevokeSessionAsync(string userId, string? sessionId, bool allDevices, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task RevokeDeviceAsync(string userId, string deviceId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task DeleteAccountOperationalDataAsync(string userId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<string?> FindUserIdByEmailAsync(string email, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<AccountSnapshot> GrantCreditsAsync(string userId, long creditMicros, string reason, string idempotencyKey, string actor, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<bool> BeginPurchaseAsync(string userId, string purchaseId, CatalogProduct product, string idempotencyKey, CancellationToken cancellationToken) => throw new NotSupportedException();

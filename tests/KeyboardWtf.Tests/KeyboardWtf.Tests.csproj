@@ -4,6 +4,7 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <ImplicitUsings>enable</ImplicitUsings>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <Nullable>disable</Nullable>
   </PropertyGroup>
 
@@ -18,5 +19,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\KeyboardWtf.csproj" />
+    <ProjectReference Include="..\..\tools\KeyboardWtf.ReleaseSigner\KeyboardWtf.ReleaseSigner.csproj" />
   </ItemGroup>
 </Project>

@@ -155,6 +155,9 @@ public sealed class VoiceCaptureService
     public Task ToggleCommandModeAsync(Func<string, Task> handleTranscript) =>
         ToggleModeAsync(RecordingMode.Command, handleTranscript, preferFast: true);
 
+    public Task ToggleJarvisPreflightAsync(Func<string, Task> handleTranscript) =>
+        ToggleModeAsync(RecordingMode.JarvisPreflight, handleTranscript, preferFast: true);
+
     public async Task QuickSendAsync(string destinationName)
     {
         if (KeyboardWtfState.IsProcessing)
@@ -400,6 +403,7 @@ public sealed class VoiceCaptureService
         RecordingMode.Dictate => "Dictation",
         RecordingMode.VoiceAssistant => "Smart writing",
         RecordingMode.Command => "Execute command",
+        RecordingMode.JarvisPreflight => "Jarvis",
         RecordingMode.QuickSend => "Quick send",
         _ => "Listening",
     };

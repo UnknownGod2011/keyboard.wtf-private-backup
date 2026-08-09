@@ -14,7 +14,8 @@ public enum RecordingMode
     PushToTalk,
     QuickSend,
     VoiceAssistant,
-    Command
+    Command,
+    JarvisPreflight
 }
 
 public enum VoiceUiPhase

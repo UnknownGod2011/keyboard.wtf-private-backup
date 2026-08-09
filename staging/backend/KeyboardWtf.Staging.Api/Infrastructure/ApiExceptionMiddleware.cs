@@ -32,6 +32,7 @@ public sealed class ApiExceptionMiddleware
                 ArgumentException => (HttpStatusCode.BadRequest, "Invalid request"),
                 KeyNotFoundException => (HttpStatusCode.NotFound, "Not found"),
                 AuthenticationRequiredException => (HttpStatusCode.Unauthorized, "Sign-in required"),
+                ClientUpgradeRequiredException => ((HttpStatusCode)426, "App update required"),
                 UnauthorizedAccessException => (HttpStatusCode.Forbidden, "Access denied"),
                 InvalidOperationException when exception.Message.Contains("credits", StringComparison.OrdinalIgnoreCase)
                     => ((HttpStatusCode)402, "Credits required"),
@@ -59,4 +60,10 @@ public sealed class ApiExceptionMiddleware
 public sealed class AuthenticationRequiredException : Exception
 {
     public AuthenticationRequiredException(string message) : base(message) { }
+}
+
+public sealed class ClientUpgradeRequiredException : Exception
+{
+    public ClientUpgradeRequiredException(string minimumVersion)
+        : base($"Update keyboard.wtf to version {minimumVersion} or newer before using this AI route.") { }
 }

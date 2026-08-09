@@ -21,7 +21,8 @@ public sealed record CallerIdentity(
     string DisplayName,
     string AuthenticationKind,
     string? SessionId = null,
-    string? DeviceId = null);
+    string? DeviceId = null,
+    DateTimeOffset? AuthenticatedAt = null);
 
 public sealed record AccountSnapshot(
     string UserId,
@@ -36,7 +37,11 @@ public sealed record AccountSnapshot(
     IReadOnlyList<DeviceSnapshot> Devices,
     IReadOnlyList<UsageSnapshot> RecentUsage,
     IReadOnlyList<PurchaseSnapshot> RecentPurchases,
-    string SubscriptionStatus = "none");
+    string SubscriptionStatus = "none",
+    long SubscriptionAllowanceCreditMicros = 0,
+    long TopUpCreditMicros = 0,
+    long OtherAllowanceCreditMicros = 0,
+    string AllowanceRulesVersion = "allowance-v1");
 
 public sealed record DeviceSnapshot(
     string DeviceId,
@@ -120,6 +125,26 @@ public sealed record PricingSnapshot(
     long LiveInputImageUsdMicrosPerMillionTokens = 3_000_000,
     long LiveOutputTextUsdMicrosPerMillionTokens = 2_000_000,
     long LiveOutputAudioUsdMicrosPerMillionTokens = 12_000_000);
+
+public sealed record ModelCandidateSnapshot(
+    string Model,
+    string Location,
+    PricingSnapshot Pricing);
+
+public sealed record ModelRouteSnapshot(
+    string Name,
+    string Version,
+    string Provider,
+    IReadOnlyList<ModelCandidateSnapshot> Candidates,
+    bool Enabled,
+    bool KillSwitch,
+    int MaxInputCharacters,
+    int MaxOutputTokens,
+    int TimeoutSeconds,
+    int ThinkingBudget,
+    int CanaryBasisPoints,
+    string MinimumDesktopVersion,
+    string LifecycleNote);
 
 public sealed record CatalogProduct(
     string Sku,

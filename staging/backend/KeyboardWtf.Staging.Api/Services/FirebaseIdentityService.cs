@@ -77,9 +77,26 @@ public sealed class FirebaseIdentityService : IIdentityService
                 "A verified Google sign-in is required for this staging account.");
         }
         var name = GetString(token.Claims, "name");
-        var caller = new CallerIdentity(token.Uid, email, name, "firebase");
+        var authenticatedAtUnix = GetLong(token.Claims, "auth_time");
+        var authenticatedAt = authenticatedAtUnix > 0
+            ? DateTimeOffset.FromUnixTimeSeconds(authenticatedAtUnix)
+            : (DateTimeOffset?)null;
+        var caller = new CallerIdentity(
+            token.Uid,
+            email,
+            name,
+            "firebase",
+            AuthenticatedAt: authenticatedAt);
         await _store.EnsureAccountAsync(caller, cancellationToken);
         return caller;
+    }
+
+    public async Task DeleteFirebaseUserAsync(string userId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        await _firebaseAuth.RevokeRefreshTokensAsync(userId);
+        cancellationToken.ThrowIfCancellationRequested();
+        await _firebaseAuth.DeleteUserAsync(userId);
     }
 
     internal static bool IsAllowedGoogleIdentity(IReadOnlyDictionary<string, object> claims) =>
@@ -101,6 +118,19 @@ public sealed class FirebaseIdentityService : IIdentityService
                         && bool.TryParse(element.GetString(), out var jsonParsed)
                         && jsonParsed)
                 : bool.TryParse(Convert.ToString(value), out var parsed) && parsed);
+
+    private static long GetLong(IReadOnlyDictionary<string, object> claims, string key)
+    {
+        if (!claims.TryGetValue(key, out var value) || value is null)
+            return 0;
+        if (value is JsonElement element)
+            return element.ValueKind == JsonValueKind.Number && element.TryGetInt64(out var parsed)
+                ? parsed
+                : 0;
+        try { return Convert.ToInt64(value); }
+        catch (FormatException) { return 0; }
+        catch (OverflowException) { return 0; }
+    }
 
     private static string GetSignInProvider(IReadOnlyDictionary<string, object> claims)
     {

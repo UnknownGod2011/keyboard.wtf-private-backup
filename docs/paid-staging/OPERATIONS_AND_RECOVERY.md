@@ -3,6 +3,11 @@
 This document applies only to `keyboard-wtf-staging`. It does not authorize
 Razorpay Live Mode or production deployment.
 
+Staging administrator identities are deployment configuration, not source
+data. Configure the explicit allowlist with the Cloud Run environment setting
+`PaidSystem__AdminEmails__0` (and subsequent numbered entries if required).
+Production rejects the staging credit-grant endpoint regardless of this list.
+
 ## Financial source of truth
 
 - `accounts/{uid}/ledger` is append-only and is the source for reconstructing

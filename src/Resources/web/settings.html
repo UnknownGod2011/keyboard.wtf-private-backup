@@ -956,6 +956,19 @@
       <p class="section-hint">Recover a frozen local session or use the registered Windows uninstaller.</p>
 
       <div class="field">
+        <label>Secure app updates</label>
+        <select id="updateChannel" onchange="saveUpdateChannel()">
+          <option value="stable">Stable (recommended)</option>
+          <option value="beta">Beta</option>
+        </select>
+        <div class="btn-row" style="margin-top:10px">
+          <button onclick="checkForUpdates()">Check for updates</button>
+          <button id="installUpdateButton" class="ghost" style="display:none" onclick="installVerifiedUpdate()">Install verified update</button>
+        </div>
+        <div id="updateStatus" class="hint">Updates are accepted only after an embedded public key verifies the signed manifest and installer hash.</div>
+      </div>
+
+      <div class="field">
         <label>Restart Jarvis</label>
         <div class="hint">Safely cancels active work, releases hotkeys and helper connections, then starts exactly one fresh keyboard.wtf instance.</div>
         <div class="btn-row" style="margin-top:10px">
@@ -1392,6 +1405,7 @@ async function loadSettings() {
     document.getElementById('assistantTone').value = settings.assistantTone || 'Balanced';
     renderGeminiVoices(settings.geminiVoices || [], settings.geminiVoice || 'Kore');
     document.getElementById('startWithWindows').checked = settings.startWithWindows !== false;
+    document.getElementById('updateChannel').value = settings.updateChannel === 'beta' ? 'beta' : 'stable';
     document.getElementById('jarvisPermissionMode').value = settings.jarvisPermissionMode || 'AlwaysAsk';
     document.getElementById('preferredBrowser').value = settings.preferredBrowser || '';
     renderBrowserAutomation(settings.browserAutomation || {});
@@ -2360,6 +2374,57 @@ function renderPaidAccount(account) {
   document.getElementById('paidSignOut').style.display = signedIn ? '' : 'none';
 }
 
+async function saveUpdateChannel() {
+  try {
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ updateChannel: document.getElementById('updateChannel').value })
+    });
+    document.getElementById('installUpdateButton').style.display = 'none';
+    document.getElementById('updateStatus').textContent = 'Channel saved. Check again to verify the signed feed.';
+  } catch (error) {
+    showToast(error.message || 'Update channel could not be saved');
+  }
+}
+
+async function checkForUpdates() {
+  const status = document.getElementById('updateStatus');
+  const install = document.getElementById('installUpdateButton');
+  install.style.display = 'none';
+  status.textContent = 'Verifying signed update metadata…';
+  try {
+    const response = await fetch('/api/updates/check', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || 'Update check failed');
+    if (!data.available) {
+      status.textContent = data.message || 'keyboard.wtf is up to date.';
+      return;
+    }
+    status.textContent = `Version ${data.version} is available on ${data.channel}. ${data.releaseNotes || ''}`;
+    install.style.display = '';
+  } catch (error) {
+    status.textContent = error.message || 'The signed update feed could not be verified.';
+  }
+}
+
+async function installVerifiedUpdate() {
+  if (!confirm('Download, verify, and install this keyboard.wtf update? Active work will stop safely.')) return;
+  const status = document.getElementById('updateStatus');
+  status.textContent = 'Downloading and verifying the installer…';
+  try {
+    const response = await fetch('/api/updates/install', {
+      method: 'POST',
+      headers: { 'X-Keyboard-Wtf-Settings-Action': 'explicit-user-action' }
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || 'Update failed');
+    status.textContent = data.message || 'The verified installer has started.';
+  } catch (error) {
+    status.textContent = error.message || 'The update could not be installed.';
+  }
+}
+
 function formatPaidCredits(micros) {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(Number(micros || 0) / 1000000);
 }
@@ -2668,7 +2733,12 @@ async function pollMicLevel() {
 
 window.addEventListener('beforeunload', () => {
   if (micTestActive) {
-    try { navigator.sendBeacon('/api/mic-test-stop'); } catch (e) {}
+    try {
+      fetch('/api/mic-test-stop', {
+        method: 'POST',
+        keepalive: true,
+      });
+    } catch (e) {}
   }
 });
 

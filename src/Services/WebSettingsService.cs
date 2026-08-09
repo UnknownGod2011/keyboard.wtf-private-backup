@@ -4,6 +4,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
+using System.Security.Cryptography;
 using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
@@ -12,6 +13,7 @@ using System.Threading.Tasks;
 using KeyboardWtf.Models;
 using KeyboardWtf.Services.BrowserAutomationV2;
 using KeyboardWtf.Services.PaidStaging;
+using KeyboardWtf.Services.Updates;
 using NAudio.Wave;
 
 public sealed class WebSettingsService : IDisposable
@@ -34,6 +36,9 @@ public sealed class WebSettingsService : IDisposable
     private BrowserAutomationCoordinator _browserAutomation;
     private PaidAccountService _paidAccount;
     private readonly BrowserNativeHostInstaller _browserNativeHostInstaller = new();
+    private readonly SecureUpdateService _secureUpdates = new();
+    private readonly SemaphoreSlim _updateLock = new(1, 1);
+    private readonly string _settingsActionToken = CreateSettingsActionToken();
     private string _settingsHtml;
 
     // Live microphone meter state
@@ -151,13 +156,18 @@ public sealed class WebSettingsService : IDisposable
 
         try
         {
-            // Security: only serve localhost
-            if (!req.IsLocal)
+            // A hostile website can issue requests to localhost. Locality is
+            // therefore necessary but not sufficient authorization.
+            if (!IsExpectedLoopbackRequest(req))
             {
                 resp.StatusCode = 403;
                 resp.Close();
                 return;
             }
+
+            if (IsStateChangingMethod(req.HttpMethod)
+                && !await ValidateStateChangingRequestAsync(req, resp))
+                return;
 
             var path = req.Url.AbsolutePath;
             var method = req.HttpMethod;
@@ -264,6 +274,20 @@ public sealed class WebSettingsService : IDisposable
                 }
 
                 await LaunchUninstaller(req, resp);
+            }
+            else if (path == "/api/updates/check" && method == "GET")
+            {
+                await CheckForUpdate(resp);
+            }
+            else if (path == "/api/updates/install" && method == "POST")
+            {
+                if (!HasSettingsActionHeader(req))
+                {
+                    resp.StatusCode = 403;
+                    await WriteJson(resp, new { ok = false, error = "Settings action header required." });
+                    return;
+                }
+                await DownloadAndInstallUpdate(resp);
             }
             else if (path == "/api/jarvis/text-turn" && method == "POST")
             {
@@ -448,9 +472,11 @@ public sealed class WebSettingsService : IDisposable
 
     private async Task ServeHtml(HttpListenerResponse resp)
     {
-        var html = _settingsHtml ?? "<h1>Settings page not found</h1>";
+        var html = InjectSettingsRequestGuard(
+            _settingsHtml ?? "<h1>Settings page not found</h1>");
         var buffer = Encoding.UTF8.GetBytes(html);
         resp.ContentType = "text/html; charset=utf-8";
+        resp.Headers[HttpResponseHeader.CacheControl] = "no-store";
         resp.ContentLength64 = buffer.Length;
         await resp.OutputStream.WriteAsync(buffer);
         resp.Close();
@@ -534,6 +560,7 @@ public sealed class WebSettingsService : IDisposable
             geminiVoice = KeyboardWtfState.GeminiVoice,
             geminiVoices = SettingsService.GeminiVoices.Select(pair => new { name = pair.Key, style = pair.Value }).ToArray(),
             startWithWindows = _settings?.Current.StartWithWindows ?? true,
+            updateChannel = _settings?.Current.UpdateChannel ?? "stable",
             startupExecutablePath = _app?.StartupExecutablePath ?? "",
             startupRegistered = WindowsStartupService.IsRegisteredFor(_app?.StartupExecutablePath ?? ""),
             startupRegisteredCommand = WindowsStartupService.RegisteredCommand(),
@@ -713,6 +740,8 @@ public sealed class WebSettingsService : IDisposable
             _settings?.SaveStartWithWindows(startupEl.GetBoolean());
             _app?.SyncStartupRegistration();
         }
+        if (root.TryGetProperty("updateChannel", out var updateChannelEl))
+            _settings?.SaveUpdateChannel(updateChannelEl.GetString());
         if (root.TryGetProperty("jarvisPermissionMode", out var permissionEl)
             && Enum.TryParse<JarvisPermissionMode>(permissionEl.GetString(), out var permissionMode))
             _settings?.SaveJarvisPermissionMode(permissionMode);
@@ -1704,11 +1733,146 @@ public sealed class WebSettingsService : IDisposable
         resp.Close();
     }
 
-    private static bool HasSettingsActionHeader(HttpListenerRequest request) =>
-        string.Equals(
+    private bool HasSettingsActionHeader(HttpListenerRequest request) =>
+        HasValidSettingsActionToken(
             request.Headers["X-Keyboard-Wtf-Settings-Action"],
-            "explicit-user-action",
-            StringComparison.Ordinal);
+            _settingsActionToken);
+
+    internal static bool HasValidSettingsActionToken(string supplied, string expected)
+    {
+        var suppliedBytes = Encoding.UTF8.GetBytes(supplied ?? "");
+        var expectedBytes = Encoding.UTF8.GetBytes(expected ?? "");
+        return suppliedBytes.Length == expectedBytes.Length
+            && CryptographicOperations.FixedTimeEquals(suppliedBytes, expectedBytes);
+    }
+
+    private static string CreateSettingsActionToken() =>
+        Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+
+    private bool IsExpectedLoopbackRequest(HttpListenerRequest request)
+    {
+        if (!request.IsLocal || request.Url is null || request.Url.Port != Port)
+            return false;
+        if (!string.Equals(request.Url.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (string.Equals(request.Url.Host, "localhost", StringComparison.OrdinalIgnoreCase))
+            return true;
+        return IPAddress.TryParse(request.Url.Host, out var address)
+            && IPAddress.IsLoopback(address);
+    }
+
+    private static bool IsStateChangingMethod(string method) =>
+        string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(method, "PUT", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(method, "PATCH", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(method, "DELETE", StringComparison.OrdinalIgnoreCase);
+
+    private async Task<bool> ValidateStateChangingRequestAsync(
+        HttpListenerRequest request,
+        HttpListenerResponse response)
+    {
+        if (!HasSettingsActionHeader(request))
+        {
+            response.StatusCode = 403;
+            await WriteJson(response, new
+            {
+                ok = false,
+                error = "This settings action is not authorized for the current app session.",
+            });
+            return false;
+        }
+
+        if (!IsSameSettingsOrigin(request.Headers["Origin"], Port)
+            || !IsSameSettingsReferer(request.Headers["Referer"], Port)
+            || !IsSameOriginFetch(request.Headers["Sec-Fetch-Site"]))
+        {
+            response.StatusCode = 403;
+            await WriteJson(response, new
+            {
+                ok = false,
+                error = "This settings action came from an untrusted origin.",
+            });
+            return false;
+        }
+
+        const long maxRequestBytes = 2 * 1024 * 1024;
+        if (request.HasEntityBody
+            && (request.ContentLength64 < 0 || request.ContentLength64 > maxRequestBytes))
+        {
+            response.StatusCode = 413;
+            await WriteJson(response, new { ok = false, error = "The settings request is too large." });
+            return false;
+        }
+
+        if (request.HasEntityBody && !IsJsonContentType(request.ContentType))
+        {
+            response.StatusCode = 415;
+            await WriteJson(response, new { ok = false, error = "Settings actions require JSON." });
+            return false;
+        }
+
+        return true;
+    }
+
+    internal static bool IsSameSettingsOrigin(string value, int port)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return true;
+        return Uri.TryCreate(value, UriKind.Absolute, out var origin)
+            && string.Equals(origin.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+            && origin.Port == port
+            && (string.Equals(origin.Host, "localhost", StringComparison.OrdinalIgnoreCase)
+                || (IPAddress.TryParse(origin.Host, out var address) && IPAddress.IsLoopback(address)));
+    }
+
+    internal static bool IsSameSettingsReferer(string value, int port)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return true;
+        return Uri.TryCreate(value, UriKind.Absolute, out var referer)
+            && IsSameSettingsOrigin(referer.GetLeftPart(UriPartial.Authority), port);
+    }
+
+    internal static bool IsSameOriginFetch(string value) =>
+        string.IsNullOrWhiteSpace(value)
+        || string.Equals(value, "same-origin", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(value, "none", StringComparison.OrdinalIgnoreCase);
+
+    internal static bool IsJsonContentType(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+        var separator = value.IndexOf(';');
+        var mediaType = separator >= 0 ? value[..separator] : value;
+        return string.Equals(mediaType.Trim(), "application/json", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string InjectSettingsRequestGuard(string html)
+    {
+        var tokenJson = JsonSerializer.Serialize(_settingsActionToken);
+        var script = $@"<script>
+(() => {{
+  const actionToken = {tokenJson};
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = (input, init = {{}}) => {{
+    const target = new URL(typeof input === 'string' ? input : input.url, window.location.href);
+    const method = String(init.method || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
+    if (target.origin === window.location.origin && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {{
+      const headers = new Headers(init.headers || (typeof input === 'object' ? input.headers : undefined));
+      headers.set('X-Keyboard-Wtf-Settings-Action', actionToken);
+      init = {{ ...init, headers }};
+    }}
+    return originalFetch(input, init);
+  }};
+}})();
+</script>";
+        var marker = "</head>";
+        var index = html.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        return index >= 0 ? html.Insert(index, script) : script + html;
+    }
 
     private async Task PreviewFilenameEndpoint(HttpListenerRequest req, HttpListenerResponse resp)
     {
@@ -1863,6 +2027,94 @@ public sealed class WebSettingsService : IDisposable
         }
     }
 
+    private async Task CheckForUpdate(HttpListenerResponse response)
+    {
+        try
+        {
+            var update = await _secureUpdates.CheckAsync(
+                _settings?.Current.UpdateChannel ?? "stable",
+                _cts?.Token ?? CancellationToken.None);
+            await WriteJson(response, update == null
+                ? new { ok = true, available = false, message = "keyboard.wtf is up to date." }
+                : new
+                {
+                    ok = true,
+                    available = true,
+                    version = update.Version.ToString(),
+                    channel = update.Channel,
+                    publishedAt = update.PublishedAt,
+                    releaseNotes = update.ReleaseNotes,
+                    signingKeyId = update.KeyId,
+                });
+        }
+        catch (Exception exception)
+        {
+            AppLog.Warning(exception, "Secure update check failed");
+            response.StatusCode = 503;
+            await WriteJson(response, new
+            {
+                ok = false,
+                available = false,
+                error = "The signed update feed could not be verified. No update was installed.",
+            });
+        }
+    }
+
+    private async Task DownloadAndInstallUpdate(HttpListenerResponse response)
+    {
+        if (!await _updateLock.WaitAsync(0))
+        {
+            response.StatusCode = 409;
+            await WriteJson(response, new { ok = false, error = "An update is already being prepared." });
+            return;
+        }
+        try
+        {
+            var update = await _secureUpdates.CheckAsync(
+                _settings?.Current.UpdateChannel ?? "stable",
+                _cts?.Token ?? CancellationToken.None);
+            if (update == null)
+            {
+                await WriteJson(response, new { ok = true, started = false, message = "keyboard.wtf is up to date." });
+                return;
+            }
+            var installer = await _secureUpdates.DownloadAsync(
+                update,
+                _cts?.Token ?? CancellationToken.None);
+            var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = installer,
+                Arguments = "/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS",
+                UseShellExecute = true,
+                WorkingDirectory = Path.GetDirectoryName(installer) ?? SettingsService.AppDataDir,
+            });
+            if (process == null)
+                throw new InvalidOperationException("Windows did not start the verified installer.");
+            await WriteJson(response, new
+            {
+                ok = true,
+                started = true,
+                version = update.Version.ToString(),
+                message = "The verified installer has started.",
+            });
+            _app?.RequestExitForUpdate();
+        }
+        catch (Exception exception)
+        {
+            AppLog.Warning(exception, "Secure update installation failed");
+            response.StatusCode = 503;
+            await WriteJson(response, new
+            {
+                ok = false,
+                error = "The update could not be verified or started. Your current installation was not changed.",
+            });
+        }
+        finally
+        {
+            _updateLock.Release();
+        }
+    }
+
     private int FindAvailablePort(int startPort)
     {
         for (var port = startPort; port < startPort + 200; port++)
@@ -1897,6 +2149,8 @@ public sealed class WebSettingsService : IDisposable
         catch { }
 
         _cts?.Dispose();
+        _secureUpdates.Dispose();
+        _updateLock.Dispose();
         IsRunning = false;
 
         AppLog.Info("WebSettingsService stopped");

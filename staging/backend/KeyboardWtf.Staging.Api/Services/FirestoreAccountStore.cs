@@ -4,7 +4,6 @@ using KeyboardWtf.Staging.Api.Domain;
 using KeyboardWtf.Staging.Api.Infrastructure;
 using Microsoft.Extensions.Options;
 using Grpc.Core;
-using System.Collections.Concurrent;
 
 namespace KeyboardWtf.Staging.Api.Services;
 
@@ -13,8 +12,6 @@ public sealed class FirestoreAccountStore : IAccountStore
     private readonly FirestoreDb _db;
     private readonly IClock _clock;
     private readonly PaidSystemOptions _options;
-    private readonly ConcurrentDictionary<string, long> _initializedGlobalQuotaDays = new();
-
     public FirestoreAccountStore(FirestoreDb db, IClock clock, IOptions<PaidSystemOptions> options)
     {
         _db = db;
@@ -43,6 +40,8 @@ public sealed class FirestoreAccountStore : IAccountStore
                     ["reservedCreditMicros"] = 0L,
                     ["creditDebtMicros"] = 0L,
                     ["cycleUsageCreditMicros"] = 0L,
+                    ["allowanceRulesVersion"] = AllowanceWallet.CurrentRulesVersion,
+                    ["allowanceBuckets"] = new Dictionary<string, object>(),
                     ["activeRequests"] = 0L,
                     ["rateWindowCount"] = 0L,
                     ["rateWindowStartedAt"] = now,
@@ -65,6 +64,7 @@ public sealed class FirestoreAccountStore : IAccountStore
 
     public async Task<AccountSnapshot> GetAccountAsync(string userId, CancellationToken cancellationToken)
     {
+        await NormalizeAllowanceWalletAsync(userId, cancellationToken);
         var accountSnapshot = await Account(userId).GetSnapshotAsync(cancellationToken);
         if (!accountSnapshot.Exists)
             throw new KeyNotFoundException("Account not found.");
@@ -137,6 +137,53 @@ public sealed class FirestoreAccountStore : IAccountStore
         return Snapshot(accountSnapshot.Id, account, devices, usage, purchases);
     }
 
+    private Task NormalizeAllowanceWalletAsync(string userId, CancellationToken cancellationToken)
+    {
+        var accountRef = Account(userId);
+        var now = _clock.UtcNow;
+        return _db.RunTransactionAsync(async transaction =>
+        {
+            var snapshot = await transaction.GetSnapshotAsync(accountRef, cancellationToken);
+            if (!snapshot.Exists)
+                throw new KeyNotFoundException("Account not found.");
+            var account = snapshot.ToDictionary();
+            var wallet = AllowanceWallet.FromAccount(account, now);
+            var requiresMigration = !string.Equals(
+                String(account, "allowanceRulesVersion", ""),
+                AllowanceWallet.CurrentRulesVersion,
+                StringComparison.Ordinal);
+            var aggregateChanged = wallet.AvailableCreditMicros != Long(account, "availableCreditMicros")
+                || wallet.ReservedCreditMicros != Long(account, "reservedCreditMicros");
+            if (!requiresMigration && !aggregateChanged && wallet.NewlyExpired.Count == 0)
+                return 0;
+
+            foreach (var expiration in wallet.NewlyExpired)
+            {
+                var eventId = $"expire_{expiration.BucketId}";
+                transaction.Create(accountRef.Collection("ledger").Document(eventId), LedgerMap(new LedgerEntry(
+                    eventId,
+                    LedgerTypes.Expiration,
+                    -expiration.CreditMicros,
+                    0,
+                    "allowance-bucket",
+                    expiration.BucketId,
+                    Crypto.Sha256($"allowance-expiration:{userId}:{expiration.BucketId}"),
+                    "system",
+                    "Subscription allowance expired at its billing-cycle boundary",
+                    now)));
+            }
+            transaction.Update(accountRef, new Dictionary<string, object>
+            {
+                ["availableCreditMicros"] = wallet.AvailableCreditMicros,
+                ["reservedCreditMicros"] = wallet.ReservedCreditMicros,
+                ["allowanceRulesVersion"] = AllowanceWallet.CurrentRulesVersion,
+                ["allowanceBuckets"] = wallet.ToFirestoreMap(),
+                ["updatedAt"] = Ts(now),
+            });
+            return 0;
+        }, cancellationToken: cancellationToken);
+    }
+
     public async Task<ReservationResult> ReserveAsync(
         CallerIdentity caller,
         string requestId,
@@ -175,11 +222,10 @@ public sealed class FirestoreAccountStore : IAccountStore
             requestId,
             _options.GlobalUsageShardCount);
         var globalShardId = $"{globalUsageDate}-{globalShardIndex:D3}";
-        var globalShardCap = GlobalUsageShardCap(
-            shardedDailyCap,
-            _options.GlobalUsageShardCount,
-            globalShardIndex);
         var globalRef = _db.Collection("globalUsageShards").Document(globalShardId);
+        var globalMarkerRef = _db.Collection("globalUsageMigrations").Document(globalUsageDate);
+        var legacyGlobalRef = _db.Collection("globalUsage").Document(globalUsageDate);
+        var userDailyRef = accountRef.Collection("dailyUsage").Document(globalUsageDate);
 
         async Task<bool> ExecuteReservationTransactionAsync() =>
             await _db.RunTransactionAsync(async transaction =>
@@ -194,9 +240,8 @@ public sealed class FirestoreAccountStore : IAccountStore
             var account = accountSnapshot.ToDictionary();
             if (!string.Equals(String(account, "status", "active"), "active", StringComparison.Ordinal))
                 throw new InvalidOperationException("The account is not active.");
-            var available = Long(account, "availableCreditMicros");
-            if (available < reserveCreditMicros)
-                throw new InvalidOperationException("No usable credits are available. Add credits to continue.");
+            var wallet = AllowanceWallet.FromAccount(account, now);
+            var allowanceAllocations = wallet.Reserve(reserveCreditMicros);
 
             var activeRequests = Long(account, "activeRequests");
             if (activeRequests >= maxConcurrent)
@@ -212,11 +257,32 @@ public sealed class FirestoreAccountStore : IAccountStore
             if (rateCount >= requestsPerMinute)
                 throw new InvalidOperationException("The per-minute request limit has been reached. Try again shortly.");
 
+            var globalMarkerSnapshot = await transaction.GetSnapshotAsync(globalMarkerRef, cancellationToken);
+            var legacyGlobalSnapshot = await transaction.GetSnapshotAsync(legacyGlobalRef, cancellationToken);
             var globalSnapshot = await transaction.GetSnapshotAsync(globalRef, cancellationToken);
+            if (!globalMarkerSnapshot.Exists)
+                throw new InvalidOperationException("The daily quota shard migration marker is unavailable.");
+            var effectiveShardedCap = EffectiveShardedDailyCap(
+                globalMarkerSnapshot.ToDictionary(),
+                legacyGlobalSnapshot.Exists ? legacyGlobalSnapshot.ToDictionary() : [],
+                globalDailyCap,
+                _options.GlobalUsageShardCount);
+            if (effectiveShardedCap <= 0)
+                throw new InvalidOperationException("The staging daily spending cap has been reached.");
+            var globalShardCap = GlobalUsageShardCap(
+                effectiveShardedCap,
+                _options.GlobalUsageShardCount,
+                globalShardIndex);
             var global = globalSnapshot.Exists ? globalSnapshot.ToDictionary() : [];
             var globalCommitted = Long(global, "settledCreditMicros") + Long(global, "reservedCreditMicros");
             if (globalCommitted + reserveCreditMicros > globalShardCap)
                 throw new InvalidOperationException("The staging daily spending cap has been reached.");
+            var userDailySnapshot = await transaction.GetSnapshotAsync(userDailyRef, cancellationToken);
+            var userDaily = userDailySnapshot.Exists ? userDailySnapshot.ToDictionary() : [];
+            var userDailyCommitted = Long(userDaily, "settledCreditMicros")
+                + Long(userDaily, "reservedCreditMicros");
+            if (userDailyCommitted + reserveCreditMicros > _options.PerUserDailyCreditMicrosCap)
+                throw new InvalidOperationException("The account daily AI spending cap has been reached.");
 
             var eventId = $"reserve_{SafeId(requestId)}";
             transaction.Create(reservationRef, new Dictionary<string, object>
@@ -230,6 +296,8 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ["globalUsageShardId"] = globalShardId,
                 ["taskCapCreditMicros"] = taskCapCreditMicros,
                 ["accountingVersion"] = 2,
+                ["allowanceRulesVersion"] = AllowanceWallet.CurrentRulesVersion,
+                ["allowanceAllocations"] = AllowanceWallet.AllocationMap(allowanceAllocations),
                 ["status"] = "reserved",
                 ["expiresAt"] = Ts(expiresAt),
                 ["createdAt"] = Ts(now),
@@ -261,10 +329,21 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ["shardIndex"] = globalShardIndex,
                 ["updatedAt"] = Ts(now),
             }, SetOptions.MergeAll);
+            transaction.Set(userDailyRef, new Dictionary<string, object>
+            {
+                ["userId"] = caller.UserId,
+                ["date"] = globalUsageDate,
+                ["reservedCreditMicros"] = FieldValue.Increment(reserveCreditMicros),
+                ["settledCreditMicros"] = Long(userDaily, "settledCreditMicros"),
+                ["dailyCapCreditMicros"] = _options.PerUserDailyCreditMicrosCap,
+                ["updatedAt"] = Ts(now),
+            }, SetOptions.MergeAll);
             transaction.Update(accountRef, new Dictionary<string, object>
             {
-                ["availableCreditMicros"] = available - reserveCreditMicros,
-                ["reservedCreditMicros"] = Long(account, "reservedCreditMicros") + reserveCreditMicros,
+                ["availableCreditMicros"] = wallet.AvailableCreditMicros,
+                ["reservedCreditMicros"] = wallet.ReservedCreditMicros,
+                ["allowanceRulesVersion"] = AllowanceWallet.CurrentRulesVersion,
+                ["allowanceBuckets"] = wallet.ToFirestoreMap(),
                 ["activeRequests"] = activeRequests + 1,
                 ["rateWindowStartedAt"] = Ts(windowStartedAt),
                 ["rateWindowCount"] = rateCount + 1,
@@ -327,6 +406,10 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ? _db.Collection("globalUsage").Document(
                     String(reservation, "globalUsageDate", now.ToString("yyyyMMdd")))
                 : _db.Collection("globalUsageShards").Document(globalShardId);
+            var userDailyRef = accountRef.Collection("dailyUsage").Document(
+                String(reservation, "globalUsageDate", now.ToString("yyyyMMdd")));
+            var userDailySnapshot = await transaction.GetSnapshotAsync(userDailyRef, cancellationToken);
+            var userDaily = userDailySnapshot.Exists ? userDailySnapshot.ToDictionary() : [];
             var reserved = Long(reservation, "reservedCreditMicros");
             if (Long(reservation, "accountingVersion") >= 2)
             {
@@ -350,13 +433,31 @@ public sealed class FirestoreAccountStore : IAccountStore
             }
 
             var charged = Math.Max(0, actualCreditMicros);
-            var reservedConsumed = Math.Min(charged, reserved);
-            var released = reserved - reservedConsumed;
-            var overage = Math.Max(0, charged - reserved);
             var availableBeforeSettlement = Long(account, "availableCreditMicros");
-            var additionalAvailableCharge = Math.Min(overage, availableBeforeSettlement);
-            var debtAdded = overage - additionalAvailableCharge;
-            var availableDelta = released - additionalAvailableCharge;
+            var allocations = AllowanceWallet.ReadAllocations(reservation);
+            var bucketedSettlement = allocations.Count > 0;
+            var wallet = AllowanceWallet.FromAccount(account, now);
+            long released;
+            long debtAdded;
+            long availableDelta;
+            if (bucketedSettlement)
+            {
+                (released, debtAdded) = wallet.Settle(allocations, charged);
+                availableDelta = wallet.AvailableCreditMicros - availableBeforeSettlement;
+            }
+            else
+            {
+                // Backward-compatible settlement for a reservation created before
+                // allowance-v1 was introduced. New reservations always carry an
+                // immutable bucket allocation.
+                var reservedConsumed = Math.Min(charged, reserved);
+                released = reserved - reservedConsumed;
+                var legacyOverage = Math.Max(0, charged - reserved);
+                var additionalAvailableCharge = Math.Min(legacyOverage, availableBeforeSettlement);
+                debtAdded = legacyOverage - additionalAvailableCharge;
+                availableDelta = released - additionalAvailableCharge;
+            }
+            var overage = Math.Max(0, charged - reserved);
             var eventId = $"settle_{SafeId(requestId)}";
             transaction.Create(accountRef.Collection("ledger").Document(eventId), LedgerMap(new LedgerEntry(
                 eventId,
@@ -418,19 +519,35 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ["outcome"] = outcome,
                 ["updatedAt"] = Ts(now),
             });
-            transaction.Update(accountRef, new Dictionary<string, object>
+            var accountUpdates = new Dictionary<string, object>
             {
-                ["availableCreditMicros"] = Math.Max(0, availableBeforeSettlement + availableDelta),
-                ["reservedCreditMicros"] = Math.Max(0, Long(account, "reservedCreditMicros") - reserved),
+                ["availableCreditMicros"] = bucketedSettlement
+                    ? wallet.AvailableCreditMicros
+                    : Math.Max(0, availableBeforeSettlement + availableDelta),
+                ["reservedCreditMicros"] = bucketedSettlement
+                    ? wallet.ReservedCreditMicros
+                    : Math.Max(0, Long(account, "reservedCreditMicros") - reserved),
                 ["cycleUsageCreditMicros"] = Long(account, "cycleUsageCreditMicros") + charged,
                 ["creditDebtMicros"] = Long(account, "creditDebtMicros") + debtAdded,
                 ["activeRequests"] = Math.Max(0, Long(account, "activeRequests") - 1),
                 ["updatedAt"] = Ts(now),
-            });
+            };
+            if (bucketedSettlement)
+            {
+                accountUpdates["allowanceRulesVersion"] = AllowanceWallet.CurrentRulesVersion;
+                accountUpdates["allowanceBuckets"] = wallet.ToFirestoreMap();
+            }
+            transaction.Update(accountRef, accountUpdates);
             transaction.Set(globalRef, new Dictionary<string, object>
             {
                 ["reservedCreditMicros"] = FieldValue.Increment(-reserved),
                 ["settledCreditMicros"] = FieldValue.Increment(charged),
+                ["updatedAt"] = Ts(now),
+            }, SetOptions.MergeAll);
+            transaction.Set(userDailyRef, new Dictionary<string, object>
+            {
+                ["reservedCreditMicros"] = Math.Max(0, Long(userDaily, "reservedCreditMicros") - reserved),
+                ["settledCreditMicros"] = Long(userDaily, "settledCreditMicros") + charged,
                 ["updatedAt"] = Ts(now),
             }, SetOptions.MergeAll);
             return (Settled: true, Charged: charged, Released: released);
@@ -468,6 +585,134 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ["updatedAt"] = Ts(now),
             });
             return 0;
+        }, cancellationToken: cancellationToken);
+    }
+
+    public Task<long> EnsureReservationCapacityAsync(
+        string userId,
+        string requestId,
+        long targetReservedCreditMicros,
+        CancellationToken cancellationToken)
+    {
+        if (targetReservedCreditMicros <= 0)
+            throw new ArgumentOutOfRangeException(nameof(targetReservedCreditMicros));
+        var accountRef = Account(userId);
+        var reservationRef = accountRef.Collection("reservations").Document(SafeId(requestId));
+        var now = _clock.UtcNow;
+        return _db.RunTransactionAsync(async transaction =>
+        {
+            var accountSnapshot = await transaction.GetSnapshotAsync(accountRef, cancellationToken);
+            var reservationSnapshot = await transaction.GetSnapshotAsync(reservationRef, cancellationToken);
+            if (!accountSnapshot.Exists || !reservationSnapshot.Exists)
+                throw new InvalidOperationException("The usage reservation no longer exists.");
+            var account = accountSnapshot.ToDictionary();
+            var reservation = reservationSnapshot.ToDictionary();
+            if (!string.Equals(String(reservation, "status", ""), "reserved", StringComparison.Ordinal))
+                throw new InvalidOperationException("The usage reservation is no longer active.");
+
+            var current = Long(reservation, "reservedCreditMicros");
+            if (targetReservedCreditMicros <= current)
+                return current;
+            var taskCap = Long(reservation, "taskCapCreditMicros");
+            if (targetReservedCreditMicros > taskCap)
+                throw new InvalidOperationException("The Live session reached its approved server budget.");
+            var additional = targetReservedCreditMicros - current;
+            var available = Long(account, "availableCreditMicros");
+            if (available < additional)
+                throw new InvalidOperationException("The account has insufficient credit to continue this Live session.");
+            var currentAllocations = AllowanceWallet.ReadAllocations(reservation);
+            var bucketedReservation = currentAllocations.Count > 0;
+            var wallet = AllowanceWallet.FromAccount(account, now);
+            var updatedAllocations = bucketedReservation
+                ? wallet.Extend(currentAllocations, additional)
+                : currentAllocations;
+
+            var globalShardId = String(reservation, "globalUsageShardId", "");
+            if (string.IsNullOrWhiteSpace(globalShardId))
+                throw new InvalidOperationException("The rolling reservation has no global budget shard.");
+            var globalRef = _db.Collection("globalUsageShards").Document(globalShardId);
+            var globalUsageDate = String(reservation, "globalUsageDate", now.ToString("yyyyMMdd"));
+            var globalMarkerRef = _db.Collection("globalUsageMigrations").Document(globalUsageDate);
+            var legacyGlobalRef = _db.Collection("globalUsage").Document(globalUsageDate);
+            var globalMarkerSnapshot = await transaction.GetSnapshotAsync(globalMarkerRef, cancellationToken);
+            var legacyGlobalSnapshot = await transaction.GetSnapshotAsync(legacyGlobalRef, cancellationToken);
+            var globalSnapshot = await transaction.GetSnapshotAsync(globalRef, cancellationToken);
+            if (!globalSnapshot.Exists || !globalMarkerSnapshot.Exists)
+                throw new InvalidOperationException("The rolling reservation budget shard is unavailable.");
+            var global = globalSnapshot.ToDictionary();
+            var shardIndex = checked((int)Long(global, "shardIndex"));
+            var effectiveShardedCap = EffectiveShardedDailyCap(
+                globalMarkerSnapshot.ToDictionary(),
+                legacyGlobalSnapshot.Exists ? legacyGlobalSnapshot.ToDictionary() : [],
+                _options.GlobalDailyCreditMicrosCap,
+                _options.GlobalUsageShardCount);
+            if (effectiveShardedCap <= 0)
+                throw new InvalidOperationException("The daily provider spending cap has been reached.");
+            var effectiveShardCap = GlobalUsageShardCap(
+                effectiveShardedCap,
+                _options.GlobalUsageShardCount,
+                shardIndex);
+            var globalCommitted = Long(global, "settledCreditMicros") + Long(global, "reservedCreditMicros");
+            if (globalCommitted + additional > effectiveShardCap)
+                throw new InvalidOperationException("The daily provider spending cap has been reached.");
+            var userDailyRef = accountRef.Collection("dailyUsage").Document(
+                globalUsageDate);
+            var userDailySnapshot = await transaction.GetSnapshotAsync(userDailyRef, cancellationToken);
+            var userDaily = userDailySnapshot.Exists ? userDailySnapshot.ToDictionary() : [];
+            var userDailyCommitted = Long(userDaily, "settledCreditMicros")
+                + Long(userDaily, "reservedCreditMicros");
+            if (userDailyCommitted + additional > _options.PerUserDailyCreditMicrosCap)
+                throw new InvalidOperationException("The account daily AI spending cap has been reached.");
+
+            var eventId = $"reserveext_{SafeId(requestId)}_{targetReservedCreditMicros}";
+            transaction.Create(accountRef.Collection("ledger").Document(eventId), LedgerMap(new LedgerEntry(
+                eventId,
+                LedgerTypes.UsageReservation,
+                -additional,
+                additional,
+                "usage",
+                requestId,
+                Crypto.Sha256($"usage-reserve-extension:{userId}:{requestId}:{targetReservedCreditMicros}"),
+                userId,
+                "Live request budget extended",
+                now)));
+            transaction.Update(reservationRef, new Dictionary<string, object>
+            {
+                ["reservedCreditMicros"] = targetReservedCreditMicros,
+                ["allowanceAllocations"] = bucketedReservation
+                    ? AllowanceWallet.AllocationMap(updatedAllocations)
+                    : Array.Empty<object>(),
+                ["updatedAt"] = Ts(now),
+            });
+            var accountUpdates = new Dictionary<string, object>
+            {
+                ["availableCreditMicros"] = bucketedReservation
+                    ? wallet.AvailableCreditMicros
+                    : available - additional,
+                ["reservedCreditMicros"] = bucketedReservation
+                    ? wallet.ReservedCreditMicros
+                    : Long(account, "reservedCreditMicros") + additional,
+                ["updatedAt"] = Ts(now),
+            };
+            if (bucketedReservation)
+            {
+                accountUpdates["allowanceRulesVersion"] = AllowanceWallet.CurrentRulesVersion;
+                accountUpdates["allowanceBuckets"] = wallet.ToFirestoreMap();
+            }
+            transaction.Update(accountRef, accountUpdates);
+            transaction.Set(globalRef, new Dictionary<string, object>
+            {
+                ["reservedCreditMicros"] = FieldValue.Increment(additional),
+                ["updatedAt"] = Ts(now),
+            }, SetOptions.MergeAll);
+            transaction.Set(userDailyRef, new Dictionary<string, object>
+            {
+                ["reservedCreditMicros"] = FieldValue.Increment(additional),
+                ["settledCreditMicros"] = Long(userDaily, "settledCreditMicros"),
+                ["dailyCapCreditMicros"] = _options.PerUserDailyCreditMicrosCap,
+                ["updatedAt"] = Ts(now),
+            }, SetOptions.MergeAll);
+            return targetReservedCreditMicros;
         }, cancellationToken: cancellationToken);
     }
 
@@ -585,16 +830,24 @@ public sealed class FirestoreAccountStore : IAccountStore
                     "A reservation cannot be released after provider dispatch without authoritative no-charge evidence.");
             var account = accountSnapshot.ToDictionary();
             var reserved = Long(reservation, "reservedCreditMicros");
+            var allocations = AllowanceWallet.ReadAllocations(reservation);
+            var bucketedReservation = allocations.Count > 0;
+            var wallet = AllowanceWallet.FromAccount(account, now);
+            var returnedToAvailable = bucketedReservation ? wallet.Release(allocations) : reserved;
             var globalShardId = String(reservation, "globalUsageShardId", "");
             var globalRef = string.IsNullOrWhiteSpace(globalShardId)
                 ? _db.Collection("globalUsage").Document(
                     String(reservation, "globalUsageDate", now.ToString("yyyyMMdd")))
                 : _db.Collection("globalUsageShards").Document(globalShardId);
+            var userDailyRef = accountRef.Collection("dailyUsage").Document(
+                String(reservation, "globalUsageDate", now.ToString("yyyyMMdd")));
+            var userDailySnapshot = await transaction.GetSnapshotAsync(userDailyRef, cancellationToken);
+            var userDaily = userDailySnapshot.Exists ? userDailySnapshot.ToDictionary() : [];
             var eventId = $"release_{SafeId(requestId)}";
             transaction.Create(accountRef.Collection("ledger").Document(eventId), LedgerMap(new LedgerEntry(
                 eventId,
                 LedgerTypes.ReservationRelease,
-                reserved,
+                returnedToAvailable,
                 -reserved,
                 "usage",
                 requestId,
@@ -612,20 +865,36 @@ public sealed class FirestoreAccountStore : IAccountStore
             transaction.Update(reservationRef, new Dictionary<string, object>
             {
                 ["status"] = "released",
-                ["releasedCreditMicros"] = reserved,
+                ["releasedCreditMicros"] = returnedToAvailable,
                 ["outcome"] = outcome,
                 ["updatedAt"] = Ts(now),
             });
-            transaction.Update(accountRef, new Dictionary<string, object>
+            var accountUpdates = new Dictionary<string, object>
             {
-                ["availableCreditMicros"] = Long(account, "availableCreditMicros") + reserved,
-                ["reservedCreditMicros"] = Math.Max(0, Long(account, "reservedCreditMicros") - reserved),
+                ["availableCreditMicros"] = bucketedReservation
+                    ? wallet.AvailableCreditMicros
+                    : Long(account, "availableCreditMicros") + reserved,
+                ["reservedCreditMicros"] = bucketedReservation
+                    ? wallet.ReservedCreditMicros
+                    : Math.Max(0, Long(account, "reservedCreditMicros") - reserved),
                 ["activeRequests"] = Math.Max(0, Long(account, "activeRequests") - 1),
                 ["updatedAt"] = Ts(now),
-            });
+            };
+            if (bucketedReservation)
+            {
+                accountUpdates["allowanceRulesVersion"] = AllowanceWallet.CurrentRulesVersion;
+                accountUpdates["allowanceBuckets"] = wallet.ToFirestoreMap();
+            }
+            transaction.Update(accountRef, accountUpdates);
             transaction.Set(globalRef, new Dictionary<string, object>
             {
                 ["reservedCreditMicros"] = FieldValue.Increment(-reserved),
+                ["updatedAt"] = Ts(now),
+            }, SetOptions.MergeAll);
+            transaction.Set(userDailyRef, new Dictionary<string, object>
+            {
+                ["reservedCreditMicros"] = Math.Max(0, Long(userDaily, "reservedCreditMicros") - reserved),
+                ["settledCreditMicros"] = Long(userDaily, "settledCreditMicros"),
                 ["updatedAt"] = Ts(now),
             }, SetOptions.MergeAll);
             return 0;
@@ -968,6 +1237,68 @@ public sealed class FirestoreAccountStore : IAccountStore
         await batch.CommitAsync(cancellationToken);
     }
 
+    public async Task DeleteAccountOperationalDataAsync(
+        string userId,
+        CancellationToken cancellationToken)
+    {
+        var accountRef = Account(userId);
+        var now = _clock.UtcNow;
+        await _db.RunTransactionAsync(async transaction =>
+        {
+            var snapshot = await transaction.GetSnapshotAsync(accountRef, cancellationToken);
+            if (!snapshot.Exists)
+                return 0;
+            var account = snapshot.ToDictionary();
+            if (Long(account, "activeRequests") > 0)
+                throw new InvalidOperationException(
+                    "An AI request is still being reconciled. Cancel it or wait for cleanup before deleting the account.");
+            transaction.Update(accountRef, new Dictionary<string, object>
+            {
+                ["email"] = "",
+                ["displayName"] = "Deleted user",
+                ["status"] = "deleted",
+                ["personalDataDeleted"] = true,
+                ["deletedAt"] = Ts(now),
+                ["updatedAt"] = Ts(now),
+            });
+            var eventId = "account_deleted";
+            transaction.Set(accountRef.Collection("audit").Document(eventId), new Dictionary<string, object>
+            {
+                ["type"] = "ACCOUNT_DELETED",
+                ["actor"] = "account-owner",
+                ["reason"] = "User-requested account deletion",
+                ["createdAt"] = Ts(now),
+            }, SetOptions.MergeAll);
+            return 0;
+        }, cancellationToken: cancellationToken);
+
+        await DeleteQueryAsync(
+            accountRef.Collection("devices").Limit(400),
+            cancellationToken);
+        await DeleteQueryAsync(
+            _db.Collection("desktopSessions").WhereEqualTo("userId", userId).Limit(400),
+            cancellationToken);
+        await DeleteQueryAsync(
+            _db.Collection("desktopLoginAttempts").WhereEqualTo("userId", userId).Limit(400),
+            cancellationToken);
+    }
+
+    private async Task DeleteQueryAsync(Query query, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var snapshot = await query.GetSnapshotAsync(cancellationToken);
+            if (snapshot.Count == 0)
+                return;
+            var batch = _db.StartBatch();
+            foreach (var document in snapshot.Documents)
+                batch.Delete(document.Reference);
+            await batch.CommitAsync(cancellationToken);
+            if (snapshot.Count < 400)
+                return;
+        }
+    }
+
     public async Task<string?> FindUserIdByEmailAsync(string email, CancellationToken cancellationToken)
     {
         var results = await _db.Collection("accounts")
@@ -1000,6 +1331,18 @@ public sealed class FirestoreAccountStore : IAccountStore
             if (idempotencySnapshot.Exists)
                 return 0;
             var account = accountSnapshot.ToDictionary();
+            if (Long(account, "availableCreditMicros") + creditMicros > _options.MaxAccountCreditMicros)
+                throw new InvalidOperationException("The account balance cap would be exceeded.");
+            var wallet = AllowanceWallet.FromAccount(account, now);
+            var debt = Long(account, "creditDebtMicros");
+            wallet.AddCredit(
+                "administrative",
+                "admin-grant",
+                idempotencyRef.Id,
+                creditMicros,
+                0,
+                now,
+                ref debt);
             var eventId = $"grant_{Crypto.RandomToken(12)}";
             transaction.Create(accountRef.Collection("ledger").Document(eventId), LedgerMap(new LedgerEntry(
                 eventId,
@@ -1022,7 +1365,11 @@ public sealed class FirestoreAccountStore : IAccountStore
             });
             transaction.Update(accountRef, new Dictionary<string, object>
             {
-                ["availableCreditMicros"] = Long(account, "availableCreditMicros") + creditMicros,
+                ["availableCreditMicros"] = wallet.AvailableCreditMicros,
+                ["reservedCreditMicros"] = wallet.ReservedCreditMicros,
+                ["creditDebtMicros"] = debt,
+                ["allowanceRulesVersion"] = AllowanceWallet.CurrentRulesVersion,
+                ["allowanceBuckets"] = wallet.ToFirestoreMap(),
                 ["updatedAt"] = Ts(now),
             });
             return 0;
@@ -1054,6 +1401,8 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ["productSku"] = product.Sku,
                 ["kind"] = product.Kind,
                 ["provider"] = "razorpay",
+                ["environment"] = DeploymentSafety.ProviderEnvironment(
+                    _options.DeploymentEnvironment),
                 ["providerObjectId"] = "",
                 ["providerObjectType"] = "",
                 ["status"] = "creating",
@@ -1314,7 +1663,11 @@ public sealed class FirestoreAccountStore : IAccountStore
                 providerPaymentId,
                 providerAmountMinor,
                 providerCurrency,
-                providerProductSku);
+                providerProductSku,
+                DeploymentSafety.ProviderEnvironment(_options.DeploymentEnvironment),
+                subscriptionCycleEndsAt,
+                Long(accountData, "availableCreditMicros"),
+                _options.MaxAccountCreditMicros);
             if (evidenceRejection is not null)
             {
                 transaction.Update(purchaseRef, new Dictionary<string, object>
@@ -1394,15 +1747,72 @@ public sealed class FirestoreAccountStore : IAccountStore
             var requestedReversalCreditMicros = shouldReverse
                 ? ReversalCreditMicros(eventType, providerAmountMinor, purchaseAmountMinor, creditMicros)
                 : 0;
-            var balanceChange = CalculatePaymentBalanceChange(
-                Long(accountData, "availableCreditMicros"),
-                Long(accountData, "creditDebtMicros"),
-                shouldCredit ? creditMicros : 0,
-                requestedReversalCreditMicros,
-                previouslyReversedCreditMicros,
-                reversalBasisCreditMicros);
-            var reversalCreditMicros = balanceChange.ReversalCreditMicros;
-            var delta = balanceChange.AvailableDeltaMicros;
+            var wallet = AllowanceWallet.FromAccount(accountData, now);
+            var availableBeforePayment = wallet.AvailableCreditMicros;
+            var creditDebtMicros = Long(accountData, "creditDebtMicros");
+            var allowanceSourceId = !string.IsNullOrWhiteSpace(providerPaymentId)
+                ? providerPaymentId!
+                : providerEventObjectId ?? purchase.Id;
+            string? allowanceBucketId = null;
+            if (shouldCredit)
+            {
+                allowanceBucketId = wallet.AddCredit(
+                    purchaseKind == "subscription" ? "subscription" : "topup",
+                    "razorpay-payment",
+                    allowanceSourceId,
+                    creditMicros,
+                    purchaseKind == "subscription"
+                        ? subscriptionCycleEndsAt?.ToUnixTimeSeconds() ?? 0
+                        : 0,
+                    now,
+                    ref creditDebtMicros);
+            }
+            var reversalCreditMicros = shouldReverse && !string.IsNullOrWhiteSpace(providerPaymentId)
+                ? wallet.Reverse(
+                    "razorpay-payment",
+                    providerPaymentId!,
+                    Math.Min(
+                        requestedReversalCreditMicros,
+                        Math.Max(0, reversalBasisCreditMicros - previouslyReversedCreditMicros)),
+                    ref creditDebtMicros)
+                : 0;
+            if (shouldReverse && requestedReversalCreditMicros > 0 && reversalCreditMicros == 0)
+            {
+                const string category = "allowance_source_missing";
+                transaction.Update(purchaseRef, new Dictionary<string, object>
+                {
+                    ["reconciliationStatus"] = "payment_review",
+                    ["lastPaymentRejection"] = category,
+                    ["updatedAt"] = Ts(now),
+                });
+                transaction.Set(eventRef, new Dictionary<string, object>
+                {
+                    ["provider"] = "razorpay",
+                    ["eventId"] = eventId,
+                    ["eventType"] = eventType,
+                    ["status"] = "rejected",
+                    ["outcome"] = category,
+                    ["userId"] = userId,
+                    ["purchaseId"] = purchase.Id,
+                    ["providerObjectId"] = providerObjectId,
+                    ["providerEventObjectId"] = providerEventObjectId ?? "",
+                    ["providerAmountMinor"] = providerAmountMinor ?? 0,
+                    ["createdAt"] = Ts(now),
+                });
+                transaction.Set(mismatchIssueRef, new Dictionary<string, object>
+                {
+                    ["kind"] = "payment",
+                    ["category"] = category,
+                    ["resourcePathHash"] = Crypto.Sha256(purchaseRef.Path),
+                    ["purchaseIdHash"] = Crypto.Sha256(purchase.Id),
+                    ["providerEventIdHash"] = Crypto.Sha256(eventId),
+                    ["status"] = "open",
+                    ["firstObservedAt"] = Ts(now),
+                    ["lastObservedAt"] = Ts(now),
+                }, SetOptions.MergeAll);
+                return category;
+            }
+            var delta = wallet.AvailableCreditMicros - availableBeforePayment;
             if (shouldCredit || reversalCreditMicros > 0)
             {
                 var ledgerId = $"payment_{Crypto.Sha256(eventId)[..24]}";
@@ -1423,7 +1833,8 @@ public sealed class FirestoreAccountStore : IAccountStore
                         ["providerEventObjectId"] = providerEventObjectId,
                         ["providerAmountMinor"] = providerAmountMinor,
                         ["grossCreditMicros"] = shouldCredit ? creditMicros : 0,
-                        ["creditDebtMicrosAfter"] = balanceChange.NewDebtMicros,
+                        ["creditDebtMicrosAfter"] = creditDebtMicros,
+                        ["allowanceBucketId"] = allowanceBucketId ?? "",
                     })));
             }
             if (shouldCredit && recurringFulfillmentRef is not null)
@@ -1437,6 +1848,8 @@ public sealed class FirestoreAccountStore : IAccountStore
                     ["providerPaymentId"] = providerPaymentId ?? "",
                     ["creditMicros"] = creditMicros,
                     ["reversedCreditMicros"] = 0L,
+                    ["allowanceBucketId"] = allowanceBucketId ?? "",
+                    ["cycleEndsAtUnix"] = subscriptionCycleEndsAt?.ToUnixTimeSeconds() ?? 0,
                     ["createdAt"] = Ts(now),
                 });
 
@@ -1459,10 +1872,11 @@ public sealed class FirestoreAccountStore : IAccountStore
                 };
                 if (shouldCredit || reversalCreditMicros > 0)
                 {
-                    accountUpdates["availableCreditMicros"] = Math.Max(
-                        0,
-                        Long(accountData, "availableCreditMicros") + delta);
-                    accountUpdates["creditDebtMicros"] = balanceChange.NewDebtMicros;
+                    accountUpdates["availableCreditMicros"] = wallet.AvailableCreditMicros;
+                    accountUpdates["reservedCreditMicros"] = wallet.ReservedCreditMicros;
+                    accountUpdates["creditDebtMicros"] = creditDebtMicros;
+                    accountUpdates["allowanceRulesVersion"] = AllowanceWallet.CurrentRulesVersion;
+                    accountUpdates["allowanceBuckets"] = wallet.ToFirestoreMap();
                 }
                 if (recurringCharge && shouldCredit)
                 {
@@ -1537,11 +1951,26 @@ public sealed class FirestoreAccountStore : IAccountStore
         string? providerPaymentId,
         long? providerAmountMinor,
         string? providerCurrency,
-        string? providerProductSku)
+        string? providerProductSku,
+        string? expectedEnvironment = null,
+        DateTimeOffset? subscriptionCycleEndsAt = null,
+        long? currentAvailableCreditMicros = null,
+        long? maxAccountCreditMicros = null)
     {
         var recordedUserId = String(purchase, "userId", accountUserId);
         if (!string.Equals(recordedUserId, accountUserId, StringComparison.Ordinal))
             return "purchase_owner_mismatch";
+
+        var recordedEnvironment = String(purchase, "environment", "");
+        if (!string.IsNullOrWhiteSpace(expectedEnvironment))
+        {
+            if (string.IsNullOrWhiteSpace(recordedEnvironment)
+                && string.Equals(expectedEnvironment, "production", StringComparison.Ordinal))
+                return "purchase_environment_missing";
+            if (!string.IsNullOrWhiteSpace(recordedEnvironment)
+                && !string.Equals(recordedEnvironment, expectedEnvironment, StringComparison.Ordinal))
+                return "purchase_environment_mismatch";
+        }
 
         var attachedObjectId = String(purchase, "providerObjectId", "");
         var attachedPaymentId = String(purchase, "providerPaymentId", "");
@@ -1557,6 +1986,15 @@ public sealed class FirestoreAccountStore : IAccountStore
         var creditEvent = IsCreditEvent(eventType, purchaseKind);
         if (creditEvent)
         {
+            if (currentAvailableCreditMicros is long available
+                && maxAccountCreditMicros is long maximum
+                && maximum > 0
+                && available + Long(purchase, "creditMicros") > maximum)
+                return "account_balance_cap_exceeded";
+            if (string.Equals(eventType, "subscription.charged", StringComparison.Ordinal)
+                && (subscriptionCycleEndsAt is null
+                    || subscriptionCycleEndsAt <= DateTimeOffset.UnixEpoch))
+                return "subscription_cycle_end_missing";
             if (providerAmountMinor is null || providerAmountMinor <= 0)
                 return "payment_amount_missing";
             if (providerAmountMinor.Value != Long(purchase, "amountMinor"))
@@ -1605,8 +2043,6 @@ public sealed class FirestoreAccountStore : IAccountStore
         int shardCount,
         CancellationToken cancellationToken)
     {
-        if (_initializedGlobalQuotaDays.TryGetValue(date, out var cachedCap))
-            return cachedCap;
         var markerRef = _db.Collection("globalUsageMigrations").Document(date);
         var legacyRef = _db.Collection("globalUsage").Document(date);
         var shardedCap = await _db.RunTransactionAsync(async transaction =>
@@ -1624,14 +2060,11 @@ public sealed class FirestoreAccountStore : IAccountStore
                 // allowing the aggregate daily commitment to exceed the cap.
                 var currentLegacy = await transaction.GetSnapshotAsync(legacyRef, cancellationToken);
                 var currentLegacyData = currentLegacy.Exists ? currentLegacy.ToDictionary() : [];
-                var currentLegacyCommitted = checked(
-                    Math.Max(0, Long(currentLegacyData, "reservedCreditMicros"))
-                    + Math.Max(0, Long(currentLegacyData, "settledCreditMicros")));
-                var cutoverLegacyCommitted = Long(markerData, "legacyCommittedCreditMicrosAtCutover");
-                var postCutoverLegacyIncrease = Math.Max(0, currentLegacyCommitted - cutoverLegacyCommitted);
-                return Math.Max(
-                    0,
-                    Long(markerData, "shardedDailyCapCreditMicros") - postCutoverLegacyIncrease);
+                return EffectiveShardedDailyCap(
+                    markerData,
+                    currentLegacyData,
+                    globalDailyCap,
+                    shardCount);
             }
 
             var legacy = await transaction.GetSnapshotAsync(legacyRef, cancellationToken);
@@ -1678,12 +2111,27 @@ public sealed class FirestoreAccountStore : IAccountStore
             });
             return availableForShards;
         }, cancellationToken: cancellationToken);
-        var legacyAtCutover = await legacyRef.GetSnapshotAsync(cancellationToken);
-        var legacyDataAtCutover = legacyAtCutover.Exists ? legacyAtCutover.ToDictionary() : [];
-        if (Long(legacyDataAtCutover, "reservedCreditMicros") == 0
-            && Long(legacyDataAtCutover, "settledCreditMicros") == 0)
-            _initializedGlobalQuotaDays.TryAdd(date, shardedCap);
         return shardedCap;
+    }
+
+    internal static long EffectiveShardedDailyCap(
+        IDictionary<string, object> marker,
+        IDictionary<string, object> legacy,
+        long configuredGlobalDailyCap,
+        int configuredShardCount)
+    {
+        if (Long(marker, "globalDailyCapCreditMicros") != configuredGlobalDailyCap
+            || Long(marker, "shardCount") != configuredShardCount)
+            throw new InvalidOperationException(
+                "The daily quota shard configuration changed during an active day.");
+        var currentLegacyCommitted = checked(
+            Math.Max(0, Long(legacy, "reservedCreditMicros"))
+            + Math.Max(0, Long(legacy, "settledCreditMicros")));
+        var cutoverLegacyCommitted = Long(marker, "legacyCommittedCreditMicrosAtCutover");
+        var postCutoverLegacyIncrease = Math.Max(0, currentLegacyCommitted - cutoverLegacyCommitted);
+        return Math.Max(
+            0,
+            Long(marker, "shardedDailyCapCreditMicros") - postCutoverLegacyIncrease);
     }
 
     internal static int GlobalUsageShardIndex(
@@ -1787,19 +2235,28 @@ public sealed class FirestoreAccountStore : IAccountStore
     private DocumentReference Account(string userId) =>
         _db.Collection("accounts").Document(SafeId(userId));
 
-    private static AccountSnapshot Snapshot(
+    private AccountSnapshot Snapshot(
         string userId,
         IDictionary<string, object> data,
         IReadOnlyList<DeviceSnapshot> devices,
         IReadOnlyList<UsageSnapshot> usage,
-        IReadOnlyList<PurchaseSnapshot> purchases) => new(
+        IReadOnlyList<PurchaseSnapshot> purchases)
+    {
+        var wallet = AllowanceWallet.FromAccount(data, _clock.UtcNow);
+        var subscription = wallet.Buckets
+            .Where(bucket => bucket.Kind == "subscription")
+            .Sum(bucket => bucket.AvailableCreditMicros);
+        var topups = wallet.Buckets
+            .Where(bucket => bucket.Kind == "topup")
+            .Sum(bucket => bucket.AvailableCreditMicros);
+        return new AccountSnapshot(
             userId,
             String(data, "email", ""),
             String(data, "displayName", ""),
             String(data, "status", "active"),
             String(data, "planId", "none"),
-            Long(data, "availableCreditMicros"),
-            Long(data, "reservedCreditMicros"),
+            wallet.AvailableCreditMicros,
+            wallet.ReservedCreditMicros,
             Long(data, "cycleUsageCreditMicros"),
             data.TryGetValue("cycleEndsAt", out var cycle) && cycle is Timestamp cycleTimestamp
                 ? new DateTimeOffset(cycleTimestamp.ToDateTime())
@@ -1807,7 +2264,12 @@ public sealed class FirestoreAccountStore : IAccountStore
             devices,
             usage,
             purchases,
-            String(data, "subscriptionStatus", "none"));
+            String(data, "subscriptionStatus", "none"),
+            subscription,
+            topups,
+            wallet.AvailableCreditMicros - subscription - topups,
+            AllowanceWallet.CurrentRulesVersion);
+    }
 
     private static Reservation ReservationFrom(DocumentSnapshot snapshot)
     {

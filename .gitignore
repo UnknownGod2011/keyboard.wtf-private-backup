@@ -416,6 +416,10 @@ output/playwright/
 # Local tooling and generated files
 official_docs/
 .claude/
+.artifacts/
+
+# Preserve this pre-existing local reparse artifact without ever staging it.
+/Program
 
 # Bundled Piper TTS binaries + voice models (~150 MB total).
 # These are downloaded at first run and should not be committed.

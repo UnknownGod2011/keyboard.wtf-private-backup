@@ -18,6 +18,7 @@ public interface IIdentityService
 {
     Task<CallerIdentity?> AuthenticateAsync(HttpContext context, CancellationToken cancellationToken);
     Task<CallerIdentity> VerifyFirebaseAsync(string idToken, CancellationToken cancellationToken);
+    Task DeleteFirebaseUserAsync(string userId, CancellationToken cancellationToken);
 }
 
 public interface IAccountStore
@@ -46,6 +47,11 @@ public interface IAccountStore
     Task MarkReservationProviderStartedAsync(
         string userId,
         string requestId,
+        CancellationToken cancellationToken);
+    Task<long> EnsureReservationCapacityAsync(
+        string userId,
+        string requestId,
+        long targetReservedCreditMicros,
         CancellationToken cancellationToken);
     Task RecordProviderCompletionAsync(
         string userId,
@@ -104,6 +110,7 @@ public interface IAccountStore
         CancellationToken cancellationToken);
     Task RevokeSessionAsync(string userId, string? sessionId, bool allDevices, CancellationToken cancellationToken);
     Task RevokeDeviceAsync(string userId, string deviceId, CancellationToken cancellationToken);
+    Task DeleteAccountOperationalDataAsync(string userId, CancellationToken cancellationToken);
     Task<string?> FindUserIdByEmailAsync(string email, CancellationToken cancellationToken);
     Task<AccountSnapshot> GrantCreditsAsync(
         string userId,
@@ -174,6 +181,14 @@ public interface ICatalogService
         int estimateSafetyBasisPoints);
 }
 
+public interface IModelRoutingService
+{
+    Task<ModelRouteSnapshot> ResolveAsync(
+        string? taskKind,
+        string routingKey,
+        CancellationToken cancellationToken);
+}
+
 public sealed record VertexGenerateResult(string Text, ProviderUsage Usage);
 
 internal sealed class VertexRequestRejectedException : InvalidOperationException
@@ -191,6 +206,7 @@ public interface IVertexAiClient
 {
     Task<VertexGenerateResult> GenerateAsync(
         string model,
+        string location,
         string prompt,
         string? systemInstruction,
         int maxOutputTokens,

@@ -6,6 +6,7 @@ import {
   loadAccount,
   loadCatalog,
   revokeDevice,
+  deleteAccountPermanently,
   grantTestCredits,
   beginCheckout,
   waitForAuthoritativePurchase,
@@ -41,6 +42,7 @@ function clearAccountUi() {
   byId("balance").textContent = "0";
   byId("balanceBar").style.width = "0";
   byId("usage").textContent = "0 used this cycle";
+  byId("allowanceBreakdown").textContent = "Subscription 0 · top-ups 0";
   byId("subscription").textContent = "None";
   byId("renewal").textContent = "No renewal scheduled.";
   byId("usageList").replaceChildren();
@@ -65,6 +67,7 @@ async function render(expectedUser, epoch, quiet = false) {
     const total = Math.max(1, account.availableCreditMicros + account.cycleUsageCreditMicros);
     byId("balanceBar").style.width = `${Math.max(0, Math.min(100, account.availableCreditMicros / total * 100))}%`;
     byId("usage").textContent = `${formatCredits(account.cycleUsageCreditMicros)} credits used this cycle`;
+    byId("allowanceBreakdown").textContent = `Subscription ${formatCredits(account.subscriptionAllowanceCreditMicros)} · top-ups ${formatCredits(account.topUpCreditMicros)}${account.otherAllowanceCreditMicros ? ` · other ${formatCredits(account.otherAllowanceCreditMicros)}` : ""}`;
     byId("subscription").textContent = account.subscriptionStatus || "none";
     byId("adminGrant").classList.toggle("hidden", !account.isAdmin);
     if (account.isAdmin && !byId("grantEmail").value)
@@ -186,6 +189,24 @@ byId("signIn").addEventListener("click", async () => {
   }
 });
 byId("signOut").addEventListener("click", () => googleSignOut().catch((error) => setStatus(error.message, "error")));
+byId("deleteAccount").addEventListener("click", async () => {
+  const confirmation = window.prompt("This permanently closes your keyboard.wtf account and revokes every device. Type DELETE to continue.");
+  if (confirmation !== "DELETE") {
+    setStatus("Account deletion was cancelled.");
+    return;
+  }
+  const button = byId("deleteAccount");
+  button.disabled = true;
+  setStatus("Confirm your Google identity to delete this account…");
+  try {
+    await deleteAccountPermanently();
+    setStatus("Your keyboard.wtf account was deleted.", "success");
+  } catch (error) {
+    setStatus(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+});
 byId("refreshAccount").addEventListener("click", async () => {
   const button = byId("refreshAccount");
   button.disabled = true;
