@@ -25,11 +25,14 @@ if (-not (Test-Path -LiteralPath $gcloud)) {
     --quiet
 if ($LASTEXITCODE -ne 0) { throw "Enabling Firestore PITR and delete protection failed." }
 
-$existing = & $gcloud firestore backups schedules list `
+$existingJson = & $gcloud firestore backups schedules list `
     --project=$ProjectId `
     --database=$Database `
-    --format=json | ConvertFrom-Json
-if (-not ($existing | Where-Object { $null -ne $_.dailyRecurrence })) {
+    --format=json | Out-String
+if ($LASTEXITCODE -ne 0) { throw "Reading Firestore backup schedules failed." }
+$parsedExisting = $existingJson | ConvertFrom-Json
+$existing = @($parsedExisting | ForEach-Object { $_ })
+if (-not ($existing | Where-Object { $_.PSObject.Properties.Name -contains "dailyRecurrence" })) {
     & $gcloud firestore backups schedules create `
         --project=$ProjectId `
         --database=$Database `
@@ -38,7 +41,7 @@ if (-not ($existing | Where-Object { $null -ne $_.dailyRecurrence })) {
         --quiet
     if ($LASTEXITCODE -ne 0) { throw "Creating the daily Firestore backup schedule failed." }
 }
-if (-not ($existing | Where-Object { $null -ne $_.weeklyRecurrence })) {
+if (-not ($existing | Where-Object { $_.PSObject.Properties.Name -contains "weeklyRecurrence" })) {
     & $gcloud firestore backups schedules create `
         --project=$ProjectId `
         --database=$Database `
@@ -49,12 +52,15 @@ if (-not ($existing | Where-Object { $null -ne $_.weeklyRecurrence })) {
     if ($LASTEXITCODE -ne 0) { throw "Creating the weekly Firestore backup schedule failed." }
 }
 
-$verified = @(& $gcloud firestore backups schedules list `
+$verifiedJson = & $gcloud firestore backups schedules list `
     --project=$ProjectId `
     --database=$Database `
-    --format=json | ConvertFrom-Json)
-$daily = @($verified | Where-Object { $null -ne $_.dailyRecurrence })
-$weekly = @($verified | Where-Object { $null -ne $_.weeklyRecurrence })
+    --format=json | Out-String
+if ($LASTEXITCODE -ne 0) { throw "Verifying Firestore backup schedules failed." }
+$parsedVerified = $verifiedJson | ConvertFrom-Json
+$verified = @($parsedVerified | ForEach-Object { $_ })
+$daily = @($verified | Where-Object { $_.PSObject.Properties.Name -contains "dailyRecurrence" })
+$weekly = @($verified | Where-Object { $_.PSObject.Properties.Name -contains "weeklyRecurrence" })
 if ($daily.Count -ne 1 -or [string]$daily[0].retention -ne "604800s") {
     throw "Firestore must have exactly one daily backup schedule with seven-day retention. Review extra or drifted schedules manually."
 }
