@@ -289,11 +289,35 @@ public sealed class SecurityAndUsageTests
             Assert.Equal("pur_123", subscription.PurchaseId);
             Assert.Equal("monthly_test", subscription.ProductSku);
             Assert.Single(subscription.Charges);
+            Assert.Equal("sub_123", subscription.Charges[0].SubscriptionId);
             Assert.Equal("pay_123", Assert.Single(refunds).PaymentId);
             Assert.Equal("pay_123", Assert.Single(disputes).PaymentId);
             Assert.Equal(disputes, repeatedDisputes);
             Assert.Equal(1, handler.Paths.Count(path => path == "disputes"));
             Assert.All(handler.Paths, path => Assert.DoesNotContain("unit_test_secret", path, StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", null);
+            Environment.SetEnvironmentVariable("RAZORPAY_KEY_SECRET", null);
+        }
+    }
+
+    [Fact]
+    public async Task Razorpay_subscription_inspection_rejects_an_invoice_from_another_subscription()
+    {
+        Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", "rzp_test_public");
+        Environment.SetEnvironmentVariable("RAZORPAY_KEY_SECRET", "unit_test_secret");
+        try
+        {
+            var provider = new RazorpayPaymentProvider(
+                new HttpClient(new RazorpayWrongSubscriptionInvoiceHandler()),
+                Options.Create(TestOptions()));
+
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                provider.InspectSubscriptionAsync("sub_123", CancellationToken.None));
+
+            Assert.Contains("outside the requested subscription", error.Message, StringComparison.Ordinal);
         }
         finally
         {
@@ -1879,9 +1903,9 @@ public sealed class SecurityAndUsageTests
                 "subscriptions/sub_123" =>
                     """{"id":"sub_123","status":"active","current_end":1788382000,"notes":{"purchase_id":"pur_123","product_sku":"monthly_test"}}""",
                 "invoices?subscription_id=sub_123" =>
-                    """{"items":[{"id":"inv_123","payment_id":"pay_123","status":"paid"}]}""",
+                    """{"items":[{"id":"inv_123","subscription_id":"sub_123","payment_id":"pay_123","status":"paid"}]}""",
                 "payments/pay_123" =>
-                    """{"id":"pay_123","status":"captured","amount":4900,"currency":"INR","order_id":"order_123","subscription_id":"sub_123","captured":true,"created_at":1785790000}""",
+                    """{"id":"pay_123","status":"captured","amount":4900,"currency":"INR","order_id":"order_123","captured":true,"created_at":1785790000}""",
                 "payments/pay_123/refunds?count=100&skip=0" =>
                     """{"items":[{"id":"rfnd_123","payment_id":"pay_123","status":"processed","amount":1000,"created_at":1785790100}]}""",
                 "disputes" =>
@@ -1919,6 +1943,30 @@ public sealed class SecurityAndUsageTests
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent($"{{\"items\":[{items}]}}", Encoding.UTF8, "application/json"),
+            });
+        }
+    }
+
+    private sealed class RazorpayWrongSubscriptionInvoiceHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.PathAndQuery.TrimStart('/');
+            if (path.StartsWith("v1/", StringComparison.Ordinal))
+                path = path[3..];
+            var body = path switch
+            {
+                "subscriptions/sub_123" =>
+                    """{"id":"sub_123","status":"active","current_end":1788382000,"notes":{"purchase_id":"pur_123","product_sku":"monthly_test"}}""",
+                "invoices?subscription_id=sub_123" =>
+                    """{"items":[{"id":"inv_wrong","subscription_id":"sub_other","payment_id":"pay_123","status":"paid"}]}""",
+                _ => throw new InvalidOperationException($"Unexpected Razorpay inspection path: {path}"),
+            };
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
             });
         }
     }

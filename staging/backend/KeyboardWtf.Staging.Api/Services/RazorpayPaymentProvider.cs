@@ -145,14 +145,32 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
             null,
             cancellationToken);
         var root = subscriptionDocument.RootElement;
-        var paymentIds = Items(invoiceDocument.RootElement)
+        var invoices = Items(invoiceDocument.RootElement).ToArray();
+        if (invoices.Any(invoice => !string.Equals(
+                TextOrNull(invoice, "subscription_id"),
+                subscriptionId,
+                StringComparison.Ordinal)))
+            throw new InvalidOperationException(
+                "Razorpay returned an invoice outside the requested subscription.");
+        var paymentIds = invoices
             .Select(invoice => TextOrNull(invoice, "payment_id"))
             .Where(id => !string.IsNullOrWhiteSpace(id))
             .Distinct(StringComparer.Ordinal)
             .ToArray();
         var charges = new List<ProviderPayment>(paymentIds.Length);
         foreach (var paymentId in paymentIds)
-            charges.Add(await InspectPaymentAsync(paymentId!, cancellationToken));
+        {
+            var payment = await InspectPaymentAsync(paymentId!, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(payment.SubscriptionId)
+                && !string.Equals(payment.SubscriptionId, subscriptionId, StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "Razorpay returned a payment linked to another subscription.");
+            // Razorpay's payment resource does not always repeat
+            // subscription_id. The subscription-scoped invoice is the
+            // authoritative relationship, so carry that already-validated
+            // association into reconciliation.
+            charges.Add(payment with { SubscriptionId = subscriptionId });
+        }
         return new ProviderSubscriptionInspection(
             Text(root, "id"),
             Text(root, "status"),
