@@ -90,17 +90,25 @@ public sealed class PaymentReconciliationService
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
+                    var failureStage = exception is PaymentReconciliationStageException staged
+                        ? staged.Stage
+                        : "unknown";
+                    var failureCategory = $"reconciliation_{SafeStatus(failureStage)}_failed";
+                    var failureType = exception is PaymentReconciliationStageException { InnerException: not null } wrapped
+                        ? wrapped.InnerException!.GetType().Name
+                        : exception.GetType().Name;
                     quarantined++;
                     await QuarantineAsync(
                         purchase,
-                        "provider_inspection_failed",
+                        failureCategory,
                         runId,
-                        exception.GetType().Name,
+                        failureType,
                         cancellationToken);
                     _logger.LogWarning(
-                        "Payment reconciliation could not inspect purchase {PurchaseHash}: {FailureCategory}",
+                        "Payment reconciliation failed for purchase {PurchaseHash} at {FailureStage}: {FailureCategory}",
                         Crypto.Sha256(purchase.Id)[..12],
-                        exception.GetType().Name);
+                        failureStage,
+                        failureType);
                 }
             }
             lastDocument = page.Documents[^1];
@@ -129,122 +137,136 @@ public sealed class PaymentReconciliationService
         string runId,
         CancellationToken cancellationToken)
     {
-        var data = purchase.ToDictionary();
-        var accountRef = purchase.Reference.Parent.Parent
-            ?? throw new InvalidOperationException("The purchase account path is invalid.");
-        var userId = accountRef.Id;
-        var purchaseId = String(data, "purchaseId", purchase.Id);
-        var recordedUserId = String(data, "userId", "");
-        if (!string.IsNullOrWhiteSpace(recordedUserId)
-            && !string.Equals(recordedUserId, userId, StringComparison.Ordinal))
+        var stage = "load_purchase";
+        try
         {
-            await QuarantineAsync(purchase, "purchase_owner_mismatch", runId, "owner", cancellationToken);
-            return PurchaseReconciliationResult.Quarantined;
-        }
-        if (string.IsNullOrWhiteSpace(recordedUserId))
-            await purchase.Reference.SetAsync(
-                new Dictionary<string, object> { ["userId"] = userId },
-                SetOptions.MergeAll,
-                cancellationToken);
-
-        var objectId = String(data, "providerObjectId", "");
-        var objectType = String(data, "providerObjectType", "");
-        if (string.IsNullOrWhiteSpace(objectId))
-        {
-            var createdAt = Date(data, "createdAt");
-            if (createdAt != DateTimeOffset.UnixEpoch
-                && _clock.UtcNow - createdAt > TimeSpan.FromHours(1))
+            var data = purchase.ToDictionary();
+            var accountRef = purchase.Reference.Parent.Parent
+                ?? throw new InvalidOperationException("The purchase account path is invalid.");
+            var userId = accountRef.Id;
+            var purchaseId = String(data, "purchaseId", purchase.Id);
+            var recordedUserId = String(data, "userId", "");
+            if (!string.IsNullOrWhiteSpace(recordedUserId)
+                && !string.Equals(recordedUserId, userId, StringComparison.Ordinal))
             {
-                await QuarantineAsync(purchase, "provider_object_missing", runId, "missing", cancellationToken);
+                await QuarantineAsync(purchase, "purchase_owner_mismatch", runId, "owner", cancellationToken);
                 return PurchaseReconciliationResult.Quarantined;
             }
-            await MarkCheckedAsync(purchase.Reference, runId, "awaiting_provider_object", cancellationToken);
-            return PurchaseReconciliationResult.Unchanged;
-        }
+            if (string.IsNullOrWhiteSpace(recordedUserId))
+                await purchase.Reference.SetAsync(
+                    new Dictionary<string, object> { ["userId"] = userId },
+                    SetOptions.MergeAll,
+                    cancellationToken);
 
-        var repaired = false;
-        if (string.Equals(objectType, "order", StringComparison.Ordinal))
-        {
-            var order = await _provider.InspectOrderAsync(objectId, cancellationToken);
-            if (!MatchesPurchase(order.PurchaseId, purchaseId)
-                || order.AmountMinor != Long(data, "amountMinor")
-                || !string.Equals(order.Currency, String(data, "currency", "INR"), StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(order.ProductSku, String(data, "productSku", ""), StringComparison.Ordinal))
+            var objectId = String(data, "providerObjectId", "");
+            var objectType = String(data, "providerObjectType", "");
+            if (string.IsNullOrWhiteSpace(objectId))
             {
-                await QuarantineAsync(purchase, "order_identity_or_amount_mismatch", runId, order.Status, cancellationToken);
-                return PurchaseReconciliationResult.Quarantined;
+                var createdAt = Date(data, "createdAt");
+                if (createdAt != DateTimeOffset.UnixEpoch
+                    && _clock.UtcNow - createdAt > TimeSpan.FromHours(1))
+                {
+                    await QuarantineAsync(purchase, "provider_object_missing", runId, "missing", cancellationToken);
+                    return PurchaseReconciliationResult.Quarantined;
+                }
+                await MarkCheckedAsync(purchase.Reference, runId, "awaiting_provider_object", cancellationToken);
+                return PurchaseReconciliationResult.Unchanged;
             }
-            foreach (var payment in order.Payments.OrderBy(item => item.CreatedAt))
-                repaired |= await ReconcilePaymentAsync(
-                    purchase,
+
+            var repaired = false;
+            stage = "inspect_provider";
+            if (string.Equals(objectType, "order", StringComparison.Ordinal))
+            {
+                var order = await _provider.InspectOrderAsync(objectId, cancellationToken);
+                if (!MatchesPurchase(order.PurchaseId, purchaseId)
+                    || order.AmountMinor != Long(data, "amountMinor")
+                    || !string.Equals(order.Currency, String(data, "currency", "INR"), StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(order.ProductSku, String(data, "productSku", ""), StringComparison.Ordinal))
+                {
+                    await QuarantineAsync(purchase, "order_identity_or_amount_mismatch", runId, order.Status, cancellationToken);
+                    return PurchaseReconciliationResult.Quarantined;
+                }
+                stage = "apply_order_payments";
+                foreach (var payment in order.Payments.OrderBy(item => item.CreatedAt))
+                    repaired |= await ReconcilePaymentAsync(
+                        purchase,
+                        purchaseId,
+                        objectId,
+                        null,
+                        payment,
+                        cancellationToken);
+            }
+            else if (string.Equals(objectType, "subscription", StringComparison.Ordinal))
+            {
+                var subscription = await _provider.InspectSubscriptionAsync(objectId, cancellationToken);
+                if (!MatchesPurchase(subscription.PurchaseId, purchaseId)
+                    || !string.Equals(subscription.ProductSku, String(data, "productSku", ""), StringComparison.Ordinal))
+                {
+                    await QuarantineAsync(purchase, "subscription_identity_mismatch", runId, subscription.Status, cancellationToken);
+                    return PurchaseReconciliationResult.Quarantined;
+                }
+
+                stage = "apply_subscription_lifecycle";
+                var lifecycleEvent = SubscriptionLifecycleEvent(subscription.Status);
+                var lifecycle = await _store.ApplyPaymentWebhookAsync(
+                    $"reconcile:{objectId}:{String(data, "status", "unknown")}:to:{subscription.Status}",
+                    lifecycleEvent,
+                    objectId,
+                    null,
+                    null,
+                    objectId,
                     purchaseId,
                     objectId,
                     null,
-                    payment,
-                    cancellationToken);
-        }
-        else if (string.Equals(objectType, "subscription", StringComparison.Ordinal))
-        {
-            var subscription = await _provider.InspectSubscriptionAsync(objectId, cancellationToken);
-            if (!MatchesPurchase(subscription.PurchaseId, purchaseId)
-                || !string.Equals(subscription.ProductSku, String(data, "productSku", ""), StringComparison.Ordinal))
+                    subscription.Status,
+                    cancellationToken,
+                    subscription.CurrentCycleEndsAt,
+                    null,
+                    subscription.ProductSku);
+                repaired |= !lifecycle.Duplicate;
+
+                stage = "apply_subscription_charges";
+                foreach (var payment in subscription.Charges.OrderBy(item => item.CreatedAt))
+                {
+                    if (!string.Equals(payment.SubscriptionId, objectId, StringComparison.Ordinal))
+                    {
+                        await QuarantineAsync(purchase, "subscription_charge_mismatch", runId, payment.Status, cancellationToken);
+                        return PurchaseReconciliationResult.Quarantined;
+                    }
+                    repaired |= await ReconcilePaymentAsync(
+                        purchase,
+                        purchaseId,
+                        objectId,
+                        objectId,
+                        payment,
+                        cancellationToken,
+                        subscription.CurrentCycleEndsAt);
+                }
+            }
+            else
             {
-                await QuarantineAsync(purchase, "subscription_identity_mismatch", runId, subscription.Status, cancellationToken);
+                await QuarantineAsync(purchase, "unknown_provider_object_type", runId, objectType, cancellationToken);
                 return PurchaseReconciliationResult.Quarantined;
             }
 
-            var lifecycleEvent = SubscriptionLifecycleEvent(subscription.Status);
-            var lifecycle = await _store.ApplyPaymentWebhookAsync(
-                $"reconcile:{objectId}:{String(data, "status", "unknown")}:to:{subscription.Status}",
-                lifecycleEvent,
-                objectId,
-                null,
-                null,
-                objectId,
-                purchaseId,
-                objectId,
-                null,
-                subscription.Status,
-                cancellationToken,
-                subscription.CurrentCycleEndsAt,
-                null,
-                subscription.ProductSku);
-            repaired |= !lifecycle.Duplicate;
-
-            foreach (var payment in subscription.Charges.OrderBy(item => item.CreatedAt))
-            {
-                if (!string.Equals(payment.SubscriptionId, objectId, StringComparison.Ordinal))
-                {
-                    await QuarantineAsync(purchase, "subscription_charge_mismatch", runId, payment.Status, cancellationToken);
-                    return PurchaseReconciliationResult.Quarantined;
-                }
-                repaired |= await ReconcilePaymentAsync(
-                    purchase,
-                    purchaseId,
-                    objectId,
-                    objectId,
-                    payment,
-                    cancellationToken,
-                    subscription.CurrentCycleEndsAt);
-            }
+            stage = "mark_checked";
+            await MarkCheckedAsync(
+                purchase.Reference,
+                runId,
+                repaired ? "repaired" : "consistent",
+                cancellationToken);
+            stage = "resolve_issues";
+            await ResolveIssuesAsync(
+                purchase,
+                runId,
+                repaired ? "provider_state_repaired" : "provider_state_consistent",
+                cancellationToken);
+            return repaired ? PurchaseReconciliationResult.Repaired : PurchaseReconciliationResult.Unchanged;
         }
-        else
+        catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            await QuarantineAsync(purchase, "unknown_provider_object_type", runId, objectType, cancellationToken);
-            return PurchaseReconciliationResult.Quarantined;
+            throw new PaymentReconciliationStageException(stage, exception);
         }
-
-        await MarkCheckedAsync(
-            purchase.Reference,
-            runId,
-            repaired ? "repaired" : "consistent",
-            cancellationToken);
-        await ResolveIssuesAsync(
-            purchase,
-            runId,
-            repaired ? "provider_state_repaired" : "provider_state_consistent",
-            cancellationToken);
-        return repaired ? PurchaseReconciliationResult.Repaired : PurchaseReconciliationResult.Unchanged;
     }
 
     private async Task<bool> ReconcilePaymentAsync(
@@ -466,5 +488,11 @@ public sealed class PaymentReconciliationService
         Unchanged,
         Repaired,
         Quarantined,
+    }
+
+    private sealed class PaymentReconciliationStageException(string stage, Exception innerException)
+        : Exception("Payment reconciliation failed at a recorded stage.", innerException)
+    {
+        public string Stage { get; } = stage;
     }
 }
