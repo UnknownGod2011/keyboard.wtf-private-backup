@@ -144,7 +144,15 @@ internal sealed class BigQueryProviderBillingCostSource : IProviderBillingCostSo
     {
         name,
         parameterType = new { type = "TIMESTAMP" },
-        parameterValue = new { value = value.UtcDateTime.ToString("O", CultureInfo.InvariantCulture) },
+        // BigQuery TIMESTAMP parameters support microsecond precision. The
+        // .NET round-trip format emits seven fractional digits and is rejected
+        // by the query API, so emit exactly six UTC fractional digits.
+        parameterValue = new
+        {
+            value = value.UtcDateTime.ToString(
+                "yyyy-MM-dd'T'HH:mm:ss.ffffff'Z'",
+                CultureInfo.InvariantCulture),
+        },
     };
 
     private static object StringParameter(string name, string value) => new

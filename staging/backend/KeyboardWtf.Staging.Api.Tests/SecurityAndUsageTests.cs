@@ -1000,6 +1000,8 @@ public sealed class SecurityAndUsageTests
         Assert.True(handler.SawProjectParameter);
         Assert.True(handler.SawClosedWindowParameters);
         Assert.True(handler.SawBytesBilledLimit);
+        Assert.Contains("2026-08-01T00:00:00.000000Z", handler.RequestBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("2026-08-01T00:00:00.0000000Z", handler.RequestBody, StringComparison.Ordinal);
         Assert.DoesNotContain("user", handler.RequestBody, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("prompt", handler.RequestBody, StringComparison.OrdinalIgnoreCase);
     }
