@@ -159,7 +159,7 @@ try {
     $saved = Invoke-RestMethod -Method Patch -Uri $uri -Headers $headers `
         -ContentType "application/json" -Body $payload
     $savedVersion = $saved.fields.version.stringValue
-    $savedRoutes = $saved.fields.routes.mapValue.fields.PSObject.Properties.Count
+    $savedRoutes = @($saved.fields.routes.mapValue.fields.PSObject.Properties).Count
     if ($savedVersion -ne "routes-2026-08-10" -or $savedRoutes -ne $routes.Count) {
         throw "The saved model-routing document failed verification."
     }
