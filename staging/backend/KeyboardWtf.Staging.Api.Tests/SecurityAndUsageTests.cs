@@ -17,6 +17,20 @@ namespace KeyboardWtf.Staging.Api.Tests;
 public sealed class SecurityAndUsageTests
 {
     [Fact]
+    public void Production_configuration_suppresses_framework_http_client_url_logging()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+        Assert.True(File.Exists(path));
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        var level = document.RootElement
+            .GetProperty("Logging")
+            .GetProperty("LogLevel")
+            .GetProperty("System.Net.Http.HttpClient")
+            .GetString();
+        Assert.Equal("Warning", level);
+    }
+
+    [Fact]
     public void Account_deletion_requires_a_recent_non_future_authentication()
     {
         var now = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000);

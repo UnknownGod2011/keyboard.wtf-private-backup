@@ -18,5 +18,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\KeyboardWtf.Staging.Api\KeyboardWtf.Staging.Api.csproj" />
+    <None Include="..\KeyboardWtf.Staging.Api\appsettings.json" Link="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
