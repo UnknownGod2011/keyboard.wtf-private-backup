@@ -67,6 +67,7 @@ if ($SideBySideStaging) {
         '/DMyAppId={{C966E45B-AC9B-4192-AB9C-55D0CC33D9D4}',
         '/DMyDefaultDirName={localappdata}\Programs\keyboard.wtf Paid Staging',
         '/DMyOutputBaseFilename=keyboard-wtf-paid-staging-setup',
+        '/DMySourceDir=..\dist\release\keyboard-wtf-paid-staging-win-x64',
         '/DMyRunValueName=keyboard.wtf Paid Staging',
         '/DMyRegisterStartup=0'
     )

@@ -19,6 +19,9 @@
 #ifndef MyOutputBaseFilename
   #define MyOutputBaseFilename "keyboard-wtf-setup"
 #endif
+#ifndef MySourceDir
+  #define MySourceDir "..\dist\release\keyboard-wtf-win-x64"
+#endif
 #ifndef MyRunValueName
   #define MyRunValueName "keyboard.wtf"
 #endif
@@ -57,7 +60,7 @@ VersionInfoCompany={#MyAppPublisher}
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "..\dist\release\keyboard-wtf-win-x64\*"; DestDir: "{app}"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#MySourceDir}\*"; DestDir: "{app}"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\keyboard.wtf"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
