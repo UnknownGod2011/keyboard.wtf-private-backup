@@ -22,6 +22,9 @@
 #ifndef MyRunValueName
   #define MyRunValueName "keyboard.wtf"
 #endif
+#ifndef MyRegisterStartup
+  #define MyRegisterStartup 1
+#endif
 
 [Setup]
 AppId={#MyAppId}
@@ -60,7 +63,9 @@ Source: "..\dist\release\keyboard-wtf-win-x64\*"; DestDir: "{app}"; Excludes: "*
 Name: "{group}\keyboard.wtf"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 
 [Registry]
+#if MyRegisterStartup
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyRunValueName}"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue
+#endif
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch keyboard.wtf and finish setup"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent

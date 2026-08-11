@@ -1,12 +1,14 @@
 param(
     [string]$Configuration = "Release",
-    [switch]$SkipSiteHashUpdate
+    [switch]$SkipSiteHashUpdate,
+    [switch]$SideBySideStaging
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $root "src\KeyboardWtf.csproj"
-$publishDir = Join-Path $root "dist\release\keyboard-wtf-win-x64"
+$publishName = if ($SideBySideStaging) { "keyboard-wtf-paid-staging-win-x64" } else { "keyboard-wtf-win-x64" }
+$publishDir = Join-Path $root "dist\release\$publishName"
 $installerScript = Join-Path $root "installer\keyboard-wtf.iss"
 $installerDir = Join-Path $root "dist\installer"
 $siteIndex = Join-Path $root "site\index.html"
@@ -58,15 +60,27 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE"
 }
 
-& $iscc $installerScript
+$isccArguments = @()
+if ($SideBySideStaging) {
+    $isccArguments += @(
+        '/DMyAppName=keyboard.wtf Paid Staging',
+        '/DMyAppId={{C966E45B-AC9B-4192-AB9C-55D0CC33D9D4}',
+        '/DMyDefaultDirName={localappdata}\Programs\keyboard.wtf Paid Staging',
+        '/DMyOutputBaseFilename=keyboard-wtf-paid-staging-setup',
+        '/DMyRunValueName=keyboard.wtf Paid Staging',
+        '/DMyRegisterStartup=0'
+    )
+}
+& $iscc @isccArguments $installerScript
 if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup failed with exit code $LASTEXITCODE"
 }
 
-$installer = Join-Path $installerDir "keyboard-wtf-setup.exe"
+$installerName = if ($SideBySideStaging) { "keyboard-wtf-paid-staging-setup.exe" } else { "keyboard-wtf-setup.exe" }
+$installer = Join-Path $installerDir $installerName
 $hash = Get-FileHash -LiteralPath $installer -Algorithm SHA256
 $sizeMb = [Math]::Round((Get-Item -LiteralPath $installer).Length / 1MB, 1)
-if (-not $SkipSiteHashUpdate) {
+if (-not $SkipSiteHashUpdate -and -not $SideBySideStaging) {
     $siteHtml = Get-Content -LiteralPath $siteIndex -Raw
     $updatedSiteHtml = $siteHtml -replace 'SHA256 [A-Fa-f0-9]{64}', "SHA256 $($hash.Hash)"
     if ($updatedSiteHtml -eq $siteHtml -and $siteHtml -notmatch "SHA256 $($hash.Hash)") {

@@ -25,6 +25,13 @@ closed and a human explicitly approves the production operation.
   -Version VERSION
 ```
 
+For a local paid-staging installer gate, use
+`build-windows-release.ps1 -SideBySideStaging`. It emits a distinct app ID,
+installation directory, uninstaller registration, and filename, and it does
+not register itself for Windows startup. It therefore cannot replace the
+stable installation. Never distribute that staging artifact as the public
+installer.
+
 Generate the signed update manifest with the offline private key exactly as
 documented in `RELEASE_SIGNING.md`. The private key must stay outside the clone,
 CI, command logs, artifacts, and application. Record the installer SHA-256,
