@@ -22,21 +22,9 @@ public sealed class PaidSystemOptions
     public string ProjectId { get; init; } = "keyboard-wtf-staging";
 
     [Required]
-    public string Region { get; init; } = "asia-south1";
-
-    [Required]
     public string VertexModel { get; init; } = "gemini-3.5-flash-lite";
 
     public int ModelRoutingCacheSeconds { get; init; } = 180;
-
-    [Required]
-    public string MinimumLiveDesktopVersion { get; init; } = "1.3.0";
-
-    [Required]
-    public string VertexLiveRegion { get; init; } = "us-central1";
-
-    [Required]
-    public string VertexLiveModel { get; init; } = "gemini-live-2.5-flash-native-audio";
 
     [Required, Url]
     public string WebBaseUrl { get; init; } = "https://keyboard-wtf-paid-staging.vercel.app";
@@ -70,4 +58,5 @@ public sealed class PaidSystemOptions
     public long PerUserSpendAlertCreditMicros { get; init; } = 250_000_000;
     public int StuckPaymentMinutes { get; init; } = 30;
     public bool AllowBootstrapCatalog { get; init; } = true;
+    public bool AllowBootstrapModelRouting { get; init; } = true;
 }

@@ -11,6 +11,8 @@ public static class DeploymentSafety
         {
             if (options.AllowBootstrapCatalog)
                 throw new InvalidOperationException("Production cannot use the bootstrap product catalog.");
+            if (options.AllowBootstrapModelRouting)
+                throw new InvalidOperationException("Production cannot use bootstrap model routing or pricing.");
             RejectStagingMarker(options.ProjectId, "project ID");
             RejectStagingMarker(options.WebBaseUrl, "website URL");
             foreach (var origin in options.AllowedOrigins)
@@ -28,6 +30,22 @@ public static class DeploymentSafety
             PaidDeploymentEnvironment.Development => "development",
             _ => throw new InvalidOperationException("Unknown deployment environment."),
         };
+
+    public static bool ValidateRequiredSecrets(
+        PaidSystemOptions options,
+        string? razorpayKeyId,
+        string? razorpayKeySecret,
+        string? razorpayWebhookSecret)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.DeploymentEnvironment != PaidDeploymentEnvironment.Production)
+            return true;
+        if (string.IsNullOrWhiteSpace(razorpayKeyId)
+            || string.IsNullOrWhiteSpace(razorpayKeySecret)
+            || string.IsNullOrWhiteSpace(razorpayWebhookSecret))
+            throw new InvalidOperationException("Production Razorpay credentials are incomplete.");
+        return true;
+    }
 
     private static void ValidateRazorpayKey(
         PaidDeploymentEnvironment environment,

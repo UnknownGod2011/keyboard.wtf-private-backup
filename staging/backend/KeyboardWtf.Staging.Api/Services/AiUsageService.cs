@@ -2,6 +2,8 @@ using KeyboardWtf.Staging.Api.Configuration;
 using KeyboardWtf.Staging.Api.Contracts;
 using KeyboardWtf.Staging.Api.Domain;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging.Abstractions;
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace KeyboardWtf.Staging.Api.Services;
@@ -13,19 +15,22 @@ public sealed class AiUsageService
     private readonly IModelRoutingService _routing;
     private readonly IVertexAiClient _vertex;
     private readonly PaidSystemOptions _options;
+    private readonly ILogger<AiUsageService> _logger;
 
     public AiUsageService(
         IAccountStore store,
         ICatalogService catalog,
         IModelRoutingService routing,
         IVertexAiClient vertex,
-        IOptions<PaidSystemOptions> options)
+        IOptions<PaidSystemOptions> options,
+        ILogger<AiUsageService>? logger = null)
     {
         _store = store;
         _catalog = catalog;
         _routing = routing;
         _vertex = vertex;
         _options = options.Value;
+        _logger = logger ?? NullLogger<AiUsageService>.Instance;
     }
 
     public async Task<GenerateResponse> GenerateAsync(
@@ -40,6 +45,7 @@ public sealed class AiUsageService
         string? desktopVersion,
         CancellationToken cancellationToken)
     {
+        var requestStarted = Stopwatch.GetTimestamp();
         if (!_options.Enabled)
             throw new InvalidOperationException("Paid AI is temporarily disabled.");
         if (string.IsNullOrWhiteSpace(request.RequestId) || request.RequestId.Length > 200)
@@ -57,13 +63,18 @@ public sealed class AiUsageService
             throw new ArgumentException("The response schema is too large.");
         ValidateImages(request.Images);
 
-        var catalog = await _catalog.GetAsync(cancellationToken);
-        if (catalog.KillSwitch)
-            throw new InvalidOperationException(catalog.KillSwitchMessage ?? "Paid AI is temporarily unavailable.");
-        var route = await _routing.ResolveAsync(
+        var configurationStarted = Stopwatch.GetTimestamp();
+        var catalogTask = _catalog.GetAsync(cancellationToken);
+        var routeTask = _routing.ResolveAsync(
             request.TaskKind,
             $"{caller.UserId}:{request.RequestId}",
             cancellationToken);
+        await Task.WhenAll(catalogTask, routeTask);
+        var catalog = await catalogTask;
+        if (catalog.KillSwitch)
+            throw new InvalidOperationException(catalog.KillSwitchMessage ?? "Paid AI is temporarily unavailable.");
+        var route = await routeTask;
+        var configurationMs = Stopwatch.GetElapsedTime(configurationStarted).TotalMilliseconds;
         ClientCompatibility.Require(desktopVersion, route.MinimumDesktopVersion);
         if (request.Prompt.Length > route.MaxInputCharacters)
             throw new ArgumentException($"The prompt exceeds the server limit for route '{route.Name}'.");
@@ -83,22 +94,27 @@ public sealed class AiUsageService
             reservationPrompt,
             request.MaxOutputTokens,
             taskCap);
+        var reservationStarted = Stopwatch.GetTimestamp();
         var reservation = await _store.ReserveAsync(
             caller,
             request.RequestId,
-            $"route:{route.Name}",
-            route.Version,
+            route.Candidates[0].Model,
+            route.Candidates[0].Pricing.Version,
             reserve,
             taskCap,
             _options.MaxRequestsPerMinutePerUser,
             _options.MaxConcurrentRequestsPerUser,
             _options.GlobalDailyCreditMicrosCap,
-            cancellationToken);
+            cancellationToken,
+            route.Name);
+        var reservationMs = Stopwatch.GetElapsedTime(reservationStarted).TotalMilliseconds;
         if (!reservation.Created)
             throw new InvalidOperationException("This request ID has already been used.");
 
         VertexGenerateResult generated;
         ModelCandidateSnapshot selectedCandidate;
+        var providerStarted = Stopwatch.GetTimestamp();
+        double providerMs;
         try
         {
             await _store.MarkReservationProviderStartedAsync(
@@ -168,12 +184,15 @@ public sealed class AiUsageService
             throw;
         }
 
+        providerMs = Stopwatch.GetElapsedTime(providerStarted).TotalMilliseconds;
+
         // Provider work has completed. From this point onward accounting must
         // finish even if the caller disconnects or cancels the local request.
         var (providerCost, charge) = _catalog.CalculateActualCost(selectedCandidate.Pricing, generated.Usage);
         var outcome = string.IsNullOrWhiteSpace(generated.Text)
             ? "provider_completed_no_usable_output"
             : "completed";
+        var evidenceStarted = Stopwatch.GetTimestamp();
         try
         {
             // Persist authoritative provider evidence before changing balances.
@@ -186,7 +205,9 @@ public sealed class AiUsageService
                 charge,
                 providerCost,
                 outcome,
-                CancellationToken.None);
+                CancellationToken.None,
+                selectedCandidate.Model,
+                selectedCandidate.Pricing.Version);
         }
         catch (Exception exception)
         {
@@ -199,6 +220,8 @@ public sealed class AiUsageService
                 "Usage was generated but its durable accounting evidence is pending reconciliation.",
                 exception);
         }
+        var evidenceMs = Stopwatch.GetElapsedTime(evidenceStarted).TotalMilliseconds;
+        var settlementStarted = Stopwatch.GetTimestamp();
         SettlementResult? settled = null;
         for (var attempt = 0; attempt <= _options.MaxRetries; attempt++)
         {
@@ -222,6 +245,16 @@ public sealed class AiUsageService
 
         if (settled is null)
             throw new InvalidOperationException("Usage was generated but its accounting settlement is pending reconciliation.");
+        var settlementMs = Stopwatch.GetElapsedTime(settlementStarted).TotalMilliseconds;
+        _logger.LogInformation(
+            "Paid AI timing route={Route} configMs={ConfigurationMs:F1} reservationMs={ReservationMs:F1} providerMs={ProviderMs:F1} evidenceMs={EvidenceMs:F1} settlementMs={SettlementMs:F1} totalMs={TotalMs:F1}",
+            route.Name,
+            configurationMs,
+            reservationMs,
+            providerMs,
+            evidenceMs,
+            settlementMs,
+            Stopwatch.GetElapsedTime(requestStarted).TotalMilliseconds);
         if (string.IsNullOrWhiteSpace(generated.Text))
             throw new InvalidOperationException("Vertex AI returned no usable response; any reported provider usage was still accounted for.");
         return new GenerateResponse(

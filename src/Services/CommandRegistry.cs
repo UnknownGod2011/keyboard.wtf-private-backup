@@ -87,6 +87,7 @@ public sealed class CommandRegistry
             // A paid provider socket is opened only after local speech has
             // produced a real user turn. Merely opening Jarvis therefore costs
             // zero, and silence/cancellation never reserves paid allowance.
+            _ = _liveConversation.WarmPaidBackendAsync();
             _ = _capture.ToggleJarvisPreflightAsync(StartPaidJarvisTurnAsync);
             return;
         }

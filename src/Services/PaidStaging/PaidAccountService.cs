@@ -190,6 +190,26 @@ internal sealed class PaidAccountService : IDisposable
         return _account;
     }
 
+    public async Task WarmBackendAsync(CancellationToken cancellationToken = default)
+    {
+        if (!Enabled || !IsSignedIn)
+            return;
+        try
+        {
+            await SendAuthorizedAsync<JsonElement>(
+                HttpMethod.Get,
+                "v1/ready",
+                null,
+                cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Warmup is latency optimization only. The real paid request still
+            // authenticates and fails honestly through its normal path.
+            AppLog.Warning(exception, "Paid backend warmup failed");
+        }
+    }
+
     public async Task SignOutAsync(bool allDevices = false, CancellationToken cancellationToken = default)
     {
         if (!Enabled)

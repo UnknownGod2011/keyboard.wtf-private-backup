@@ -75,6 +75,7 @@ public sealed class ModelRoutingService : IModelRoutingService
             "desktop-structured" => "agent_planner",
             "desktop-reformat" => "selected_text",
             "desktop-health" => "fast_text",
+            "live-audio" or "live_audio" => "live_audio",
             _ => "fast_text",
         };
 
@@ -92,7 +93,12 @@ public sealed class ModelRoutingService : IModelRoutingService
 
             var defaults = BootstrapRoutes();
             var snapshot = await _db.Document(RoutingDocument).GetSnapshotAsync(cancellationToken);
-            _cached = snapshot.Exists ? MergeConfiguredRoutes(snapshot, defaults) : defaults;
+            if (!snapshot.Exists && !_options.AllowBootstrapModelRouting)
+                throw new InvalidOperationException(
+                    "The production model-routing document is missing; bootstrap routing is disabled.");
+            _cached = snapshot.Exists
+                ? MergeConfiguredRoutes(snapshot, defaults, !_options.AllowBootstrapModelRouting)
+                : defaults;
             _cachedUntil = _clock.UtcNow.AddSeconds(_options.ModelRoutingCacheSeconds);
             return _cached;
         }
@@ -104,21 +110,39 @@ public sealed class ModelRoutingService : IModelRoutingService
 
     private IReadOnlyDictionary<string, ModelRouteSnapshot> MergeConfiguredRoutes(
         DocumentSnapshot document,
-        IReadOnlyDictionary<string, ModelRouteSnapshot> defaults)
+        IReadOnlyDictionary<string, ModelRouteSnapshot> defaults,
+        bool requireCompleteConfiguration)
     {
         var data = document.ToDictionary();
+        if (requireCompleteConfiguration && !data.ContainsKey("version"))
+            throw new InvalidOperationException("Production model routing has no explicit version.");
         var documentVersion = Text(data, "version", "routes-2026-08-01");
         if (!data.TryGetValue("routes", out var value)
             || value is not IDictionary<string, object> configured)
             throw new InvalidOperationException("The server model-routing document has no valid routes map.");
 
-        var merged = defaults.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        if (requireCompleteConfiguration)
+        {
+            var missing = defaults.Keys.Where(key => !configured.ContainsKey(key)).ToArray();
+            if (missing.Length > 0)
+                throw new InvalidOperationException(
+                    $"Production model routing is incomplete: {string.Join(", ", missing)}.");
+        }
+
+        var merged = requireCompleteConfiguration
+            ? new Dictionary<string, ModelRouteSnapshot>(StringComparer.Ordinal)
+            : defaults.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
         foreach (var pair in configured)
         {
             if (!defaults.TryGetValue(pair.Key, out var fallback)
                 || pair.Value is not IDictionary<string, object> row)
                 throw new InvalidOperationException($"Unknown or invalid server model route '{pair.Key}'.");
-            merged[pair.Key] = ParseRoute(pair.Key, documentVersion, row, fallback);
+            merged[pair.Key] = ParseRoute(
+                pair.Key,
+                documentVersion,
+                row,
+                fallback,
+                requireCompleteConfiguration);
         }
         return merged;
     }
@@ -127,9 +151,18 @@ public sealed class ModelRoutingService : IModelRoutingService
         string name,
         string documentVersion,
         IDictionary<string, object> row,
-        ModelRouteSnapshot fallback)
+        ModelRouteSnapshot fallback,
+        bool requireCompleteConfiguration)
     {
-        var primary = ParseCandidate("primary", row, fallback.Candidates[0]);
+        if (requireCompleteConfiguration)
+            RequireExplicitRouteConfiguration(name, row, fallback.LivePolicy is not null);
+        var liveRoute = fallback.LivePolicy is not null;
+        var primary = ParseCandidate(
+            "primary",
+            row,
+            fallback.Candidates[0],
+            liveRoute,
+            requireCompleteConfiguration);
         var candidates = new List<ModelCandidateSnapshot> { primary };
         var configuredFallback = Text(row, "fallbackModel", "");
         if (!string.IsNullOrWhiteSpace(configuredFallback))
@@ -137,7 +170,12 @@ public sealed class ModelRoutingService : IModelRoutingService
             var defaultFallback = fallback.Candidates.Count > 1
                 ? fallback.Candidates[1]
                 : fallback.Candidates[0] with { Model = configuredFallback };
-            candidates.Add(ParseCandidate("fallback", row, defaultFallback));
+            candidates.Add(ParseCandidate(
+                "fallback",
+                row,
+                defaultFallback,
+                liveRoute,
+                requireCompleteConfiguration));
         }
 
         var route = new ModelRouteSnapshot(
@@ -153,7 +191,13 @@ public sealed class ModelRoutingService : IModelRoutingService
             Integer(row, "thinkingBudget", fallback.ThinkingBudget),
             Integer(row, "canaryBasisPoints", fallback.CanaryBasisPoints),
             Text(row, "minimumDesktopVersion", fallback.MinimumDesktopVersion),
-            Text(row, "lifecycleNote", fallback.LifecycleNote));
+            Text(row, "lifecycleNote", fallback.LifecycleNote),
+            fallback.LivePolicy is null
+                ? null
+                : new LiveRoutePolicySnapshot(
+                    Integer(row, "maxSessionSeconds", fallback.LivePolicy.MaxSessionSeconds),
+                    Number(row, "reservationWindowCreditMicros", fallback.LivePolicy.ReservationWindowCreditMicros),
+                    Number(row, "maxSessionCostCreditMicros", fallback.LivePolicy.MaxSessionCostCreditMicros)));
         Validate(route);
         return route;
     }
@@ -161,13 +205,15 @@ public sealed class ModelRoutingService : IModelRoutingService
     private static ModelCandidateSnapshot ParseCandidate(
         string prefix,
         IDictionary<string, object> row,
-        ModelCandidateSnapshot fallback)
+        ModelCandidateSnapshot fallback,
+        bool requireLivePricing,
+        bool requireExplicitPricing)
     {
         var model = Text(row, prefix + "Model", fallback.Model);
         var location = Text(row, prefix + "Location", fallback.Location);
         var modelChanged = !string.Equals(model, fallback.Model, StringComparison.Ordinal);
-        if (modelChanged)
-            RequireExplicitPricing(prefix, row);
+        if (modelChanged || requireExplicitPricing)
+            RequireExplicitPricing(prefix, row, requireLivePricing);
         var pricing = fallback.Pricing with
         {
             Version = Text(row, prefix + "PricingVersion", fallback.Pricing.Version),
@@ -177,13 +223,59 @@ public sealed class ModelRoutingService : IModelRoutingService
             CachedInputUsdMicrosPerMillionTokens = Number(row, prefix + "CachedInputUsdMicrosPerMillionTokens", fallback.Pricing.CachedInputUsdMicrosPerMillionTokens),
             ReasoningUsdMicrosPerMillionTokens = Number(row, prefix + "ReasoningUsdMicrosPerMillionTokens", fallback.Pricing.ReasoningUsdMicrosPerMillionTokens),
             InputAudioUsdMicrosPerMillionTokens = Number(row, prefix + "InputAudioUsdMicrosPerMillionTokens", fallback.Pricing.InputAudioUsdMicrosPerMillionTokens),
+            UsdToInrPaise = Number(row, prefix + "UsdToInrPaise", fallback.Pricing.UsdToInrPaise),
+            CreditMicrosPerInrPaise = Number(row, prefix + "CreditMicrosPerInrPaise", fallback.Pricing.CreditMicrosPerInrPaise),
+            LiveInputTextUsdMicrosPerMillionTokens = Number(row, prefix + "LiveInputTextUsdMicrosPerMillionTokens", fallback.Pricing.LiveInputTextUsdMicrosPerMillionTokens),
+            LiveInputAudioUsdMicrosPerMillionTokens = Number(row, prefix + "LiveInputAudioUsdMicrosPerMillionTokens", fallback.Pricing.LiveInputAudioUsdMicrosPerMillionTokens),
+            LiveInputImageUsdMicrosPerMillionTokens = Number(row, prefix + "LiveInputImageUsdMicrosPerMillionTokens", fallback.Pricing.LiveInputImageUsdMicrosPerMillionTokens),
+            LiveOutputTextUsdMicrosPerMillionTokens = Number(row, prefix + "LiveOutputTextUsdMicrosPerMillionTokens", fallback.Pricing.LiveOutputTextUsdMicrosPerMillionTokens),
+            LiveOutputAudioUsdMicrosPerMillionTokens = Number(row, prefix + "LiveOutputAudioUsdMicrosPerMillionTokens", fallback.Pricing.LiveOutputAudioUsdMicrosPerMillionTokens),
         };
         return new ModelCandidateSnapshot(model, location, pricing);
     }
 
+    private static void RequireExplicitRouteConfiguration(
+        string routeName,
+        IDictionary<string, object> row,
+        bool live)
+    {
+        var required = new List<string>
+        {
+            "version",
+            "provider",
+            "enabled",
+            "killSwitch",
+            "maxInputCharacters",
+            "maxOutputTokens",
+            "timeoutSeconds",
+            "thinkingBudget",
+            "canaryBasisPoints",
+            "minimumDesktopVersion",
+            "lifecycleNote",
+            "primaryModel",
+            "primaryLocation",
+        };
+        if (live)
+        {
+            required.AddRange([
+                "maxSessionSeconds",
+                "reservationWindowCreditMicros",
+                "maxSessionCostCreditMicros",
+            ]);
+        }
+        var missing = required.Where(key => !row.ContainsKey(key)).ToArray();
+        if (missing.Length > 0)
+            throw new InvalidOperationException(
+                $"Production route '{routeName}' is incomplete: {string.Join(", ", missing)}.");
+        if (row.ContainsKey("fallbackModel") && !row.ContainsKey("fallbackLocation"))
+            throw new InvalidOperationException(
+                $"Production route '{routeName}' has a fallback model without a location.");
+    }
+
     internal static void RequireExplicitPricing(
         string prefix,
-        IDictionary<string, object> row)
+        IDictionary<string, object> row,
+        bool requireLivePricing = false)
     {
         // A newly configured model must never inherit another model's price.
         // Under-reserving provider work is a financial correctness failure, so
@@ -197,7 +289,21 @@ public sealed class ModelRoutingService : IModelRoutingService
             prefix + "CachedInputUsdMicrosPerMillionTokens",
             prefix + "ReasoningUsdMicrosPerMillionTokens",
             prefix + "InputAudioUsdMicrosPerMillionTokens",
+            prefix + "UsdToInrPaise",
+            prefix + "CreditMicrosPerInrPaise",
         };
+        if (requireLivePricing)
+        {
+            required =
+            [
+                .. required,
+                prefix + "LiveInputTextUsdMicrosPerMillionTokens",
+                prefix + "LiveInputAudioUsdMicrosPerMillionTokens",
+                prefix + "LiveInputImageUsdMicrosPerMillionTokens",
+                prefix + "LiveOutputTextUsdMicrosPerMillionTokens",
+                prefix + "LiveOutputAudioUsdMicrosPerMillionTokens",
+            ];
+        }
         var missing = required.Where(key => !row.ContainsKey(key)).ToArray();
         if (missing.Length > 0)
             throw new InvalidOperationException(
@@ -209,31 +315,32 @@ public sealed class ModelRoutingService : IModelRoutingService
         var now = _clock.UtcNow;
         var flashLite = Candidate(
             "gemini-3.5-flash-lite",
-            "asia-south1",
-            "vertex-gemini-3.5-flash-lite-standard-nonglobal-fx100-2026-08-09",
-            330_000,
-            2_750_000,
-            33_000,
-            330_000,
+            "global",
+            "vertex-gemini-3.5-flash-lite-standard-global-fx100-2026-08-10",
+            300_000,
+            2_500_000,
+            30_000,
+            300_000,
             now);
         var flash = Candidate(
             "gemini-3.5-flash",
-            "asia-south1",
-            "vertex-gemini-3.5-flash-standard-nonglobal-fx100-2026-08-09",
-            1_650_000,
-            9_900_000,
-            165_000,
-            1_650_000,
+            "global",
+            "vertex-gemini-3.5-flash-standard-global-fx100-2026-08-10",
+            1_500_000,
+            9_000_000,
+            150_000,
+            1_500_000,
             now);
         var olderLite = Candidate(
             "gemini-3.1-flash-lite",
-            "asia-south1",
-            "vertex-gemini-3.1-flash-lite-standard-nonglobal-fx100-2026-08-09",
-            275_000,
-            1_650_000,
-            27_500,
-            550_000,
+            "global",
+            "vertex-gemini-3.1-flash-lite-standard-global-fx100-2026-08-10",
+            250_000,
+            1_500_000,
+            25_000,
+            500_000,
             now);
+        var live = LiveCandidate(now);
 
         return new Dictionary<string, ModelRouteSnapshot>(StringComparer.Ordinal)
         {
@@ -247,6 +354,14 @@ public sealed class ModelRoutingService : IModelRoutingService
                 "Fast GA planner with a stronger compatible GA fallback."),
             ["screen_reasoning"] = Route("screen_reasoning", [flash, flashLite], 200_000, 2_048, 90, 1_024,
                 "Gemini 3.5 Flash GA multimodal reasoning route."),
+            ["live_audio"] = Route("live_audio", [live], 20_000, 1, 100, 0,
+                "Gemini Live 2.5 Flash Native Audio GA; retirement 2026-12-13.") with
+                {
+                    LivePolicy = new LiveRoutePolicySnapshot(
+                        _options.LiveSessionMaxSeconds,
+                        _options.LiveReservationWindowCreditMicros,
+                        _options.LiveSessionCreditMicrosCap),
+                },
         };
     }
 
@@ -260,7 +375,7 @@ public sealed class ModelRoutingService : IModelRoutingService
         string lifecycle) =>
         new(
             name,
-            "routes-2026-08-08",
+            "routes-2026-08-10",
             "vertex",
             candidates,
             true,
@@ -297,6 +412,27 @@ public sealed class ModelRoutingService : IModelRoutingService
                 effectiveAt,
                 audioInput));
 
+    private static ModelCandidateSnapshot LiveCandidate(DateTimeOffset effectiveAt) =>
+        new(
+            "gemini-live-2.5-flash-native-audio",
+            "us-central1",
+            new PricingSnapshot(
+                "vertex-gemini-live-2.5-flash-native-audio-standard-fx100-2026-08-10",
+                "gemini-live-2.5-flash-native-audio",
+                500_000,
+                2_000_000,
+                500_000,
+                2_000_000,
+                CatalogService.ConservativeUsdToInrPaise,
+                10_000,
+                effectiveAt,
+                3_000_000,
+                500_000,
+                3_000_000,
+                3_000_000,
+                2_000_000,
+                12_000_000));
+
     private static void Validate(ModelRouteSnapshot route)
     {
         if (!string.Equals(route.Provider, "vertex", StringComparison.Ordinal))
@@ -307,6 +443,20 @@ public sealed class ModelRoutingService : IModelRoutingService
             || route.ThinkingBudget is < 0 or > 8_192
             || route.CanaryBasisPoints is < 0 or > 10_000)
             throw new InvalidOperationException($"Unsafe limits on server model route '{route.Name}'.");
+        if (route.Name == "live_audio")
+        {
+            var live = route.LivePolicy
+                ?? throw new InvalidOperationException("The Live route has no server-owned session policy.");
+            if (live.MaxSessionSeconds is < 30 or > 900
+                || live.ReservationWindowCreditMicros <= 0
+                || live.MaxSessionCostCreditMicros <= 0
+                || live.ReservationWindowCreditMicros > live.MaxSessionCostCreditMicros)
+                throw new InvalidOperationException("The Live route has unsafe session limits.");
+        }
+        else if (route.LivePolicy is not null)
+        {
+            throw new InvalidOperationException($"Non-Live route '{route.Name}' has a Live session policy.");
+        }
         foreach (var candidate in route.Candidates)
         {
             if (!IsSafeIdentifier(candidate.Model) || !IsSafeIdentifier(candidate.Location))
@@ -317,6 +467,13 @@ public sealed class ModelRoutingService : IModelRoutingService
                 || pricing.CachedInputUsdMicrosPerMillionTokens <= 0
                 || pricing.ReasoningUsdMicrosPerMillionTokens <= 0)
                 throw new InvalidOperationException($"Invalid pricing on server model route '{route.Name}'.");
+            if (route.Name == "live_audio"
+                && (pricing.LiveInputTextUsdMicrosPerMillionTokens <= 0
+                    || pricing.LiveInputAudioUsdMicrosPerMillionTokens <= 0
+                    || pricing.LiveInputImageUsdMicrosPerMillionTokens <= 0
+                    || pricing.LiveOutputTextUsdMicrosPerMillionTokens <= 0
+                    || pricing.LiveOutputAudioUsdMicrosPerMillionTokens <= 0))
+                throw new InvalidOperationException("The Live route has incomplete modality pricing.");
         }
     }
 

@@ -176,6 +176,33 @@ public sealed class PaidStagingSecurityTests
         }
     }
 
+    [Fact]
+    public async Task Intentional_activation_can_warm_the_authenticated_backend_without_using_AI()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var (store, directory) = CreateSessionStore();
+        try
+        {
+            SaveValidSession(store);
+            var handler = new PaidApiHandler(availableCreditMicros: 0);
+            using var account = CreateAccount(store, handler);
+            await account.InitializeAsync();
+
+            await account.WarmBackendAsync();
+
+            Assert.Contains("/v1/ready", handler.Requests);
+            Assert.DoesNotContain(handler.Requests, path =>
+                path.EndsWith("/v1/ai/generate", StringComparison.Ordinal)
+                || path.EndsWith("/v1/ai/live", StringComparison.Ordinal));
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
     private static PaidAccountService CreateAccount(PaidSessionStore store, HttpMessageHandler handler) =>
         new(
             new PaidStagingConfiguration(
@@ -236,6 +263,7 @@ public sealed class PaidStagingSecurityTests
                     recentPurchases = Array.Empty<object>(),
                     subscriptionStatus = "none",
                 }),
+                "/v1/ready" => "{\"status\":\"ready\"}",
                 "/v1/ai/generate" => JsonSerializer.Serialize(new
                 {
                     requestId = "request-1",

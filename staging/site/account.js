@@ -4,6 +4,7 @@ import {
   googleSignIn,
   googleSignOut,
   loadAccount,
+  loadUsagePage,
   loadCatalog,
   revokeDevice,
   deleteAccountPermanently,
@@ -21,6 +22,8 @@ let authEpoch = 0;
 let renderInFlight = false;
 let lastPassiveRefreshAt = 0;
 let resumedPendingEpoch = -1;
+let usageCursor = null;
+let usageRows = [];
 const setStatus = (text, kind = "") => {
   byId("status").textContent = text;
   byId("status").className = `status ${kind}`;
@@ -36,6 +39,31 @@ const escape = (value) => String(value ?? "").replace(
   })[character],
 );
 
+const activityLabels = {
+  fast_text: "Jarvis command",
+  selected_text: "Selected text",
+  agent_planner: "Jarvis command",
+  browser_planner: "Browser task",
+  screen_reasoning: "Screen reasoning",
+  live_audio: "Jarvis Live",
+  ai_request: "Jarvis AI",
+};
+
+function renderUsageRows() {
+  byId("usageList").innerHTML = usageRows.length
+    ? usageRows.map((row) => {
+      const label = activityLabels[row.activityType] || "Jarvis AI";
+      const status = row.accountingStatus && row.accountingStatus !== "settled"
+        ? "Finalizing usage…"
+        : row.outcome === "completed" ? "Verified" : row.outcome;
+      const audio = Number(row.inputAudioTokens || 0) + Number(row.outputAudioTokens || 0);
+      const images = Number(row.inputImageTokens || 0) + Number(row.outputImageTokens || 0);
+      return `<li class="usage-row"><details><summary><span>${escape(label)}<br><span class="small">${new Date(row.createdAt).toLocaleString()} · ${escape(status)}</span></span><strong>${formatCredits(row.chargedCreditMicros)}</strong></summary><div class="small usage-details">Model: ${escape(row.model || "—")}<br>Input/output: ${Number(row.inputTokens || 0).toLocaleString()} / ${Number(row.outputTokens || 0).toLocaleString()} tokens${audio ? `<br>Audio: ${audio.toLocaleString()} tokens` : ""}${images ? `<br>Images: ${images.toLocaleString()} tokens` : ""}<br>Pricing: ${escape(row.pricingVersion || "—")} · ${row.usageEstimated ? "estimated" : "provider-reported"}</div></details></li>`;
+    }).join("")
+    : "<li>No usage yet.</li>";
+  byId("loadMoreUsage").classList.toggle("hidden", !usageCursor);
+}
+
 function clearAccountUi() {
   byId("identity").textContent = "—";
   byId("plan").textContent = "No paid plan";
@@ -46,6 +74,9 @@ function clearAccountUi() {
   byId("subscription").textContent = "None";
   byId("renewal").textContent = "No renewal scheduled.";
   byId("usageList").replaceChildren();
+  byId("loadMoreUsage").classList.add("hidden");
+  usageCursor = null;
+  usageRows = [];
   byId("purchaseList").replaceChildren();
   byId("deviceList").replaceChildren();
   byId("products").replaceChildren();
@@ -75,9 +106,9 @@ async function render(expectedUser, epoch, quiet = false) {
     byId("renewal").textContent = account.cycleEndsAt
       ? `Current cycle ends ${new Date(account.cycleEndsAt).toLocaleDateString()}.`
       : "No renewal scheduled.";
-    byId("usageList").innerHTML = account.recentUsage?.length
-      ? account.recentUsage.map((row) => `<li><span>${escape(row.model)}<br><span class="small">${escape(row.outcome)}</span></span><strong>${formatCredits(row.chargedCreditMicros)}</strong></li>`).join("")
-      : "<li>No usage yet.</li>";
+    usageRows = account.recentUsage || [];
+    usageCursor = usageRows.length === 20 ? usageRows.at(-1).requestId : null;
+    renderUsageRows();
     byId("purchaseList").innerHTML = account.recentPurchases?.length
       ? account.recentPurchases.map((row) => `<li><span>${escape(row.productSku)}<br><span class="small">${escape(row.status)}</span></span><strong>${formatMoney(row.amountMinor, row.currency)}</strong></li>`).join("")
       : "<li>No purchases yet.</li>";
@@ -212,6 +243,22 @@ byId("refreshAccount").addEventListener("click", async () => {
   button.disabled = true;
   try {
     await refreshSignedIn(auth.currentUser, authEpoch);
+  } finally {
+    button.disabled = false;
+  }
+});
+byId("loadMoreUsage").addEventListener("click", async () => {
+  if (!usageCursor) return;
+  const button = byId("loadMoreUsage");
+  button.disabled = true;
+  try {
+    const page = await loadUsagePage(usageCursor);
+    const known = new Set(usageRows.map((row) => row.requestId));
+    usageRows.push(...(page.items || []).filter((row) => !known.has(row.requestId)));
+    usageCursor = page.nextCursor || null;
+    renderUsageRows();
+  } catch (error) {
+    setStatus(error.message, "error");
   } finally {
     button.disabled = false;
   }

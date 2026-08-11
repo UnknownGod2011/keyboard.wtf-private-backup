@@ -52,6 +52,12 @@ builder.Services.AddOptions<PaidSystemOptions>()
         options,
         Environment.GetEnvironmentVariable("RAZORPAY_KEY_ID")),
         "The paid-system deployment environment is inconsistent.")
+    .Validate(options => DeploymentSafety.ValidateRequiredSecrets(
+        options,
+        Environment.GetEnvironmentVariable("RAZORPAY_KEY_ID"),
+        Environment.GetEnvironmentVariable("RAZORPAY_KEY_SECRET"),
+        Environment.GetEnvironmentVariable("RAZORPAY_WEBHOOK_SECRET")),
+        "Required production payment secrets are missing.")
     .ValidateOnStart();
 var paidOptions = builder.Configuration
     .GetSection(PaidSystemOptions.SectionName)
@@ -108,6 +114,29 @@ builder.Services.AddSingleton<MaintenanceRunner>();
 builder.Services.AddSingleton<OperationalHealthService>();
 
 var app = builder.Build();
+if (paidOptions.DeploymentEnvironment == PaidDeploymentEnvironment.Production)
+{
+    // Production must never become ready by inheriting bootstrap products,
+    // models, or prices. Resolve every paid capability before accepting traffic.
+    await app.Services.GetRequiredService<ICatalogService>()
+        .GetAsync(app.Lifetime.ApplicationStopping);
+    var routing = app.Services.GetRequiredService<IModelRoutingService>();
+    foreach (var taskKind in new[]
+             {
+                 "desktop-health",
+                 "desktop-reformat",
+                 "desktop-structured",
+                 "browser-plan",
+                 "screen-guidance",
+                 "live-audio",
+             })
+    {
+        await routing.ResolveAsync(
+            taskKind,
+            $"production-startup:{taskKind}",
+            app.Lifetime.ApplicationStopping);
+    }
+}
 var maintenanceJob = MaintenanceRunner.ParseJob(args);
 if (!string.IsNullOrWhiteSpace(maintenanceJob))
 {

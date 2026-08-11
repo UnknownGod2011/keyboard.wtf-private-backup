@@ -145,12 +145,47 @@ public sealed class SecurityAndUsageTests
             DeploymentSafety.Validate(options, "rzp_live_public"));
     }
 
+    [Fact]
+    public void Production_rejects_bootstrap_model_routing_even_with_a_real_catalog()
+    {
+        var options = TestOptions(
+            PaidDeploymentEnvironment.Production,
+            allowBootstrapCatalog: false,
+            useStagingIdentifiers: false,
+            allowBootstrapModelRouting: true);
+        Assert.Throws<InvalidOperationException>(() =>
+            DeploymentSafety.Validate(options, "rzp_live_public"));
+    }
+
+    [Theory]
+    [InlineData(null, "secret", "webhook")]
+    [InlineData("rzp_live_public", null, "webhook")]
+    [InlineData("rzp_live_public", "secret", null)]
+    public void Production_rejects_incomplete_payment_secrets(
+        string? keyId,
+        string? keySecret,
+        string? webhookSecret)
+    {
+        var options = TestOptions(
+            PaidDeploymentEnvironment.Production,
+            allowBootstrapCatalog: false,
+            useStagingIdentifiers: false);
+        Assert.Throws<InvalidOperationException>(() =>
+            DeploymentSafety.ValidateRequiredSecrets(options, keyId, keySecret, webhookSecret));
+        Assert.True(DeploymentSafety.ValidateRequiredSecrets(
+            options,
+            "rzp_live_public",
+            "secret",
+            "webhook"));
+    }
+
     [Theory]
     [InlineData("browser-plan", "browser_planner")]
     [InlineData("browser-vision-recovery", "browser_planner")]
     [InlineData("screen-guidance", "screen_reasoning")]
     [InlineData("desktop-structured", "agent_planner")]
     [InlineData("desktop-reformat", "selected_text")]
+    [InlineData("live-audio", "live_audio")]
     [InlineData("unknown", "fast_text")]
     public void Task_capabilities_map_to_server_owned_routes(string taskKind, string expected) =>
         Assert.Equal(expected, ModelRoutingService.ResolveRouteName(taskKind));
@@ -187,6 +222,27 @@ public sealed class SecurityAndUsageTests
         var error = Assert.Throws<InvalidOperationException>(() =>
             ModelRoutingService.RequireExplicitPricing("primary", row));
         Assert.Contains("explicit pricing", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_new_live_model_requires_every_live_modality_price()
+    {
+        var row = new Dictionary<string, object>
+        {
+            ["primaryModel"] = "gemini-future-live",
+            ["primaryPricingVersion"] = "future-live-v1",
+            ["primaryInputUsdMicrosPerMillionTokens"] = 1L,
+            ["primaryOutputUsdMicrosPerMillionTokens"] = 1L,
+            ["primaryCachedInputUsdMicrosPerMillionTokens"] = 1L,
+            ["primaryReasoningUsdMicrosPerMillionTokens"] = 1L,
+            ["primaryInputAudioUsdMicrosPerMillionTokens"] = 1L,
+        };
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            ModelRoutingService.RequireExplicitPricing("primary", row, requireLivePricing: true));
+
+        Assert.Contains("LiveInputText", error.Message, StringComparison.Ordinal);
+        Assert.Contains("LiveOutputAudio", error.Message, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -965,6 +1021,9 @@ public sealed class SecurityAndUsageTests
         Assert.Equal(1, store.ReserveCalls);
         Assert.Equal(1, store.ProviderStartedCalls);
         Assert.Equal(1, store.ProviderCompletedCalls);
+        Assert.Equal("gemini-test", store.CompletedModel);
+        Assert.Equal("test-v1", store.CompletedPricingVersion);
+        Assert.Equal("fast_text", store.ReservedActivityType);
         Assert.Equal(1, store.SettleCalls);
         Assert.Equal(0, store.ReleaseCalls);
         Assert.True(store.Calls.IndexOf("provider-completed") < store.Calls.IndexOf("settle"));
@@ -1018,8 +1077,8 @@ public sealed class SecurityAndUsageTests
                 store.GrantCreditsAsync(second.UserId, 2_000_000, "integration isolation", $"grant-b-{suffix}", "integration-test", CancellationToken.None));
 
             var reservations = await Task.WhenAll(
-                store.ReserveAsync(first, requestId, "gemini-test", "test", 100_000, 500_000, 12, 1, 1_000_000_000, CancellationToken.None),
-                store.ReserveAsync(second, requestId, "gemini-test", "test", 100_000, 500_000, 12, 1, 1_000_000_000, CancellationToken.None));
+                store.ReserveAsync(first, requestId, "gemini-test", "test", 100_000, 500_000, 12, 1, 1_000_000_000, CancellationToken.None, "browser_planner"),
+                store.ReserveAsync(second, requestId, "gemini-test", "test", 100_000, 500_000, 12, 1, 1_000_000_000, CancellationToken.None, "selected_text"));
             Assert.All(reservations, result => Assert.True(result.Created));
             Assert.Equal(900_000, reservations[0].Account.AvailableCreditMicros);
             Assert.Equal(1_900_000, reservations[1].Account.AvailableCreditMicros);
@@ -1039,6 +1098,11 @@ public sealed class SecurityAndUsageTests
             Assert.Equal(2_000_000, settlements[1].Account.AvailableCreditMicros);
             Assert.Single(settlements[0].Account.RecentUsage);
             Assert.Single(settlements[1].Account.RecentUsage);
+            Assert.Equal("browser_planner", settlements[0].Account.RecentUsage[0].ActivityType);
+            Assert.Equal("selected_text", settlements[1].Account.RecentUsage[0].ActivityType);
+            var usagePage = await store.GetUsagePageAsync(first.UserId, 1, null, CancellationToken.None);
+            Assert.Single(usagePage.Items);
+            Assert.Null(usagePage.NextCursor);
         }
         finally
         {
@@ -1743,6 +1807,39 @@ public sealed class SecurityAndUsageTests
         Assert.Equal(50, snapshot.TotalTokens);
     }
 
+    [Theory]
+    [MemberData(nameof(LiveCumulativeUsageCases))]
+    public void Live_usage_charges_only_the_highest_cumulative_snapshot(
+        long[] snapshots,
+        long expected)
+    {
+        var usage = new LiveUsageAccumulator(1_000_000);
+        foreach (var value in snapshots)
+        {
+            usage.ObserveProvider(JsonSerializer.Serialize(new
+            {
+                usageMetadata = new
+                {
+                    promptTokenCount = value,
+                    candidatesTokenCount = 0,
+                    totalTokenCount = value,
+                },
+            }));
+        }
+
+        var result = usage.Snapshot();
+
+        Assert.Equal(expected, result.InputTokens);
+        Assert.Equal(expected, result.TotalTokens);
+    }
+
+    public static TheoryData<long[], long> LiveCumulativeUsageCases => new()
+    {
+        { [100, 200, 300], 300 },
+        { [100, 200, 200, 200], 200 },
+        { [100, 300, 200], 300 },
+    };
+
     [Fact]
     public void Live_idle_begins_only_after_a_completed_turn_and_resets_on_new_activity()
     {
@@ -1883,11 +1980,11 @@ public sealed class SecurityAndUsageTests
     private static PaidSystemOptions TestOptions(
         PaidDeploymentEnvironment environment = PaidDeploymentEnvironment.Staging,
         bool allowBootstrapCatalog = true,
-        bool useStagingIdentifiers = true) => new()
+        bool useStagingIdentifiers = true,
+        bool? allowBootstrapModelRouting = null) => new()
     {
         DeploymentEnvironment = environment,
         ProjectId = useStagingIdentifiers ? "keyboard-wtf-staging" : "keyboard-wtf-prod",
-        Region = "asia-south1",
         VertexModel = "gemini-test",
         WebBaseUrl = useStagingIdentifiers
             ? "https://staging.example.test"
@@ -1898,6 +1995,8 @@ public sealed class SecurityAndUsageTests
         MaxRequestSeconds = 5,
         DefaultTaskCreditMicrosCap = 25_000_000,
         AllowBootstrapCatalog = allowBootstrapCatalog,
+        AllowBootstrapModelRouting = allowBootstrapModelRouting
+            ?? environment != PaidDeploymentEnvironment.Production,
     };
 
     private sealed class FakeClock : IClock
@@ -2003,18 +2102,30 @@ public sealed class SecurityAndUsageTests
         public int SettleCalls { get; private set; }
         public int ReleaseCalls { get; private set; }
         public int ReconciliationCalls { get; private set; }
+        public string? CompletedModel { get; private set; }
+        public string? CompletedPricingVersion { get; private set; }
+        public string? ReservedActivityType { get; private set; }
 
         public Task EnsureAccountAsync(CallerIdentity caller, CancellationToken cancellationToken) => Task.CompletedTask;
 
         public Task<AccountSnapshot> GetAccountAsync(string userId, CancellationToken cancellationToken) =>
             Task.FromResult(Account(userId));
 
+        public Task<UsagePageSnapshot> GetUsagePageAsync(
+            string userId,
+            int limit,
+            string? cursor,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new UsagePageSnapshot([], null));
+
         public Task<ReservationResult> ReserveAsync(
             CallerIdentity caller, string requestId, string model, string pricingVersion,
             long reserveCreditMicros, long taskCapCreditMicros, int requestsPerMinute,
-            int maxConcurrent, long globalDailyCap, CancellationToken cancellationToken)
+            int maxConcurrent, long globalDailyCap, CancellationToken cancellationToken,
+            string activityType = "ai_request")
         {
             ReserveCalls++;
+            ReservedActivityType = activityType;
             if (!ReserveCreated)
                 return Task.FromResult(new ReservationResult(
                     false,
@@ -2065,9 +2176,13 @@ public sealed class SecurityAndUsageTests
             long actualCreditMicros,
             long providerCostUsdMicros,
             string outcome,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? model = null,
+            string? pricingVersion = null)
         {
             ProviderCompletedCalls++;
+            CompletedModel = model;
+            CompletedPricingVersion = pricingVersion;
             Calls.Add("provider-completed");
             if (FailProviderCompletion)
                 throw new InvalidOperationException("simulated provider evidence write failure");

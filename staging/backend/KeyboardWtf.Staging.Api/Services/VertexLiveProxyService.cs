@@ -56,6 +56,7 @@ public sealed class VertexLiveProxyService
     };
     private readonly IAccountStore _store;
     private readonly ICatalogService _catalog;
+    private readonly IModelRoutingService _routing;
     private readonly IVertexAccessTokenProvider _tokens;
     private readonly PaidSystemOptions _options;
     private readonly ILogger<VertexLiveProxyService> _logger;
@@ -63,12 +64,14 @@ public sealed class VertexLiveProxyService
     public VertexLiveProxyService(
         IAccountStore store,
         ICatalogService catalog,
+        IModelRoutingService routing,
         IVertexAccessTokenProvider tokens,
         IOptions<PaidSystemOptions> options,
         ILogger<VertexLiveProxyService> logger)
     {
         _store = store;
         _catalog = catalog;
+        _routing = routing;
         _tokens = tokens;
         _options = options.Value;
         _logger = logger;
@@ -81,9 +84,6 @@ public sealed class VertexLiveProxyService
     {
         if (!context.WebSockets.IsWebSocketRequest)
             throw new ArgumentException("A WebSocket upgrade is required.");
-        ClientCompatibility.Require(
-            context.Request.Headers[ClientCompatibility.DesktopVersionHeader].ToString(),
-            _options.MinimumLiveDesktopVersion);
         var requestId = context.Request.Query["requestId"].ToString();
         if (!IsSafeRequestId(requestId))
             throw new ArgumentException("A stable live-session request ID is required.");
@@ -91,21 +91,32 @@ public sealed class VertexLiveProxyService
         var catalog = await _catalog.GetAsync(cancellationToken);
         if (catalog.KillSwitch)
             throw new InvalidOperationException(catalog.KillSwitchMessage ?? "Paid AI is temporarily unavailable.");
+        var route = await _routing.ResolveAsync(
+            "live-audio",
+            $"{caller.UserId}:{requestId}",
+            cancellationToken);
+        ClientCompatibility.Require(
+            context.Request.Headers[ClientCompatibility.DesktopVersionHeader].ToString(),
+            route.MinimumDesktopVersion);
+        var livePolicy = route.LivePolicy
+            ?? throw new InvalidOperationException("The Live route has no server-owned session policy.");
+        var selectedCandidate = route.Candidates[0];
         await _store.EnsureAccountAsync(caller, cancellationToken);
         var initialReservation = Math.Min(
-            _options.LiveReservationWindowCreditMicros,
-            _options.LiveSessionCreditMicrosCap);
+            livePolicy.ReservationWindowCreditMicros,
+            livePolicy.MaxSessionCostCreditMicros);
         var reservation = await _store.ReserveAsync(
             caller,
             requestId,
-            _options.VertexLiveModel,
-            catalog.Pricing.Version,
+            selectedCandidate.Model,
+            selectedCandidate.Pricing.Version,
             initialReservation,
-            _options.LiveSessionCreditMicrosCap,
+            livePolicy.MaxSessionCostCreditMicros,
             _options.MaxRequestsPerMinutePerUser,
             _options.MaxConcurrentRequestsPerUser,
             _options.GlobalDailyCreditMicrosCap,
-            cancellationToken);
+            cancellationToken,
+            route.Name);
         if (!reservation.Created)
             throw new InvalidOperationException("This live-session request ID has already been used.");
 
@@ -123,7 +134,7 @@ public sealed class VertexLiveProxyService
             provider.Options.SetRequestHeader("Authorization", $"Bearer {accessToken}");
             provider.Options.SetRequestHeader("Content-Type", "application/json");
             var endpoint = new Uri(
-                $"wss://{_options.VertexLiveRegion}-aiplatform.googleapis.com/ws/" +
+                $"wss://{selectedCandidate.Location}-aiplatform.googleapis.com/ws/" +
                 "google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent");
             await provider.ConnectAsync(endpoint, cancellationToken);
             providerConnected = true;
@@ -132,8 +143,8 @@ public sealed class VertexLiveProxyService
             var setup = await ReceiveTextAsync(client, MaxMessageBytes, cancellationToken);
             var rewritten = RewriteSetup(
                 setup,
-                $"projects/{_options.ProjectId}/locations/{_options.VertexLiveRegion}/" +
-                $"publishers/google/models/{_options.VertexLiveModel}");
+                $"projects/{_options.ProjectId}/locations/{selectedCandidate.Location}/" +
+                $"publishers/google/models/{selectedCandidate.Model}");
             usage.ObserveClient(rewritten);
             await _store.MarkReservationProviderStartedAsync(
                 caller.UserId,
@@ -143,7 +154,7 @@ public sealed class VertexLiveProxyService
             await SendTextAsync(provider, rewritten, cancellationToken);
 
             using var session = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            session.CancelAfter(TimeSpan.FromSeconds(_options.LiveSessionMaxSeconds));
+            session.CancelAfter(TimeSpan.FromSeconds(livePolicy.MaxSessionSeconds));
             long reservedCreditMicros = reservation.Reservation.ReservedCreditMicros;
             async Task EnsureBudgetAsync(CancellationToken token)
             {
@@ -151,15 +162,15 @@ public sealed class VertexLiveProxyService
                 if (current.TotalTokens <= 0)
                     return;
                 var (_, currentCharge) = _catalog.CalculateLiveActualCost(
-                    catalog.Pricing,
+                    selectedCandidate.Pricing,
                     current,
                     _options.LiveEstimateSafetyBasisPoints);
-                if (currentCharge >= _options.LiveSessionCreditMicrosCap)
+                if (currentCharge >= livePolicy.MaxSessionCostCreditMicros)
                     throw new InvalidOperationException("The Live session reached its approved server budget.");
                 var target = RequiredLiveReservation(
                     currentCharge,
-                    _options.LiveReservationWindowCreditMicros,
-                    _options.LiveSessionCreditMicrosCap);
+                    livePolicy.ReservationWindowCreditMicros,
+                    livePolicy.MaxSessionCostCreditMicros);
                 if (target <= Interlocked.Read(ref reservedCreditMicros))
                     return;
                 var ensured = await _store.EnsureReservationCapacityAsync(
@@ -186,7 +197,7 @@ public sealed class VertexLiveProxyService
                 caller.UserId,
                 requestId,
                 usage,
-                catalog.Pricing,
+                selectedCandidate.Pricing,
                 session.Token);
             var idle = WaitForPostTurnIdleAsync(
                 activity,
@@ -233,7 +244,7 @@ public sealed class VertexLiveProxyService
             case LiveAccountingDisposition.Settle:
             {
                 var (providerCost, charge) = _catalog.CalculateLiveActualCost(
-                    catalog.Pricing,
+                    selectedCandidate.Pricing,
                     measured,
                     _options.LiveEstimateSafetyBasisPoints);
                 try
@@ -245,7 +256,9 @@ public sealed class VertexLiveProxyService
                         charge,
                         providerCost,
                         outcome,
-                        CancellationToken.None);
+                        CancellationToken.None,
+                        selectedCandidate.Model,
+                        selectedCandidate.Pricing.Version);
                 }
                 catch (Exception exception)
                 {

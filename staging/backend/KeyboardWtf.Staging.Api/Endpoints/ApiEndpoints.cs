@@ -77,6 +77,17 @@ public static class ApiEndpoints
             TypedResults.Ok(await login.RefreshAsync(request, token)))
             .RequireRateLimiting("login");
 
+        api.MapGet("/ready", async (
+            HttpContext context,
+            IIdentityService identities,
+            CancellationToken token) =>
+        {
+            // Authenticates and wakes the request path, but performs no model
+            // call, reservation, balance mutation, or reconciliation work.
+            await RequireCallerAsync(context, identities, token);
+            return TypedResults.Ok(new { status = "ready" });
+        });
+
         api.MapGet("/account", async (
             HttpContext context,
             IIdentityService identities,
@@ -110,6 +121,23 @@ public static class ApiEndpoints
                     caller.Email,
                     StringComparer.OrdinalIgnoreCase),
             });
+        });
+
+        api.MapGet("/usage", async (
+            int? limit,
+            string? cursor,
+            HttpContext context,
+            IIdentityService identities,
+            IAccountStore store,
+            CancellationToken token) =>
+        {
+            var caller = await RequireCallerAsync(context, identities, token);
+            var page = await store.GetUsagePageAsync(
+                caller.UserId,
+                Math.Clamp(limit ?? 20, 1, 50),
+                cursor,
+                token);
+            return TypedResults.Ok(page);
         });
 
         api.MapPost("/sessions/logout", async (

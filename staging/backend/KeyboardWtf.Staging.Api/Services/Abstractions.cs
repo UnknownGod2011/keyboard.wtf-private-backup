@@ -25,6 +25,11 @@ public interface IAccountStore
 {
     Task EnsureAccountAsync(CallerIdentity caller, CancellationToken cancellationToken);
     Task<AccountSnapshot> GetAccountAsync(string userId, CancellationToken cancellationToken);
+    Task<UsagePageSnapshot> GetUsagePageAsync(
+        string userId,
+        int limit,
+        string? cursor,
+        CancellationToken cancellationToken);
     Task<ReservationResult> ReserveAsync(
         CallerIdentity caller,
         string requestId,
@@ -35,7 +40,8 @@ public interface IAccountStore
         int requestsPerMinute,
         int maxConcurrent,
         long globalDailyCap,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string activityType = "ai_request");
     Task<SettlementResult> SettleAsync(
         string userId,
         string requestId,
@@ -60,7 +66,9 @@ public interface IAccountStore
         long actualCreditMicros,
         long providerCostUsdMicros,
         string outcome,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string? model = null,
+        string? pricingVersion = null);
     Task CheckpointReservationUsageAsync(
         string userId,
         string requestId,

@@ -231,6 +231,12 @@ export async function loadAccount() {
   return state.account;
 }
 
+export async function loadUsagePage(cursor = null, limit = 20) {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (cursor) query.set("cursor", cursor);
+  return api(`/v1/usage?${query}`, { authenticated: true });
+}
+
 export async function revokeDevice(deviceId) {
   await api("/v1/devices/revoke", {
     authenticated: true,

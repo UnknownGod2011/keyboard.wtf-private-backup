@@ -21,6 +21,10 @@ mono_crash.*
 [Dd]ebugPublic/
 [Rr]elease/
 [Rr]eleases/
+# Release build directories remain ignored, but reviewed release notes are
+# source and must survive a clean clone.
+!docs/[Rr]eleases/
+!docs/[Rr]eleases/*.md
 # Release build output is ignored, but source-controlled release tooling lives
 # under scripts/release and must remain available to clean CI checkouts.
 !scripts/[Rr]elease/

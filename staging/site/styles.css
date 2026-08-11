@@ -77,6 +77,10 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .small { color: var(--muted); font-size: 13px; }
 .list { display: grid; gap: 0; padding: 0; margin: 14px 0 0; list-style: none; border-top: 1px solid var(--line); }
 .list li { min-height: 58px; display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.usage-row details { width: 100%; }
+.usage-row summary { cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 14px; list-style: none; }
+.usage-row summary::-webkit-details-marker { display: none; }
+.usage-details { margin-top: 12px; padding: 12px; border-radius: 10px; background: #f0f1ed; line-height: 1.7; overflow-wrap: anywhere; }
 .hidden { display: none !important; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; margin-top: 18px; }
 .form-grid label { display: grid; gap: 7px; color: var(--muted); font-size: 13px; font-weight: 700; }

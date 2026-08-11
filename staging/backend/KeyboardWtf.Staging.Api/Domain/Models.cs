@@ -57,7 +57,22 @@ public sealed record UsageSnapshot(
     long ChargedCreditMicros,
     long InputTokens,
     long OutputTokens,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    string ActivityType = "ai_request",
+    string PricingVersion = "",
+    long CachedInputTokens = 0,
+    long ReasoningTokens = 0,
+    long InputAudioTokens = 0,
+    long OutputAudioTokens = 0,
+    long InputImageTokens = 0,
+    long OutputImageTokens = 0,
+    bool UsageEstimated = false,
+    string ProviderModelVersion = "",
+    string AccountingStatus = "settled");
+
+public sealed record UsagePageSnapshot(
+    IReadOnlyList<UsageSnapshot> Items,
+    string? NextCursor);
 
 public sealed record PurchaseSnapshot(
     string PurchaseId,
@@ -131,6 +146,11 @@ public sealed record ModelCandidateSnapshot(
     string Location,
     PricingSnapshot Pricing);
 
+public sealed record LiveRoutePolicySnapshot(
+    int MaxSessionSeconds,
+    long ReservationWindowCreditMicros,
+    long MaxSessionCostCreditMicros);
+
 public sealed record ModelRouteSnapshot(
     string Name,
     string Version,
@@ -144,7 +164,8 @@ public sealed record ModelRouteSnapshot(
     int ThinkingBudget,
     int CanaryBasisPoints,
     string MinimumDesktopVersion,
-    string LifecycleNote);
+    string LifecycleNote,
+    LiveRoutePolicySnapshot? LivePolicy = null);
 
 public sealed record CatalogProduct(
     string Sku,

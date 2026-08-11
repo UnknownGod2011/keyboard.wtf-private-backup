@@ -59,6 +59,9 @@ public sealed class GeminiLiveConversationService : IDisposable
     public bool IsStarting => Volatile.Read(ref _startInProgress) == 1;
     public bool UsesPaidBackend => _paidAccount?.Enabled == true;
 
+    public Task WarmPaidBackendAsync(CancellationToken token = default) =>
+        _paidAccount?.WarmBackendAsync(token) ?? Task.CompletedTask;
+
     public void SetToolExecutor(Func<string, JsonElement, CancellationToken, Task<Dictionary<string, object>>> executor) =>
         _toolExecutor = executor;
 

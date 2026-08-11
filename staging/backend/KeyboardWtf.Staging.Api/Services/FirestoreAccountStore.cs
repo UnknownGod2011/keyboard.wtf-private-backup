@@ -88,18 +88,7 @@ public sealed class FirestoreAccountStore : IAccountStore
                 Date(data, "lastSeenAt"),
                 Date(data, "createdAt"));
         }).ToArray();
-        var usage = usageTask.Result.Documents.Select(document =>
-        {
-            var data = document.ToDictionary();
-            return new UsageSnapshot(
-                document.Id,
-                String(data, "model", ""),
-                String(data, "outcome", ""),
-                Long(data, "chargedCreditMicros"),
-                Long(data, "inputTokens"),
-                Long(data, "outputTokens"),
-                Date(data, "createdAt"));
-        }).ToArray();
+        var usage = usageTask.Result.Documents.Select(UsageFrom).ToArray();
         var stalePurchaseUpdates = new List<Task>();
         var purchases = purchasesTask.Result.Documents.Select(document =>
         {
@@ -135,6 +124,32 @@ public sealed class FirestoreAccountStore : IAccountStore
             await Task.WhenAll(stalePurchaseUpdates);
 
         return Snapshot(accountSnapshot.Id, account, devices, usage, purchases);
+    }
+
+    public async Task<UsagePageSnapshot> GetUsagePageAsync(
+        string userId,
+        int limit,
+        string? cursor,
+        CancellationToken cancellationToken)
+    {
+        if (limit is < 1 or > 50)
+            throw new ArgumentOutOfRangeException(nameof(limit));
+        var collection = Account(userId).Collection("usage");
+        Query query = collection.OrderByDescending("createdAt");
+        if (!string.IsNullOrWhiteSpace(cursor))
+        {
+            var cursorSnapshot = await collection.Document(SafeId(cursor))
+                .GetSnapshotAsync(cancellationToken);
+            if (!cursorSnapshot.Exists)
+                throw new ArgumentException("The usage cursor is no longer valid.", nameof(cursor));
+            query = query.StartAfter(cursorSnapshot);
+        }
+        var page = await query.Limit(limit + 1).GetSnapshotAsync(cancellationToken);
+        var hasMore = page.Count > limit;
+        var visibleDocuments = page.Documents.Take(limit).ToArray();
+        var items = visibleDocuments.Select(UsageFrom).ToArray();
+        var nextCursor = hasMore ? visibleDocuments[^1].Id : null;
+        return new UsagePageSnapshot(items, nextCursor);
     }
 
     private Task NormalizeAllowanceWalletAsync(string userId, CancellationToken cancellationToken)
@@ -194,7 +209,8 @@ public sealed class FirestoreAccountStore : IAccountStore
         int requestsPerMinute,
         int maxConcurrent,
         long globalDailyCap,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string activityType = "ai_request")
     {
         if (reserveCreditMicros <= 0 || reserveCreditMicros > taskCapCreditMicros)
             throw new InvalidOperationException("The request exceeds its approved task budget.");
@@ -292,6 +308,7 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ["reservedCreditMicros"] = reserveCreditMicros,
                 ["model"] = model,
                 ["pricingVersion"] = pricingVersion,
+                ["activityType"] = CleanActivityType(activityType),
                 ["globalUsageDate"] = globalUsageDate,
                 ["globalUsageShardId"] = globalShardId,
                 ["taskCapCreditMicros"] = taskCapCreditMicros,
@@ -483,6 +500,7 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ["requestId"] = requestId,
                 ["model"] = String(reservation, "model", ""),
                 ["pricingVersion"] = String(reservation, "pricingVersion", ""),
+                ["activityType"] = String(reservation, "activityType", "ai_request"),
                 ["outcome"] = outcome,
                 ["inputTokens"] = usage.InputTokens,
                 ["outputTokens"] = usage.OutputTokens,
@@ -498,6 +516,7 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ["usageEstimated"] = usage.Estimated,
                 ["providerRequestId"] = usage.ProviderRequestId ?? "",
                 ["providerModelVersion"] = usage.ProviderModelVersion ?? "",
+                ["accountingStatus"] = "settled",
                 ["providerCostUsdMicros"] = providerCostUsdMicros,
                 ["chargedCreditMicros"] = charged,
                 ["overageCreditMicros"] = overage,
@@ -723,7 +742,9 @@ public sealed class FirestoreAccountStore : IAccountStore
         long actualCreditMicros,
         long providerCostUsdMicros,
         string outcome,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? model = null,
+        string? pricingVersion = null)
     {
         if (actualCreditMicros < 0 || providerCostUsdMicros < 0)
             throw new ArgumentOutOfRangeException(nameof(actualCreditMicros));
@@ -750,11 +771,19 @@ public sealed class FirestoreAccountStore : IAccountStore
             {
                 if (Long(data, "plannedChargeCreditMicros") != actualCreditMicros
                     || Long(data, "providerCostUsdMicros") != providerCostUsdMicros
-                    || !UsageEvidenceMatches(data, usage))
+                    || !UsageEvidenceMatches(data, usage)
+                    || (!string.IsNullOrWhiteSpace(model)
+                        && !string.Equals(String(data, "model", ""), model, StringComparison.Ordinal))
+                    || (!string.IsNullOrWhiteSpace(pricingVersion)
+                        && !string.Equals(String(data, "pricingVersion", ""), pricingVersion, StringComparison.Ordinal)))
                     throw new InvalidOperationException("Conflicting provider completion evidence was rejected.");
                 return;
             }
             var updates = UsageEvidenceMap(usage, actualCreditMicros, providerCostUsdMicros);
+            if (!string.IsNullOrWhiteSpace(model))
+                updates["model"] = CleanProviderValue(model);
+            if (!string.IsNullOrWhiteSpace(pricingVersion))
+                updates["pricingVersion"] = CleanProviderValue(pricingVersion);
             updates["providerCompletionRecorded"] = true;
             updates["providerCompletedAt"] = Ts(now);
             updates["status"] = "provider_completed";
@@ -2268,6 +2297,15 @@ public sealed class FirestoreAccountStore : IAccountStore
         return cleaned.Length <= 100 ? cleaned : cleaned[..100];
     }
 
+    private static string CleanActivityType(string? value)
+    {
+        var cleaned = string.IsNullOrWhiteSpace(value) ? "ai_request" : value.Trim().ToLowerInvariant();
+        if (cleaned.Length > 50
+            || cleaned.Any(character => !(char.IsAsciiLetterOrDigit(character) || character is '_' or '-')))
+            throw new ArgumentException("The activity type is invalid.", nameof(value));
+        return cleaned;
+    }
+
     private DocumentReference Account(string userId) =>
         _db.Collection("accounts").Document(SafeId(userId));
 
@@ -2305,6 +2343,30 @@ public sealed class FirestoreAccountStore : IAccountStore
             topups,
             wallet.AvailableCreditMicros - subscription - topups,
             AllowanceWallet.CurrentRulesVersion);
+    }
+
+    private static UsageSnapshot UsageFrom(DocumentSnapshot document)
+    {
+        var data = document.ToDictionary();
+        return new UsageSnapshot(
+            document.Id,
+            String(data, "model", ""),
+            String(data, "outcome", ""),
+            Long(data, "chargedCreditMicros"),
+            Long(data, "inputTokens"),
+            Long(data, "outputTokens"),
+            Date(data, "createdAt"),
+            String(data, "activityType", "ai_request"),
+            String(data, "pricingVersion", ""),
+            Long(data, "cachedInputTokens"),
+            Long(data, "reasoningTokens"),
+            Long(data, "inputAudioTokens"),
+            Long(data, "outputAudioTokens"),
+            Long(data, "inputImageTokens"),
+            Long(data, "outputImageTokens"),
+            Bool(data, "usageEstimated", false),
+            String(data, "providerModelVersion", ""),
+            String(data, "accountingStatus", "settled"));
     }
 
     private static Reservation ReservationFrom(DocumentSnapshot snapshot)
