@@ -96,6 +96,16 @@ public sealed class OperationalHealthService
             _logger.LogWarning(
                 "Stuck payment confirmation detected count={StuckPayments}",
                 pendingPurchases.Count);
+
+        var expiredReservations = await _db.CollectionGroup("reservations")
+            .WhereIn("status", new object[] { "reserved", "provider_completed", "reconciliation_pending" })
+            .WhereLessThan("expiresAt", Timestamp.FromDateTime(_clock.UtcNow.UtcDateTime))
+            .Limit(501)
+            .GetSnapshotAsync(cancellationToken);
+        if (expiredReservations.Count > 0)
+            _logger.LogWarning(
+                "Stuck AI reservation detected count={StuckReservations}",
+                expiredReservations.Count);
     }
 
     private static long ReadCommitted(DocumentSnapshot snapshot)

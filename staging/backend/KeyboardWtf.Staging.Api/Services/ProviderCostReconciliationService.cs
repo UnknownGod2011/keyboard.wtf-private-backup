@@ -13,7 +13,8 @@ namespace KeyboardWtf.Staging.Api.Services;
 public sealed record ProviderBillingCostSnapshot(
     DateTimeOffset WindowStart,
     DateTimeOffset WindowEnd,
-    long ProviderCostUsdMicros);
+    long ProviderCostUsdMicros,
+    DateTimeOffset? ExportedThrough);
 
 public interface IProviderBillingCostSource
 {
@@ -48,15 +49,20 @@ internal sealed class BigQueryProviderBillingCostSource : IProviderBillingCostSo
 
     internal static string BuildQuery(string table) =>
         $"""
-        SELECT CAST(ROUND(COALESCE(SUM(
-          (cost + COALESCE((SELECT SUM(credit.amount) FROM UNNEST(credits) credit), 0))
-          / NULLIF(currency_conversion_rate, 0)
-        ), 0) * 1000000) AS INT64) AS provider_cost_usd_micros
+        SELECT
+          CAST(ROUND(COALESCE(SUM(IF(
+            usage_start_time >= @window_start
+              AND usage_start_time < @window_end
+              AND project.id = @project_id
+              AND service.description = 'Vertex AI',
+            (cost + COALESCE((SELECT SUM(credit.amount) FROM UNNEST(credits) credit), 0))
+              / NULLIF(currency_conversion_rate, 0),
+            0
+          )), 0) * 1000000) AS INT64) AS provider_cost_usd_micros,
+          UNIX_MICROS(MAX(export_time)) AS latest_export_micros
         FROM `{table}`
-        WHERE usage_start_time >= @window_start
-          AND usage_start_time < @window_end
-          AND project.id = @project_id
-          AND service.description = 'Vertex AI'
+        WHERE usage_start_time >= TIMESTAMP_SUB(@window_start, INTERVAL 7 DAY)
+          AND usage_start_time < TIMESTAMP_ADD(@window_end, INTERVAL 7 DAY)
         """;
 
     public async Task<ProviderBillingCostSnapshot> ReadAsync(
@@ -102,18 +108,36 @@ internal sealed class BigQueryProviderBillingCostSource : IProviderBillingCostSo
         var root = document.RootElement;
         if (!root.TryGetProperty("jobComplete", out var complete) || !complete.GetBoolean())
             throw new InvalidOperationException("BigQuery billing reconciliation did not complete in the bounded query window.");
-        var value = root.TryGetProperty("rows", out var rows)
+        var fields = root.TryGetProperty("rows", out var rows)
             && rows.ValueKind == JsonValueKind.Array
             && rows.GetArrayLength() > 0
-            && rows[0].TryGetProperty("f", out var fields)
+            && rows[0].TryGetProperty("f", out var rowFields)
+            ? rowFields
+            : default;
+        var value = fields.ValueKind == JsonValueKind.Array
             && fields.GetArrayLength() > 0
             && fields[0].TryGetProperty("v", out var scalar)
-            ? scalar.GetString()
-            : "0";
+            && scalar.ValueKind == JsonValueKind.String
+                ? scalar.GetString()
+                : "0";
         if (!long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var cost)
             || cost < 0)
             throw new InvalidOperationException("BigQuery returned an invalid provider cost aggregate.");
-        return new ProviderBillingCostSnapshot(windowStart, windowEnd, cost);
+        DateTimeOffset? exportedThrough = null;
+        if (fields.ValueKind == JsonValueKind.Array
+            && fields.GetArrayLength() > 1
+            && fields[1].TryGetProperty("v", out var exportedScalar)
+            && exportedScalar.ValueKind == JsonValueKind.String
+            && long.TryParse(
+                exportedScalar.GetString(),
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var exportedMicros)
+            && exportedMicros > 0)
+        {
+            exportedThrough = DateTimeOffset.FromUnixTimeMilliseconds(exportedMicros / 1_000);
+        }
+        return new ProviderBillingCostSnapshot(windowStart, windowEnd, cost, exportedThrough);
     }
 
     private static object TimestampParameter(string name, DateTimeOffset value) => new
@@ -139,7 +163,8 @@ public sealed record ProviderCostReconciliationResult(
     long BilledProviderCostUsdMicros,
     long DifferenceUsdMicros,
     int UsageRecords,
-    string Status);
+    string Status,
+    DateTimeOffset? BillingExportedThrough = null);
 
 public sealed class ProviderCostReconciliationService
 {
@@ -203,6 +228,24 @@ public sealed class ProviderCostReconciliationService
 
         var billed = await _billing.ReadAsync(windowStart, windowEnd, cancellationToken);
         var difference = Math.Abs(internalCost - billed.ProviderCostUsdMicros);
+        if (!IsBillingExportReady(billed))
+        {
+            var pending = new ProviderCostReconciliationResult(
+                runId,
+                windowStart,
+                windowEnd,
+                internalCost,
+                billed.ProviderCostUsdMicros,
+                difference,
+                usageRecords,
+                "pending_export",
+                billed.ExportedThrough);
+            await WriteRunAsync(pending, cancellationToken);
+            _logger.LogInformation(
+                "Provider cost reconciliation is pending billing export window={Window}",
+                windowStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+            return pending;
+        }
         var material = IsMaterialVariance(
             internalCost,
             billed.ProviderCostUsdMicros,
@@ -216,7 +259,8 @@ public sealed class ProviderCostReconciliationService
             billed.ProviderCostUsdMicros,
             difference,
             usageRecords,
-            material ? "attention_required" : "completed");
+            material ? "attention_required" : "completed",
+            billed.ExportedThrough);
         await WriteRunAsync(result, cancellationToken);
         await UpdateIssueAsync(result, material, cancellationToken);
         if (material)
@@ -246,6 +290,10 @@ public sealed class ProviderCostReconciliationService
         var baseline = Math.Max(1m, Math.Max(internalCost, billedCost));
         return difference * 10_000m / baseline >= basisPointThreshold;
     }
+
+    internal static bool IsBillingExportReady(ProviderBillingCostSnapshot snapshot) =>
+        snapshot.ExportedThrough is { } exportedThrough
+        && exportedThrough >= snapshot.WindowEnd;
 
     private async Task<(long Cost, int Records, bool Complete)> ReadInternalCostAsync(
         DateTimeOffset windowStart,
@@ -281,21 +329,26 @@ public sealed class ProviderCostReconciliationService
 
     private Task WriteRunAsync(
         ProviderCostReconciliationResult result,
-        CancellationToken cancellationToken) =>
-        _db.Collection("providerCostReconciliationRuns").Document(result.RunId).CreateAsync(
-            new Dictionary<string, object>
-            {
-                ["job"] = "provider-cost-reconciliation",
-                ["windowStart"] = Timestamp.FromDateTime(result.WindowStart.UtcDateTime),
-                ["windowEnd"] = Timestamp.FromDateTime(result.WindowEnd.UtcDateTime),
-                ["internalProviderCostUsdMicros"] = result.InternalProviderCostUsdMicros,
-                ["billedProviderCostUsdMicros"] = result.BilledProviderCostUsdMicros,
-                ["differenceUsdMicros"] = result.DifferenceUsdMicros,
-                ["usageRecords"] = result.UsageRecords,
-                ["status"] = result.Status,
-                ["createdAt"] = Timestamp.FromDateTime(_clock.UtcNow.UtcDateTime),
-            },
-            cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        var document = new Dictionary<string, object>
+        {
+            ["job"] = "provider-cost-reconciliation",
+            ["windowStart"] = Timestamp.FromDateTime(result.WindowStart.UtcDateTime),
+            ["windowEnd"] = Timestamp.FromDateTime(result.WindowEnd.UtcDateTime),
+            ["internalProviderCostUsdMicros"] = result.InternalProviderCostUsdMicros,
+            ["billedProviderCostUsdMicros"] = result.BilledProviderCostUsdMicros,
+            ["differenceUsdMicros"] = result.DifferenceUsdMicros,
+            ["usageRecords"] = result.UsageRecords,
+            ["status"] = result.Status,
+            ["createdAt"] = Timestamp.FromDateTime(_clock.UtcNow.UtcDateTime),
+        };
+        if (result.BillingExportedThrough is { } exportedThrough)
+            document["billingExportedThrough"] = Timestamp.FromDateTime(exportedThrough.UtcDateTime);
+        return _db.Collection("providerCostReconciliationRuns")
+            .Document(result.RunId)
+            .CreateAsync(document, cancellationToken);
+    }
 
     private async Task UpdateIssueAsync(
         ProviderCostReconciliationResult result,

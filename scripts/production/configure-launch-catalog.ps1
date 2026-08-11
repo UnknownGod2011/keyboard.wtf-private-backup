@@ -73,7 +73,7 @@ $catalog = [ordered]@{
             displayName = "Jarvis Monthly"
             amountMinor = 99900L
             currency = "INR"
-            creditMicros = 350000000L
+            creditMicros = 500000000L
             razorpayPlanId = $RazorpayPlanId
             enabled = $true
         }
@@ -87,7 +87,7 @@ foreach ($entry in $catalog.GetEnumerator()) {
 $payload = [ordered]@{ fields = $fields } | ConvertTo-Json -Depth 20
 
 if (-not $Apply) {
-    Write-Output "Validated launch catalog: INR 999 monthly, 350 credits, one subscription SKU, paid AI and checkout disabled until explicit apply/enable."
+    Write-Output "Validated launch catalog: INR 999 monthly, 500 credits, one subscription SKU, paid AI and checkout disabled until explicit apply/enable."
     return
 }
 

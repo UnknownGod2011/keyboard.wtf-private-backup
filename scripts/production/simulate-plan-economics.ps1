@@ -1,13 +1,13 @@
 param(
     [long]$MonthlyPricePaise = 99900,
-    [long]$MonthlyAllowanceCreditMicros = 350000000,
+    [long]$MonthlyAllowanceCreditMicros = 500000000,
     [switch]$Json
 )
 
 $ErrorActionPreference = "Stop"
 $usdToInrPaise = 10000L
 $creditMicrosPerInrPaise = 10000L
-$maximumProviderShareBasisPoints = 4000L
+$maximumProviderShareBasisPoints = 6000L
 
 if ($MonthlyPricePaise -le 0 -or $MonthlyAllowanceCreditMicros -le 0) {
     throw "Price and allowance must be positive."
@@ -87,7 +87,7 @@ $providerBudgetPaise = [decimal]::Ceiling(
 $providerShareBasisPoints = [decimal]::Ceiling(
     [decimal]10000 * $providerBudgetPaise / [decimal]$MonthlyPricePaise)
 if ($providerShareBasisPoints -gt $maximumProviderShareBasisPoints) {
-    throw "The launch allowance exceeds the approved 40% provider-cost share."
+    throw "The launch allowance exceeds the approved 60% provider-cost share."
 }
 
 $summary = [pscustomobject]@{

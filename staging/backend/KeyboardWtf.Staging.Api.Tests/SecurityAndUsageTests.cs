@@ -916,10 +916,10 @@ public sealed class SecurityAndUsageTests
             CreditMicrosPerInrPaise = 10_000,
         };
         var safe = new CatalogProduct(
-            "credits_40", "credits", "40 credits", 10_000, "INR", 40_000_000, null, true);
+            "credits_60", "credits", "60 credits", 10_000, "INR", 60_000_000, null, true);
         CatalogService.ValidateProductionProduct(safe, pricing);
 
-        var unsafeProduct = safe with { CreditMicros = 40_010_000 };
+        var unsafeProduct = safe with { CreditMicros = 60_010_000 };
         var error = Assert.Throws<InvalidOperationException>(() =>
             CatalogService.ValidateProductionProduct(unsafeProduct, pricing));
         Assert.Contains("provider-cost share", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -939,7 +939,7 @@ public sealed class SecurityAndUsageTests
             "Jarvis Monthly",
             99_900,
             "INR",
-            350_000_000,
+            500_000_000,
             "plan_ProductionConfiguredAtLaunch",
             true);
 
@@ -960,7 +960,7 @@ public sealed class SecurityAndUsageTests
             "Jarvis Monthly",
             99_900,
             "INR",
-            399_610_000,
+            599_410_000,
             "plan_ProductionConfiguredAtLaunch",
             true);
 
@@ -996,11 +996,24 @@ public sealed class SecurityAndUsageTests
         Assert.Equal(123_456, result.ProviderCostUsdMicros);
         Assert.Equal(start, result.WindowStart);
         Assert.Equal(start.AddDays(1), result.WindowEnd);
+        Assert.Equal(start.AddDays(2), result.ExportedThrough);
         Assert.True(handler.SawProjectParameter);
         Assert.True(handler.SawClosedWindowParameters);
         Assert.True(handler.SawBytesBilledLimit);
         Assert.DoesNotContain("user", handler.RequestBody, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("prompt", handler.RequestBody, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Billing_export_must_be_observed_after_the_closed_window_before_reconciliation_can_pass()
+    {
+        var start = DateTimeOffset.Parse("2026-08-01T00:00:00Z");
+        Assert.False(ProviderCostReconciliationService.IsBillingExportReady(
+            new ProviderBillingCostSnapshot(start, start.AddDays(1), 0, null)));
+        Assert.False(ProviderCostReconciliationService.IsBillingExportReady(
+            new ProviderBillingCostSnapshot(start, start.AddDays(1), 0, start.AddHours(23))));
+        Assert.True(ProviderCostReconciliationService.IsBillingExportReady(
+            new ProviderBillingCostSnapshot(start, start.AddDays(1), 0, start.AddDays(2))));
     }
 
     [Theory]
@@ -2439,6 +2452,7 @@ public sealed class SecurityAndUsageTests
             var query = root.GetProperty("query").GetString() ?? "";
             Assert.Contains("service.description = 'Vertex AI'", query, StringComparison.Ordinal);
             Assert.Contains("currency_conversion_rate", query, StringComparison.Ordinal);
+            Assert.Contains("MAX(export_time)", query, StringComparison.Ordinal);
             Assert.Contains("keyboard-wtf-staging.billing_export.gcp_billing_export_v1_account", query, StringComparison.Ordinal);
             var names = root.GetProperty("queryParameters")
                 .EnumerateArray()
@@ -2450,7 +2464,7 @@ public sealed class SecurityAndUsageTests
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(
-                    """{"jobComplete":true,"rows":[{"f":[{"v":"123456"}]}]}""",
+                    """{"jobComplete":true,"rows":[{"f":[{"v":"123456"},{"v":"1785715200000000"}]}]}""",
                     Encoding.UTF8,
                     "application/json"),
             };

@@ -8,9 +8,9 @@ unlimited usage or a replacement for billing reconciliation.
 - Product: `Jarvis Monthly`
 - SKU: `monthly_standard_inr_999_v1`
 - Price: INR 999 per month
-- Included provider-cost allowance: 350 credits
-- Maximum modeled provider cost: INR 350
-- Provider-cost share of gross price: 35.04%
+- Included provider-cost allowance: 500 credits
+- Maximum modeled provider cost: INR 500
+- Provider-cost share of gross price: 50.06%
 - Catalog version: `launch-monthly-inr999-v1`
 - Pricing version: `vertex-standard-global-fx100-2026-08-11`
 - Fixed accounting conversion: INR 100 per USD
@@ -18,7 +18,7 @@ unlimited usage or a replacement for billing reconciliation.
 - Checkout: disabled until Live credentials, a real Razorpay plan ID, and an
   explicitly approved canary are present
 
-Production validation rejects enabled products above a 40% provider-cost share.
+Production validation rejects enabled products above a 60% provider-cost share.
 The fixed FX value is intentionally more conservative than the current market
 rate and is versioned server-side rather than calculated by the browser.
 

@@ -11,7 +11,7 @@ public sealed class CatalogService : ICatalogService
     // INR 100 is a deliberately versioned launch floor with a buffer. It is
     // updated deliberately in server configuration, never fetched per request.
     internal const long ConservativeUsdToInrPaise = 10_000;
-    internal const int MaximumProviderCostShareBasisPoints = 4_000;
+    internal const int MaximumProviderCostShareBasisPoints = 6_000;
     private readonly FirestoreDb _db;
     private readonly PaidSystemOptions _options;
     private readonly IClock _clock;
