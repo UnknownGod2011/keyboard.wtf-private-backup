@@ -78,3 +78,41 @@ version changes.
 - A verified renewal payment creates the next cycle bucket once.
 - Failed, authenticated, paused, halted, or cancelled subscription state alone
   never grants allowance.
+
+## Non-Vertex infrastructure envelope
+
+These are directional monthly operating ranges, not a bill guarantee. They
+exclude Vertex AI, Razorpay fees, Vercel, taxes, support, and outbound traffic
+outside the assumed workload. The estimate assumes the modeled normal profile,
+request-based Cloud Run with zero minimum instances, the hourly maintenance job,
+the default Firestore database, modest ledger/backup growth, bounded account
+polling, and one low-frequency billing-export reconciliation query per closed
+day once that export is enabled.
+
+| Active paid users | Estimated monthly infrastructure (USD) |
+| ---: | ---: |
+| 0 | $0-$2 |
+| 100 | $2-$8 |
+| 500 | $10-$30 |
+| 1,000 | $20-$60 |
+
+The upper ends deliberately leave margin for Live proxy duration, cold starts,
+logs, PITR/backup storage, retries, and regional price differences. Recalculate
+from the Google Cloud billing export before production rollout and whenever
+traffic shape, retention, region, or Cloud Run sizing changes. Configure budget
+alerts independently; this estimate is not a spending control.
+
+Current pricing assumptions are anchored to Google's official service pages:
+
+- Cloud Run request-based services can scale to zero; CPU and memory are billed
+  while starting, stopping, or processing requests. Cloud Run jobs use
+  instance-based billing with a one-minute minimum:
+  https://cloud.google.com/run/pricing
+- The default Firestore database currently includes daily free quotas of
+  50,000 reads, 20,000 writes, and 20,000 deletes plus 1 GiB stored data. PITR
+  and backups are billed separately:
+  https://cloud.google.com/firestore/pricing
+- BigQuery currently includes the first 1 TiB of on-demand query processing and
+  10 GiB of storage per month. The reconciliation query still enforces its own
+  10 GiB maximum-bytes-billed ceiling:
+  https://cloud.google.com/bigquery/pricing
