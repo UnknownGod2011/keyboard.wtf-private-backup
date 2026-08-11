@@ -66,7 +66,7 @@ Source: "{#MySourceDir}\*"; DestDir: "{app}"; Excludes: "*.pdb"; Flags: ignoreve
 Name: "{group}\keyboard.wtf"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 
 [Registry]
-#if MyRegisterStartup
+#if MyRegisterStartup == 1
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyRunValueName}"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue
 #endif
 
