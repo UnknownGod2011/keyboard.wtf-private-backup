@@ -94,11 +94,23 @@ async function render(expectedUser, epoch, quiet = false) {
     trackServerPendingPurchases(account);
     byId("identity").textContent = `${account.displayName || "Google user"} · ${account.email}`;
     byId("plan").textContent = account.planId === "none" ? "No paid plan" : account.planId;
-    byId("balance").textContent = formatCredits(account.availableCreditMicros);
-    const total = Math.max(1, account.availableCreditMicros + account.cycleUsageCreditMicros);
-    byId("balanceBar").style.width = `${Math.max(0, Math.min(100, account.availableCreditMicros / total * 100))}%`;
-    byId("usage").textContent = `${formatCredits(account.cycleUsageCreditMicros)} credits used this cycle`;
-    byId("allowanceBreakdown").textContent = `Subscription ${formatCredits(account.subscriptionAllowanceCreditMicros)} · top-ups ${formatCredits(account.topUpCreditMicros)}${account.otherAllowanceCreditMicros ? ` · other ${formatCredits(account.otherAllowanceCreditMicros)}` : ""}`;
+    const subscriptionOriginal = Number(account.subscriptionOriginalCreditMicros || 0);
+    const subscriptionRemaining = Number(account.subscriptionAllowanceCreditMicros || 0)
+      + Number(account.subscriptionReservedCreditMicros || 0);
+    const totalUsable = Number(account.availableCreditMicros || 0)
+      + Number(account.reservedCreditMicros || 0);
+    const remaining = subscriptionOriginal > 0
+      ? subscriptionRemaining
+      : totalUsable;
+    const used = subscriptionOriginal > 0
+      ? Number(account.subscriptionConsumedCreditMicros || 0)
+      : Number(account.cycleUsageCreditMicros || 0);
+    const total = subscriptionOriginal > 0 ? subscriptionOriginal : Math.max(1, remaining + used);
+    const percentage = Math.max(0, Math.min(100, remaining / total * 100));
+    byId("balance").textContent = formatCredits(totalUsable);
+    byId("balanceBar").style.width = `${percentage}%`;
+    byId("usage").textContent = `${formatCredits(used)} of ${formatCredits(total)} credits used this cycle · ${percentage.toFixed(0)}% remaining`;
+    byId("allowanceBreakdown").textContent = `Subscription ${formatCredits(subscriptionRemaining)} · top-ups ${formatCredits(account.topUpCreditMicros)}${account.otherAllowanceCreditMicros ? ` · other ${formatCredits(account.otherAllowanceCreditMicros)}` : ""}`;
     byId("subscription").textContent = account.subscriptionStatus || "none";
     byId("adminGrant").classList.toggle("hidden", !account.isAdmin);
     if (account.isAdmin && !byId("grantEmail").value)

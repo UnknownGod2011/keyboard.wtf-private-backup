@@ -7,7 +7,7 @@ Push-Location $RepositoryRoot
 try {
     $sourceFiles = @(git ls-files -co --exclude-standard)
     if ($LASTEXITCODE -ne 0) { throw "Could not enumerate source files." }
-    $forbiddenTrackedExtensions = $sourceFiles | Where-Object {
+    $forbiddenSourceFiles = $sourceFiles | Where-Object {
         $_ -match '(?i)(\.p12|\.pfx|\.key|\.jks|\.keystore)$' -or
         $_ -match '(?i)(^|/)service-account[^/]*\.json$' -or
         $_ -match '(?i)(^|/)\.env($|\.)'
@@ -44,12 +44,12 @@ try {
         }
     }
 
-    $problems = @($forbiddenTrackedExtensions) + @($matchedFiles)
+    $problems = @($forbiddenSourceFiles) + @($matchedFiles)
     if ($problems.Count -gt 0) {
-        Write-Error ("Potential secret material is tracked in: " + (($problems | Sort-Object -Unique) -join ', '))
+        Write-Error ("Potential secret material exists in tracked or untracked source: " + (($problems | Sort-Object -Unique) -join ', '))
         exit 1
     }
-    Write-Host "Tracked-source secret scan passed."
+    Write-Host "Tracked and untracked source secret scan passed."
 }
 finally {
     Pop-Location

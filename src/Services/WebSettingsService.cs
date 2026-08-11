@@ -1440,6 +1440,11 @@ public sealed class WebSettingsService : IDisposable
             availableCreditMicros = account?.AvailableCreditMicros ?? 0,
             reservedCreditMicros = account?.ReservedCreditMicros ?? 0,
             cycleUsageCreditMicros = account?.CycleUsageCreditMicros ?? 0,
+            subscriptionAllowanceCreditMicros = account?.SubscriptionAllowanceCreditMicros ?? 0,
+            subscriptionOriginalCreditMicros = account?.SubscriptionOriginalCreditMicros ?? 0,
+            subscriptionReservedCreditMicros = account?.SubscriptionReservedCreditMicros ?? 0,
+            subscriptionConsumedCreditMicros = account?.SubscriptionConsumedCreditMicros ?? 0,
+            topUpCreditMicros = account?.TopUpCreditMicros ?? 0,
             cycleEndsAt = account?.CycleEndsAt,
             deviceId = account?.Devices?.FirstOrDefault(device =>
                 string.Equals(device.Status, "active", StringComparison.OrdinalIgnoreCase))?.DeviceId ?? "",

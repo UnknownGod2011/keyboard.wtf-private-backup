@@ -23,7 +23,14 @@ internal sealed record PaidAccountSnapshot(
     IReadOnlyList<PaidDeviceSnapshot> Devices,
     IReadOnlyList<PaidUsageSnapshot> RecentUsage,
     IReadOnlyList<PaidPurchaseSnapshot> RecentPurchases,
-    string SubscriptionStatus = "none");
+    string SubscriptionStatus = "none",
+    long SubscriptionAllowanceCreditMicros = 0,
+    long TopUpCreditMicros = 0,
+    long OtherAllowanceCreditMicros = 0,
+    string AllowanceRulesVersion = "allowance-v1",
+    long SubscriptionOriginalCreditMicros = 0,
+    long SubscriptionReservedCreditMicros = 0,
+    long SubscriptionConsumedCreditMicros = 0);
 
 internal sealed record PaidDeviceSnapshot(
     string DeviceId,

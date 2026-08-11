@@ -117,6 +117,9 @@ public static class ApiEndpoints
                 account.TopUpCreditMicros,
                 account.OtherAllowanceCreditMicros,
                 account.AllowanceRulesVersion,
+                account.SubscriptionOriginalCreditMicros,
+                account.SubscriptionReservedCreditMicros,
+                account.SubscriptionConsumedCreditMicros,
                 IsAdmin = options.Value.AdminEmails.Contains(
                     caller.Email,
                     StringComparer.OrdinalIgnoreCase),

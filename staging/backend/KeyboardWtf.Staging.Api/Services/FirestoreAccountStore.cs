@@ -2317,9 +2317,19 @@ public sealed class FirestoreAccountStore : IAccountStore
         IReadOnlyList<PurchaseSnapshot> purchases)
     {
         var wallet = AllowanceWallet.FromAccount(data, _clock.UtcNow);
-        var subscription = wallet.Buckets
-            .Where(bucket => bucket.Kind == "subscription")
+        var activeSubscription = wallet.Buckets
+            .Where(bucket => bucket.Kind == "subscription" && !bucket.Expired)
+            .ToArray();
+        var subscription = activeSubscription
             .Sum(bucket => bucket.AvailableCreditMicros);
+        var subscriptionReserved = activeSubscription
+            .Sum(bucket => bucket.ReservedCreditMicros);
+        var subscriptionOriginal = activeSubscription
+            .Sum(bucket => Math.Max(0, bucket.OriginalCreditMicros - bucket.ReversedCreditMicros));
+        var subscriptionConsumed = activeSubscription
+            .Sum(bucket => Math.Min(
+                bucket.ConsumedCreditMicros,
+                Math.Max(0, bucket.OriginalCreditMicros - bucket.ReversedCreditMicros)));
         var topups = wallet.Buckets
             .Where(bucket => bucket.Kind == "topup")
             .Sum(bucket => bucket.AvailableCreditMicros);
@@ -2342,7 +2352,10 @@ public sealed class FirestoreAccountStore : IAccountStore
             subscription,
             topups,
             wallet.AvailableCreditMicros - subscription - topups,
-            AllowanceWallet.CurrentRulesVersion);
+            AllowanceWallet.CurrentRulesVersion,
+            subscriptionOriginal,
+            subscriptionReserved,
+            subscriptionConsumed);
     }
 
     private static UsageSnapshot UsageFrom(DocumentSnapshot document)

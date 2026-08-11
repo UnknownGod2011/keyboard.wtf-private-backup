@@ -41,7 +41,10 @@ public sealed record AccountSnapshot(
     long SubscriptionAllowanceCreditMicros = 0,
     long TopUpCreditMicros = 0,
     long OtherAllowanceCreditMicros = 0,
-    string AllowanceRulesVersion = "allowance-v1");
+    string AllowanceRulesVersion = "allowance-v1",
+    long SubscriptionOriginalCreditMicros = 0,
+    long SubscriptionReservedCreditMicros = 0,
+    long SubscriptionConsumedCreditMicros = 0);
 
 public sealed record DeviceSnapshot(
     string DeviceId,

@@ -912,6 +912,50 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
+    public void Production_launch_subscription_passes_the_provider_cost_safety_gate()
+    {
+        var pricing = new FakeCatalog().Pricing with
+        {
+            UsdToInrPaise = CatalogService.ConservativeUsdToInrPaise,
+            CreditMicrosPerInrPaise = 10_000,
+        };
+        var launch = new CatalogProduct(
+            "monthly_standard_inr_999_v1",
+            "subscription",
+            "Jarvis Monthly",
+            99_900,
+            "INR",
+            350_000_000,
+            "plan_ProductionConfiguredAtLaunch",
+            true);
+
+        CatalogService.ValidateProductionProduct(launch, pricing);
+    }
+
+    [Fact]
+    public void Production_launch_subscription_rejects_an_allowance_above_the_safety_gate()
+    {
+        var pricing = new FakeCatalog().Pricing with
+        {
+            UsdToInrPaise = CatalogService.ConservativeUsdToInrPaise,
+            CreditMicrosPerInrPaise = 10_000,
+        };
+        var launch = new CatalogProduct(
+            "monthly_standard_inr_999_v1",
+            "subscription",
+            "Jarvis Monthly",
+            99_900,
+            "INR",
+            399_610_000,
+            "plan_ProductionConfiguredAtLaunch",
+            true);
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            CatalogService.ValidateProductionProduct(launch, pricing));
+        Assert.Contains("provider-cost share", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Server_fx_floor_is_conservative_relative_to_the_recorded_RBI_reference() =>
         Assert.True(CatalogService.ConservativeUsdToInrPaise >= 9_572);
 
@@ -1406,9 +1450,12 @@ public sealed class SecurityAndUsageTests
                 paymentOne, null, subscriptionId, subscriptionPurchaseId, paymentOne, 9_900, "active", CancellationToken.None,
                 firstCycleEnd, "INR", "monthly_integration");
             Assert.Equal("credited", firstCharge.Outcome);
-            Assert.Equal(
-                600_000_000,
-                (await store.GetAccountAsync(caller.UserId, CancellationToken.None)).AvailableCreditMicros);
+            var firstCycle = await store.GetAccountAsync(caller.UserId, CancellationToken.None);
+            Assert.Equal(600_000_000, firstCycle.AvailableCreditMicros);
+            Assert.Equal(500_000_000, firstCycle.SubscriptionOriginalCreditMicros);
+            Assert.Equal(500_000_000, firstCycle.SubscriptionAllowanceCreditMicros);
+            Assert.Equal(0, firstCycle.SubscriptionReservedCreditMicros);
+            Assert.Equal(0, firstCycle.SubscriptionConsumedCreditMicros);
             await store.ApplyPaymentWebhookAsync(
                 $"evt_charge_one_replay_{suffix}", "subscription.charged", subscriptionId,
                 paymentOne, null, subscriptionId, subscriptionPurchaseId, paymentOne, 9_900, "active", CancellationToken.None,
@@ -1425,6 +1472,11 @@ public sealed class SecurityAndUsageTests
                 1,
                 1_000_000_000,
                 CancellationToken.None);
+            var firstCycleReserved = await store.GetAccountAsync(caller.UserId, CancellationToken.None);
+            Assert.Equal(
+                firstCycleReserved.SubscriptionOriginalCreditMicros,
+                firstCycleReserved.SubscriptionAllowanceCreditMicros
+                + firstCycleReserved.SubscriptionReservedCreditMicros);
             await store.MarkReservationProviderStartedAsync(caller.UserId, usageRequest, CancellationToken.None);
             var cycleUsage = new ProviderUsage(10, 10, 0, 0, 0, 0, 20, "provider-cycle-test");
             await store.RecordProviderCompletionAsync(
@@ -1443,7 +1495,10 @@ public sealed class SecurityAndUsageTests
                 1_000,
                 "completed",
                 CancellationToken.None);
-            Assert.Equal(10_000_000, (await store.GetAccountAsync(caller.UserId, CancellationToken.None)).CycleUsageCreditMicros);
+            var firstCycleAfterUsage = await store.GetAccountAsync(caller.UserId, CancellationToken.None);
+            Assert.Equal(10_000_000, firstCycleAfterUsage.CycleUsageCreditMicros);
+            Assert.Equal(490_000_000, firstCycleAfterUsage.SubscriptionAllowanceCreditMicros);
+            Assert.Equal(10_000_000, firstCycleAfterUsage.SubscriptionConsumedCreditMicros);
 
             var nextCycleEnd = DateTimeOffset.Parse("2026-10-01T00:00:00Z");
             await store.ApplyPaymentWebhookAsync(
