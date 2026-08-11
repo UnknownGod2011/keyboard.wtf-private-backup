@@ -561,12 +561,18 @@ public sealed class FirestoreAccountStore : IAccountStore
             {
                 ["reservedCreditMicros"] = FieldValue.Increment(-reserved),
                 ["settledCreditMicros"] = FieldValue.Increment(charged),
+                ["providerCostUsdMicros"] = FieldValue.Increment(providerCostUsdMicros),
+                ["providerCostSettlementCount"] = FieldValue.Increment(1L),
+                ["providerCostAccountingVersion"] = 1L,
                 ["updatedAt"] = Ts(now),
             }, SetOptions.MergeAll);
             transaction.Set(userDailyRef, new Dictionary<string, object>
             {
                 ["reservedCreditMicros"] = Math.Max(0, Long(userDaily, "reservedCreditMicros") - reserved),
                 ["settledCreditMicros"] = Long(userDaily, "settledCreditMicros") + charged,
+                ["providerCostUsdMicros"] = Long(userDaily, "providerCostUsdMicros") + providerCostUsdMicros,
+                ["providerCostSettlementCount"] = Long(userDaily, "providerCostSettlementCount") + 1,
+                ["providerCostAccountingVersion"] = 1L,
                 ["updatedAt"] = Ts(now),
             }, SetOptions.MergeAll);
             return (Settled: true, Charged: charged, Released: released);
@@ -2157,7 +2163,10 @@ public sealed class FirestoreAccountStore : IAccountStore
                         ["dailyCapCreditMicros"] = shardCap,
                         ["reservedCreditMicros"] = 0L,
                         ["settledCreditMicros"] = 0L,
-                        ["schemaVersion"] = 1L,
+                        ["providerCostUsdMicros"] = 0L,
+                        ["providerCostSettlementCount"] = 0L,
+                        ["providerCostAccountingVersion"] = 1L,
+                        ["schemaVersion"] = 2L,
                         ["createdAt"] = Ts(_clock.UtcNow),
                         ["updatedAt"] = Ts(_clock.UtcNow),
                     },

@@ -53,6 +53,15 @@ public sealed class OperationalHealthService
                 "Open financial invariant issues count={OpenIssues}",
                 invariantIssues.Count);
 
+        var providerCostIssues = await _db.Collection("providerCostIssues")
+            .WhereEqualTo("status", "open")
+            .Limit(501)
+            .GetSnapshotAsync(cancellationToken);
+        if (providerCostIssues.Count > 0)
+            _logger.LogWarning(
+                "Provider cost drift reconciliation issues count={OpenIssues}",
+                providerCostIssues.Count);
+
         var highSpendAccounts = await _db.Collection("accounts")
             .WhereGreaterThanOrEqualTo("cycleUsageCreditMicros", _options.PerUserSpendAlertCreditMicros)
             .Limit(101)

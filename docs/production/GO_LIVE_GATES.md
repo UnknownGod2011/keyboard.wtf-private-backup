@@ -27,6 +27,9 @@ enabling Razorpay Live or replacing the stable installed Jarvis.
 - Firestore backup/PITR configuration and isolated restore drill.
 - Vertex Live calibration against delayed Cloud billing and an approved safety
   margin.
+- A detailed Cloud Billing export table, least-privilege BigQuery access, one
+  completed closed-day provider-cost reconciliation, and a received harmless
+  provider-cost drift alert.
 
 No public Live checkout or market-launch status is allowed while any external
 gate is incomplete.

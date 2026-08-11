@@ -955,6 +955,57 @@ public sealed class SecurityAndUsageTests
         Assert.Contains("provider-cost share", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("keyboard-wtf-prod.billing_export.gcp_billing_export_v1_account", true)]
+    [InlineData("keyboard-wtf-prod.billing_export.table-with-dash", false)]
+    [InlineData("keyboard-wtf-prod.billing_export.table`; DROP TABLE x", false)]
+    [InlineData("billing_export.table", false)]
+    [InlineData("", false)]
+    public void Billing_export_table_is_strictly_validated(string table, bool expected) =>
+        Assert.Equal(expected, BigQueryProviderBillingCostSource.IsValidTable(table));
+
+    [Fact]
+    public async Task Billing_export_query_is_parameterized_and_returns_only_the_cost_aggregate()
+    {
+        var handler = new BigQueryBillingHandler();
+        var options = Options.Create(TestOptions(
+            providerCostReconciliationEnabled: true,
+            billingExportTable: "keyboard-wtf-staging.billing_export.gcp_billing_export_v1_account"));
+        var source = new BigQueryProviderBillingCostSource(
+            new HttpClient(handler),
+            new FakeAccessTokenProvider(),
+            options);
+        var start = DateTimeOffset.Parse("2026-08-01T00:00:00Z");
+
+        var result = await source.ReadAsync(start, start.AddDays(1), CancellationToken.None);
+
+        Assert.Equal(123_456, result.ProviderCostUsdMicros);
+        Assert.Equal(start, result.WindowStart);
+        Assert.Equal(start.AddDays(1), result.WindowEnd);
+        Assert.True(handler.SawProjectParameter);
+        Assert.True(handler.SawClosedWindowParameters);
+        Assert.True(handler.SawBytesBilledLimit);
+        Assert.DoesNotContain("user", handler.RequestBody, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("prompt", handler.RequestBody, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(1_000_000, 1_050_000, false)]
+    [InlineData(1_000_000, 1_200_000, true)]
+    [InlineData(0, 200_000, true)]
+    [InlineData(0, 0, false)]
+    public void Provider_cost_drift_requires_both_absolute_and_relative_materiality(
+        long internalCost,
+        long billedCost,
+        bool expected) =>
+        Assert.Equal(
+            expected,
+            ProviderCostReconciliationService.IsMaterialVariance(
+                internalCost,
+                billedCost,
+                absoluteThreshold: 100_000,
+                basisPointThreshold: 1_000));
+
     [Fact]
     public void Server_fx_floor_is_conservative_relative_to_the_recorded_RBI_reference() =>
         Assert.True(CatalogService.ConservativeUsdToInrPaise >= 9_572);
@@ -1127,23 +1178,26 @@ public sealed class SecurityAndUsageTests
             Assert.Equal(900_000, reservations[0].Account.AvailableCreditMicros);
             Assert.Equal(1_900_000, reservations[1].Account.AvailableCreditMicros);
 
-            var zeroUsage = new ProviderUsage(0, 0, 0, 0, 0, 0, 0, "integration-test");
+            var firstUsage = new ProviderUsage(20, 5, 0, 0, 0, 0, 25, "integration-test-a");
+            var secondUsage = new ProviderUsage(40, 10, 0, 0, 0, 0, 50, "integration-test-b");
             await Task.WhenAll(
                 store.MarkReservationProviderStartedAsync(first.UserId, requestId, CancellationToken.None),
                 store.MarkReservationProviderStartedAsync(second.UserId, requestId, CancellationToken.None));
             await Task.WhenAll(
-                store.RecordProviderCompletionAsync(first.UserId, requestId, zeroUsage, 0, 0, "verified", CancellationToken.None),
-                store.RecordProviderCompletionAsync(second.UserId, requestId, zeroUsage, 0, 0, "verified", CancellationToken.None));
+                store.RecordProviderCompletionAsync(first.UserId, requestId, firstUsage, 10, 123, "verified", CancellationToken.None),
+                store.RecordProviderCompletionAsync(second.UserId, requestId, secondUsage, 20, 456, "verified", CancellationToken.None));
             var settlements = await Task.WhenAll(
-                store.SettleAsync(first.UserId, requestId, zeroUsage, 0, 0, "verified", CancellationToken.None),
-                store.SettleAsync(second.UserId, requestId, zeroUsage, 0, 0, "verified", CancellationToken.None));
+                store.SettleAsync(first.UserId, requestId, firstUsage, 10, 123, "verified", CancellationToken.None),
+                store.SettleAsync(second.UserId, requestId, secondUsage, 20, 456, "verified", CancellationToken.None));
             Assert.All(settlements, result => Assert.True(result.Settled));
-            Assert.Equal(1_000_000, settlements[0].Account.AvailableCreditMicros);
-            Assert.Equal(2_000_000, settlements[1].Account.AvailableCreditMicros);
+            Assert.Equal(999_990, settlements[0].Account.AvailableCreditMicros);
+            Assert.Equal(1_999_980, settlements[1].Account.AvailableCreditMicros);
             Assert.Single(settlements[0].Account.RecentUsage);
             Assert.Single(settlements[1].Account.RecentUsage);
             Assert.Equal("browser_planner", settlements[0].Account.RecentUsage[0].ActivityType);
             Assert.Equal("selected_text", settlements[1].Account.RecentUsage[0].ActivityType);
+            Assert.Equal(10, settlements[0].Account.RecentUsage[0].ChargedCreditMicros);
+            Assert.Equal(20, settlements[1].Account.RecentUsage[0].ChargedCreditMicros);
             var usagePage = await store.GetUsagePageAsync(first.UserId, 1, null, CancellationToken.None);
             Assert.Single(usagePage.Items);
             Assert.Null(usagePage.NextCursor);
@@ -1942,7 +1996,7 @@ public sealed class SecurityAndUsageTests
     {
         var account = db.Collection("accounts").Document(userId);
         var reconciliationResourceHashes = new HashSet<string>(StringComparer.Ordinal);
-        var globalUsageAdjustments = new Dictionary<string, (long Reserved, long Settled)>(StringComparer.Ordinal);
+        var globalUsageAdjustments = new Dictionary<string, (long Reserved, long Settled, long ProviderCost, long ProviderSettlements)>(StringComparer.Ordinal);
         foreach (var collectionName in new[] { "ledger", "reservations", "usage", "purchases", "devices", "sessions", "dailyUsage" })
         {
             var documents = await account.Collection(collectionName).Limit(100).GetSnapshotAsync();
@@ -1964,12 +2018,15 @@ public sealed class SecurityAndUsageTests
                     var status = Convert.ToString(data.GetValueOrDefault("status")) ?? "";
                     var reserved = Convert.ToInt64(data.GetValueOrDefault("reservedCreditMicros") ?? 0L);
                     var charged = Convert.ToInt64(data.GetValueOrDefault("chargedCreditMicros") ?? 0L);
+                    var providerCost = Convert.ToInt64(data.GetValueOrDefault("providerCostUsdMicros") ?? 0L);
                     var current = globalUsageAdjustments.GetValueOrDefault(shardId);
                     globalUsageAdjustments[shardId] = string.Equals(status, "settled", StringComparison.Ordinal)
-                        ? (current.Reserved, checked(current.Settled + charged))
+                        ? (current.Reserved, checked(current.Settled + charged),
+                            checked(current.ProviderCost + providerCost), checked(current.ProviderSettlements + 1))
                         : status is "released" or "failed"
                             ? current
-                            : (checked(current.Reserved + reserved), current.Settled);
+                            : (checked(current.Reserved + reserved), current.Settled,
+                                current.ProviderCost, current.ProviderSettlements);
                 }
             }
             var batch = db.StartBatch();
@@ -1986,6 +2043,8 @@ public sealed class SecurityAndUsageTests
                 {
                     ["reservedCreditMicros"] = FieldValue.Increment(-adjustment.Reserved),
                     ["settledCreditMicros"] = FieldValue.Increment(-adjustment.Settled),
+                    ["providerCostUsdMicros"] = FieldValue.Increment(-adjustment.ProviderCost),
+                    ["providerCostSettlementCount"] = FieldValue.Increment(-adjustment.ProviderSettlements),
                     ["updatedAt"] = Timestamp.FromDateTime(DateTime.UtcNow),
                 }, SetOptions.MergeAll);
             }
@@ -2036,7 +2095,9 @@ public sealed class SecurityAndUsageTests
         PaidDeploymentEnvironment environment = PaidDeploymentEnvironment.Staging,
         bool allowBootstrapCatalog = true,
         bool useStagingIdentifiers = true,
-        bool? allowBootstrapModelRouting = null) => new()
+        bool? allowBootstrapModelRouting = null,
+        bool providerCostReconciliationEnabled = false,
+        string billingExportTable = "") => new()
     {
         DeploymentEnvironment = environment,
         ProjectId = useStagingIdentifiers ? "keyboard-wtf-staging" : "keyboard-wtf-prod",
@@ -2052,6 +2113,8 @@ public sealed class SecurityAndUsageTests
         AllowBootstrapCatalog = allowBootstrapCatalog,
         AllowBootstrapModelRouting = allowBootstrapModelRouting
             ?? environment != PaidDeploymentEnvironment.Production,
+        ProviderCostReconciliationEnabled = providerCostReconciliationEnabled,
+        BillingExportTable = billingExportTable,
     };
 
     private sealed class FakeClock : IClock
@@ -2333,6 +2396,50 @@ public sealed class SecurityAndUsageTests
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json"),
             });
+        }
+    }
+
+    private sealed class FakeAccessTokenProvider : IVertexAccessTokenProvider
+    {
+        public Task<string> GetAsync(CancellationToken cancellationToken) =>
+            Task.FromResult("non-secret-test-token");
+    }
+
+    private sealed class BigQueryBillingHandler : HttpMessageHandler
+    {
+        public string RequestBody { get; private set; } = "";
+        public bool SawProjectParameter { get; private set; }
+        public bool SawClosedWindowParameters { get; private set; }
+        public bool SawBytesBilledLimit { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal("bigquery.googleapis.com", request.RequestUri?.Host);
+            Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
+            RequestBody = await request.Content!.ReadAsStringAsync(cancellationToken);
+            using var document = JsonDocument.Parse(RequestBody);
+            var root = document.RootElement;
+            SawBytesBilledLimit = root.GetProperty("maximumBytesBilled").GetString() == "10737418240";
+            var query = root.GetProperty("query").GetString() ?? "";
+            Assert.Contains("service.description = 'Vertex AI'", query, StringComparison.Ordinal);
+            Assert.Contains("currency_conversion_rate", query, StringComparison.Ordinal);
+            Assert.Contains("keyboard-wtf-staging.billing_export.gcp_billing_export_v1_account", query, StringComparison.Ordinal);
+            var names = root.GetProperty("queryParameters")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("name").GetString())
+                .ToArray();
+            SawProjectParameter = names.Contains("project_id", StringComparer.Ordinal);
+            SawClosedWindowParameters = names.Contains("window_start", StringComparer.Ordinal)
+                && names.Contains("window_end", StringComparer.Ordinal);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{"jobComplete":true,"rows":[{"f":[{"v":"123456"}]}]}""",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
         }
     }
 

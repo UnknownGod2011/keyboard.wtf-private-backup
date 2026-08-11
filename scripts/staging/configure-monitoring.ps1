@@ -52,7 +52,7 @@ Set-LogMetric "keyboard_wtf_paid_auth_rejections" `
     "$revision AND textPayload:API AND textPayload:request AND textPayload:rejected AND (textPayload:401 OR textPayload:403)"
 Set-LogMetric "keyboard_wtf_paid_financial_warnings" `
     "Financial health warnings emitted only by the staging maintenance job." `
-    "$job AND severity>=WARNING AND (textPayload:reconciliation OR textPayload:invariant OR textPayload:Stuck OR textPayload:kill OR (textPayload:spend AND textPayload:threshold) OR (textPayload:Global AND textPayload:daily AND textPayload:AI AND textPayload:spend))"
+    "$job AND severity>=WARNING AND (textPayload:reconciliation OR textPayload:invariant OR textPayload:Stuck OR textPayload:kill OR (textPayload:provider AND textPayload:cost AND textPayload:drift) OR (textPayload:spend AND textPayload:threshold) OR (textPayload:Global AND textPayload:daily AND textPayload:AI AND textPayload:spend))"
 Set-LogMetric "keyboard_wtf_paid_maintenance_failures" `
     "Failed staging maintenance executions." `
     "$job AND severity>=ERROR"

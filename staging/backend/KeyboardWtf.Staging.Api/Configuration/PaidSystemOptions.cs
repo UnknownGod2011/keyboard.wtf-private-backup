@@ -57,6 +57,12 @@ public sealed class PaidSystemOptions
     public int PaymentReconciliationLookbackDays { get; init; } = 180;
     public long PerUserSpendAlertCreditMicros { get; init; } = 250_000_000;
     public int StuckPaymentMinutes { get; init; } = 30;
+    public bool ProviderCostReconciliationEnabled { get; init; }
+    public string BillingExportTable { get; init; } = "";
+    public int BillingReconciliationLagDays { get; init; } = 3;
+    public int ProviderCostVarianceBasisPoints { get; init; } = 1_000;
+    public long ProviderCostVarianceAbsoluteUsdMicros { get; init; } = 100_000;
+    public long BillingReconciliationMaximumBytesBilled { get; init; } = 10L * 1024 * 1024 * 1024;
     public bool AllowBootstrapCatalog { get; init; } = true;
     public bool AllowBootstrapModelRouting { get; init; } = true;
 }

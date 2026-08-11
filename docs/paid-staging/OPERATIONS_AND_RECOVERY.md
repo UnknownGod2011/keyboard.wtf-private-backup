@@ -37,6 +37,7 @@ The backend image supports isolated Cloud Run Job entry points:
 --maintenance-job=payments
 --maintenance-job=usage
 --maintenance-job=invariants
+--maintenance-job=provider-cost
 --maintenance-job=all
 ```
 
@@ -47,6 +48,26 @@ mismatches. Usage reconciliation settles durable provider completions, releases
 only reservations that provably never dispatched, and quarantines ambiguous
 dispatches. The invariant job reconstructs balances from the ledger and checks
 cross-account payment ownership.
+
+Provider-cost reconciliation is a separate, low-frequency audit. Realtime
+allowance settlement continues to use Vertex `usageMetadata`; each settlement
+also increments the existing per-day global usage shard with its server-priced
+provider cost. The maintenance job compares that bounded sharded total with a
+closed UTC day from the detailed Google Cloud Billing export in BigQuery. It
+records the aggregate variance and opens an audited issue when both the
+absolute and percentage thresholds are exceeded. It never changes an
+individual balance.
+
+Keep `PaidSystem__ProviderCostReconciliationEnabled=false` until the detailed
+billing export is active and contains only the intended billing account data.
+Then configure a fully qualified table through
+`PaidSystem__BillingExportTable=project.dataset.table`, grant the maintenance
+runtime `bigquery.jobs.create` on the query project and read-only access to that
+dataset, and enable the job. The query is parameterized, limited to the local
+GCP project, `Vertex AI`, and a UTC day older than the configured billing lag;
+it also has a server-owned maximum-bytes-billed ceiling.
+Enable it only after the provider-cost shard writer has been deployed for at
+least that lag period so a rolling deployment cannot create a partial day.
 
 The staging Cloud Scheduler job `keyboard-wtf-paid-maintenance-hourly` invokes
 the Cloud Run Job on an hourly cadence with a dedicated service account that
@@ -104,7 +125,8 @@ credentials, and user page content.
    uncertain. This blocks new work but does not discard existing state.
 2. Preserve Cloud Run and Firestore audit logs; never log prompts, bearer tokens,
    card data or provider secrets.
-3. Run payment reconciliation, then usage reconciliation, then invariants.
+3. Run payment reconciliation, usage reconciliation, invariants, and the
+   provider-cost audit.
 4. Resolve only quarantined records with provider dashboard evidence. Record any
    manual adjustment as a new ledger event; never edit old ledger documents.
 5. Re-enable work only when the invariant report is clean and alerting is green.

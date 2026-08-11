@@ -48,6 +48,14 @@ builder.Services.AddOptions<PaidSystemOptions>()
     .Validate(options => options.PerUserDailyCreditMicrosCap > 0, "Per-user daily spending cap must be positive.")
     .Validate(options => options.MaxAccountCreditMicros > 0, "Account balance cap must be positive.")
     .Validate(options => options.StuckPaymentMinutes is >= 5 and <= 1440, "Stuck payment threshold is unsafe.")
+    .Validate(options => options.BillingReconciliationLagDays is >= 1 and <= 30, "Billing reconciliation lag is unsafe.")
+    .Validate(options => options.ProviderCostVarianceBasisPoints is >= 1 and <= 10_000, "Provider cost variance threshold is unsafe.")
+    .Validate(options => options.ProviderCostVarianceAbsoluteUsdMicros > 0, "Provider cost absolute variance threshold is unsafe.")
+    .Validate(options => options.BillingReconciliationMaximumBytesBilled is >= 10_000_000 and <= 1_000_000_000_000,
+        "Billing reconciliation bytes-billed limit is unsafe.")
+    .Validate(options => !options.ProviderCostReconciliationEnabled
+        || BigQueryProviderBillingCostSource.IsValidTable(options.BillingExportTable),
+        "Provider cost reconciliation requires a valid fully-qualified BigQuery billing export table.")
     .Validate(options => DeploymentSafety.Validate(
         options,
         Environment.GetEnvironmentVariable("RAZORPAY_KEY_ID")),
@@ -112,6 +120,8 @@ builder.Services.AddSingleton<UsageReconciliationService>();
 builder.Services.AddSingleton<LedgerInvariantService>();
 builder.Services.AddSingleton<MaintenanceRunner>();
 builder.Services.AddSingleton<OperationalHealthService>();
+builder.Services.AddHttpClient<IProviderBillingCostSource, BigQueryProviderBillingCostSource>();
+builder.Services.AddSingleton<ProviderCostReconciliationService>();
 
 var app = builder.Build();
 if (paidOptions.DeploymentEnvironment == PaidDeploymentEnvironment.Production)
