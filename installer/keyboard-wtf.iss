@@ -25,9 +25,6 @@
 #ifndef MyRunValueName
   #define MyRunValueName "keyboard.wtf"
 #endif
-#ifndef MyRegisterStartup
-  #define MyRegisterStartup 1
-#endif
 
 [Setup]
 AppId={#MyAppId}
@@ -66,7 +63,7 @@ Source: "{#MySourceDir}\*"; DestDir: "{app}"; Excludes: "*.pdb"; Flags: ignoreve
 Name: "{group}\keyboard.wtf"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 
 [Registry]
-#if MyRegisterStartup == 1
+#ifndef MySkipStartup
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyRunValueName}"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue
 #endif
 

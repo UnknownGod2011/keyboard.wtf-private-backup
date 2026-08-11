@@ -69,7 +69,7 @@ if ($SideBySideStaging) {
         '/DMyOutputBaseFilename=keyboard-wtf-paid-staging-setup',
         '/DMySourceDir=..\dist\release\keyboard-wtf-paid-staging-win-x64',
         '/DMyRunValueName=keyboard.wtf Paid Staging',
-        '/DMyRegisterStartup=0'
+        '/DMySkipStartup'
     )
 }
 & $iscc @isccArguments $installerScript
