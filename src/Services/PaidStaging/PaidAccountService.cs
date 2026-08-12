@@ -92,13 +92,18 @@ internal sealed class PaidAccountService : IDisposable
         HttpMessageHandler handler = null)
     {
         _configuration = configuration ?? PaidStagingConfiguration.FromEnvironment();
-        _sessionStore = sessionStore ?? new PaidSessionStore();
+        _sessionStore = sessionStore ?? new PaidSessionStore(Path.Combine(
+            SettingsService.AppDataDir,
+            _configuration.IsProduction
+                ? "paid-production-session.dat"
+                : "paid-staging-session.dat"));
         _http = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: true);
         _http.Timeout = TimeSpan.FromSeconds(40);
     }
 
     public bool Enabled => _configuration.Enabled;
     public bool EmergencyByokEnabled => _configuration.EmergencyByokEnabled;
+    public bool PreserveExistingRegistrations => _configuration.PreserveExistingRegistrations;
     public bool IsSignedIn => _tokens is not null && _tokens.RefreshTokenExpiresAt > DateTimeOffset.UtcNow;
     public PaidAccountSnapshot Account => _account;
     public string LastError => _lastError;
@@ -432,7 +437,7 @@ internal sealed class PaidAccountService : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!Enabled)
-            throw new InvalidOperationException("Paid staging is not enabled for this build.");
+            throw new InvalidOperationException("Paid account is not enabled for this build.");
     }
 
     private static int ReserveLoopbackPort()

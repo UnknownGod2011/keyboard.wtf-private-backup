@@ -582,10 +582,10 @@
       </div>
     </section>
 
-    <!-- Paid staging account -->
+    <!-- Paid account -->
     <section id="account-billing" class="paid-only" style="display:none">
       <h2>Account &amp; Billing</h2>
-      <p class="section-hint">Private paid-system staging. Sign-in, balance, usage and devices are server-authoritative.</p>
+      <p class="section-hint">Your plan, usage, purchases, and devices are synchronized securely with your keyboard.wtf account.</p>
 
       <div class="status-row">
         <span class="dot" id="paidAccountDot"></span>
@@ -602,9 +602,14 @@
         <span class="name">Device</span>
         <span class="value" id="paidDevice">Not connected</span>
       </div>
+      <div class="status-row">
+        <span class="dot" id="paidCycleDot"></span>
+        <span class="name">Billing cycle</span>
+        <span class="value" id="paidCycle">No active cycle</span>
+      </div>
 
       <div class="field" style="margin-top:20px">
-        <label>Usable credits</label>
+        <label>Monthly usage remaining</label>
         <div style="font-size:28px;font-weight:650" id="paidBalance">0</div>
         <div class="level-bar" style="height:6px"><div class="level-bar-fill" id="paidBalanceBar" style="width:0%"></div></div>
         <div class="hint" id="paidUsage">No paid usage this cycle.</div>
@@ -613,11 +618,25 @@
       <div class="btn-row">
         <button id="paidSignIn" onclick="paidAccountAction('sign-in')">Sign in with Google</button>
         <button class="ghost" id="paidRefresh" onclick="paidAccountAction('refresh')">Refresh account</button>
-        <button class="ghost" id="paidBilling" onclick="paidAccountAction('billing')">Add Credits / Upgrade</button>
+        <button class="ghost" id="paidBilling" onclick="paidAccountAction('billing')">Subscribe / Manage Billing</button>
         <button class="ghost" id="paidManage" onclick="paidAccountAction('manage')">Manage account</button>
         <button class="ghost" id="paidSignOut" onclick="paidAccountAction('sign-out')">Sign out</button>
+        <button class="ghost" id="paidSignOutAll" onclick="paidAccountAction('sign-out-all')">Sign out all devices</button>
       </div>
-      <div class="hint" id="paidAccountMessage">Paid staging is disabled.</div>
+      <div class="hint" id="paidAccountMessage">Paid account is disabled.</div>
+
+      <div class="field" style="margin-top:20px">
+        <label>Recent usage</label>
+        <div id="paidRecentUsage" class="hint">No recent usage.</div>
+      </div>
+      <div class="field">
+        <label>Payment history</label>
+        <div id="paidRecentPurchases" class="hint">No payments yet.</div>
+      </div>
+      <div class="field">
+        <label>Devices &amp; sessions</label>
+        <div id="paidDevices" class="hint">No connected devices.</div>
+      </div>
     </section>
 
     <!-- Hotkeys -->
@@ -2337,8 +2356,9 @@ function renderPaidAccount(account) {
   const aiSection = document.getElementById('ai');
   const apiLink = document.querySelector('#sidebar-nav a[href="#set-api-key"]');
   const aiLink = document.querySelector('#sidebar-nav a[href="#ai"]');
+  const hideByok = enabled && account.emergencyByokEnabled !== true;
   [apiSection, aiSection, apiLink, aiLink].forEach(element => {
-    if (element) element.style.display = enabled ? 'none' : '';
+    if (element) element.style.display = hideByok ? 'none' : '';
   });
   if (!enabled) return;
 
@@ -2366,14 +2386,18 @@ function renderPaidAccount(account) {
   document.getElementById('paidAccountDot').className = signedIn ? 'dot ok' : 'dot warn';
   document.getElementById('paidPlanDot').className = account.planId && account.planId !== 'none' ? 'dot ok' : 'dot';
   document.getElementById('paidDeviceDot').className = account.deviceId ? 'dot ok' : 'dot';
+  document.getElementById('paidCycleDot').className = account.cycleEndsAt ? 'dot ok' : 'dot';
   document.getElementById('paidAccountIdentity').textContent = signedIn
     ? (account.displayName ? `${account.displayName} (${account.email})` : account.email)
     : 'Signed out';
-  document.getElementById('paidPlan').textContent = `${account.planId || 'none'} · ${account.subscriptionStatus || 'none'}`;
+  document.getElementById('paidPlan').textContent = `${formatPaidPlan(account.planId)} - ${account.subscriptionStatus || 'none'}`;
   document.getElementById('paidDevice').textContent = account.deviceId || 'Not connected';
-  document.getElementById('paidBalance').textContent = formatPaidCredits(totalUsable);
+  document.getElementById('paidCycle').textContent = account.cycleEndsAt
+    ? `Renews ${new Date(account.cycleEndsAt).toLocaleDateString()}`
+    : 'No active cycle';
+  document.getElementById('paidBalance').textContent = `${percentage.toFixed(1)}%`;
   document.getElementById('paidBalanceBar').style.width = `${percentage}%`;
-  document.getElementById('paidUsage').textContent = `${formatPaidCredits(used)} credits used this cycle · ${percentage.toFixed(0)}% remaining`;
+  document.getElementById('paidUsage').textContent = `${formatPaidCredits(used)} used this cycle - ${formatPaidCredits(totalUsable)} usable now`;
   document.getElementById('paidAccountMessage').textContent = account.lastError
     || (signedIn
       ? (available > 0 ? 'Account active.' : 'This account has zero usable credits. Add credits before running AI tasks.')
@@ -2383,6 +2407,52 @@ function renderPaidAccount(account) {
   document.getElementById('paidBilling').disabled = !signedIn;
   document.getElementById('paidManage').disabled = !signedIn;
   document.getElementById('paidSignOut').style.display = signedIn ? '' : 'none';
+  document.getElementById('paidSignOutAll').style.display = signedIn ? '' : 'none';
+  renderPaidRows('paidRecentUsage', account.recentUsage, 'No recent usage.', row =>
+    `${row.model || 'AI request'} - ${formatPaidCredits(row.chargedCreditMicros)} credits - ${row.outcome || 'unknown'} - ${formatPaidDate(row.createdAt)}`);
+  renderPaidRows('paidRecentPurchases', account.recentPurchases, 'No payments yet.', row =>
+    `${row.productSku || 'Subscription'} - ${row.status || 'unknown'} - ${formatPaidMoney(row.amountMinor, row.currency)} - ${formatPaidDate(row.createdAt)}`);
+  renderPaidRows('paidDevices', account.devices, 'No connected devices.', row =>
+    `${row.name || 'Jarvis device'} - ${row.status || 'unknown'} - last seen ${formatPaidDate(row.lastSeenAt)}`);
+}
+
+function renderPaidRows(containerId, rows, emptyText, formatter) {
+  const container = document.getElementById(containerId);
+  container.replaceChildren();
+  if (!Array.isArray(rows) || rows.length === 0) {
+    container.textContent = emptyText;
+    return;
+  }
+  const list = document.createElement('ul');
+  list.style.margin = '0';
+  list.style.paddingLeft = '20px';
+  for (const row of rows.slice(0, 10)) {
+    const item = document.createElement('li');
+    item.textContent = formatter(row);
+    item.style.marginBottom = '6px';
+    list.appendChild(item);
+  }
+  container.appendChild(list);
+}
+
+function formatPaidPlan(planId) {
+  if (!planId || planId === 'none') return 'No active plan';
+  return planId.includes('monthly') ? 'Monthly' : planId.replaceAll('_', ' ');
+}
+
+function formatPaidDate(value) {
+  if (!value) return 'unknown';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'unknown' : date.toLocaleString();
+}
+
+function formatPaidMoney(amountMinor, currency) {
+  const code = String(currency || 'INR').toUpperCase();
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency: code }).format(Number(amountMinor || 0) / 100);
+  } catch {
+    return `${code} ${(Number(amountMinor || 0) / 100).toFixed(2)}`;
+  }
 }
 
 async function saveUpdateChannel() {
@@ -2441,6 +2511,8 @@ function formatPaidCredits(micros) {
 }
 
 async function paidAccountAction(action) {
+  if (action === 'sign-out-all'
+      && !confirm('Sign out every keyboard.wtf device and session for this account?')) return;
   const buttons = Array.from(document.querySelectorAll('#account-billing button'));
   buttons.forEach(button => button.disabled = true);
   try {

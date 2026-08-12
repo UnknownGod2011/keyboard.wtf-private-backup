@@ -582,7 +582,7 @@ public sealed class WebSettingsService : IDisposable
                     ? (!_paidAccount.IsSignedIn
                         ? "Sign in with Google"
                         : (_paidAccount.Account?.AvailableCreditMicros > 0
-                            ? "Available through paid staging"
+                            ? "Available through your keyboard.wtf account"
                             : "Add credits to use"))
                     : (string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey)
                         ? "Needs Gemini API key"
@@ -1448,6 +1448,9 @@ public sealed class WebSettingsService : IDisposable
             cycleEndsAt = account?.CycleEndsAt,
             deviceId = account?.Devices?.FirstOrDefault(device =>
                 string.Equals(device.Status, "active", StringComparison.OrdinalIgnoreCase))?.DeviceId ?? "",
+            devices = account?.Devices ?? Array.Empty<PaidDeviceSnapshot>(),
+            recentUsage = account?.RecentUsage ?? Array.Empty<PaidUsageSnapshot>(),
+            recentPurchases = account?.RecentPurchases ?? Array.Empty<PaidPurchaseSnapshot>(),
             lastError = _paidAccount?.LastError ?? "",
             emergencyByokEnabled = _paidAccount?.EmergencyByokEnabled ?? false,
         };
@@ -1458,7 +1461,7 @@ public sealed class WebSettingsService : IDisposable
         try
         {
             if (_paidAccount?.Enabled != true)
-                throw new InvalidOperationException("Paid staging is not enabled for this build.");
+                throw new InvalidOperationException("Paid account is not enabled for this build.");
             switch (path)
             {
                 case "/api/paid/sign-in":
@@ -1469,6 +1472,9 @@ public sealed class WebSettingsService : IDisposable
                     break;
                 case "/api/paid/sign-out":
                     await _paidAccount.SignOutAsync(false, _cts?.Token ?? CancellationToken.None);
+                    break;
+                case "/api/paid/sign-out-all":
+                    await _paidAccount.SignOutAsync(true, _cts?.Token ?? CancellationToken.None);
                     break;
                 case "/api/paid/manage":
                     _paidAccount.OpenManageAccount();

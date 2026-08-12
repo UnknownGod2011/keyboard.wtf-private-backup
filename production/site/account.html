@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#f4f5f2">
+  <title>Account & billing · keyboard.wtf</title>
+  <link rel="icon" href="./favicon.svg">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <nav class="site-nav"><div class="shell nav-inner"><a class="brand" href="./">keyboard.wtf</a><div class="nav-links"><a class="nav-link" href="./pricing.html">Pricing</a><a class="nav-link" href="./support.html">Support</a></div></div></nav>
+  <main><div class="shell account-shell">
+    <div class="account-head"><div><p class="eyebrow">Account & billing</p><h1>Your Jarvis account</h1></div><div class="account-actions"><button id="refreshAccount" class="secondary hidden">Refresh usage</button><button id="signOut" class="secondary hidden">Sign out</button></div></div>
+    <div id="status" class="status" role="status" aria-live="polite">Initializing secure Google sign-in…</div>
+    <section id="signedOut" class="card hidden"><h2>Sign in to continue</h2><p>Your plan, usage, purchases, and Jarvis devices are loaded only after Firebase confirms your Google session.</p><div class="actions"><button id="signIn">Sign in with Google</button></div></section>
+    <div id="signedIn" class="hidden">
+      <section class="grid"><div class="card"><div class="small">Signed in as</div><h2 id="identity">—</h2><p id="plan">No paid plan</p></div><div class="card"><div class="small">Total usable credits</div><div id="balance" class="balance">0</div><div class="progress"><div id="balanceBar" style="width:0"></div></div><p id="usage">0 used this cycle</p><p id="allowanceBreakdown" class="small">Plan allowance 0</p></div><div class="card"><div class="small">Subscription</div><h2 id="subscription">None</h2><p id="renewal">No renewal scheduled.</p></div></section>
+      <section class="content-section compact-section"><div class="section-head"><h2>Choose your plan.</h2><p class="section-copy">One monthly plan. Payments stay closed until keyboard.wtf completes its owner-only production canary.</p></div><div id="products" class="grid feature-grid"></div></section>
+      <section class="grid account-detail-grid"><div class="card"><h2>Recent usage</h2><ul id="usageList" class="list"></ul><button id="loadMoreUsage" class="secondary hidden" type="button">Load more</button></div><div class="card"><h2>Payment history</h2><ul id="purchaseList" class="list"></ul></div></section>
+      <section class="card account-card-gap"><div class="section-inline"><div><h2>Devices & sessions</h2><p class="small">Remove a device you no longer use, or sign out every connected Jarvis desktop.</p></div><button id="signOutAllDevices" class="secondary" type="button">Sign out all devices</button></div><ul id="deviceList" class="list"></ul></section>
+      <section class="card account-card-gap"><h2>Delete account</h2><p>Closes your account and revokes every device after a fresh Google confirmation. Financial ledger, payment references, and usage totals may be retained in pseudonymous form for accounting, refunds, fraud prevention, and legal obligations.</p><button id="deleteAccount" class="secondary">Delete account</button></section>
+    </div>
+  </div></main>
+  <footer class="site-footer"><div class="shell footer-inner"><span>keyboard.wtf for Windows</span><div class="footer-links"><a href="./privacy.html">Privacy</a><a href="./terms.html">Terms</a><a href="./refunds.html">Refunds</a><a href="./support.html">Support</a><a href="./changelog.html">Changelog</a></div></div></footer>
+  <script type="module" src="./account.js"></script>
+</body>
+</html>

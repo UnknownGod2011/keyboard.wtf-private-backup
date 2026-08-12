@@ -12,7 +12,7 @@ internal sealed class PaidCloudAiProvider : IStructuredAiProvider
         _account = account ?? throw new ArgumentNullException(nameof(account));
 
     public AiProvider Id => AiProvider.Gemini;
-    public string DisplayName => "keyboard.wtf Cloud AI (staging)";
+    public string DisplayName => "keyboard.wtf Cloud AI";
     public bool IsImplemented => true;
     public bool IsAvailable => _account.Enabled && _account.IsSignedIn;
 
@@ -54,7 +54,7 @@ internal sealed class PaidCloudAiProvider : IStructuredAiProvider
     public async Task<(bool success, string message)> TestApiKeyAsync()
     {
         if (!_account.Enabled)
-            return (false, "Paid staging is disabled.");
+            return (false, "Paid account is disabled.");
         if (!_account.IsSignedIn)
             return (false, "Sign in with Google first.");
         try

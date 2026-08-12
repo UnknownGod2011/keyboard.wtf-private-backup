@@ -25,6 +25,15 @@
 #ifndef MyRunValueName
   #define MyRunValueName "keyboard.wtf"
 #endif
+#ifndef MyDefaultGroupName
+  #define MyDefaultGroupName "keyboard.wtf"
+#endif
+#ifndef MyShortcutName
+  #define MyShortcutName "keyboard.wtf"
+#endif
+#ifndef MyUserDataDir
+  #define MyUserDataDir "keyboard.wtf"
+#endif
 
 [Setup]
 AppId={#MyAppId}
@@ -32,7 +41,7 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={#MyDefaultDirName}
-DefaultGroupName=keyboard.wtf
+DefaultGroupName={#MyDefaultGroupName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
@@ -60,7 +69,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "{#MySourceDir}\*"; DestDir: "{app}"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\keyboard.wtf"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
+Name: "{group}\{#MyShortcutName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 
 [Registry]
 #ifndef MySkipStartup
@@ -91,6 +100,6 @@ begin
   if (CurUninstallStep = usPostUninstall) and
      HasCommandLineParameter('/REMOVEUSERDATA') then
   begin
-    DelTree(ExpandConstant('{localappdata}\keyboard.wtf'), True, True, True);
+    DelTree(ExpandConstant('{localappdata}\{#MyUserDataDir}'), True, True, True);
   end;
 end;

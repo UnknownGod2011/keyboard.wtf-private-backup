@@ -223,7 +223,7 @@ public sealed class BrowserAutomationPlanner : IDisposable
         {
             var rankedPaid = _ranker.Rank(request, page.Controls, 110);
             var paidPrompt = BuildPrompt(request, page, history, rankedPaid);
-            _lastModel = "vertex-cloud-staging";
+            _lastModel = "vertex-cloud";
             var paidDecision = await SendPaidStructuredAsync(paidPrompt, null, token);
             ValidateDecision(paidDecision);
             return paidDecision;
@@ -280,7 +280,7 @@ public sealed class BrowserAutomationPlanner : IDisposable
 
         if (_paidAccount?.Enabled == true)
         {
-            _lastModel = "vertex-cloud-staging";
+            _lastModel = "vertex-cloud";
             var paidDecision = await SendPaidStructuredAsync(
                 prompt,
                 new PaidInlineImage(mimeType, imageBase64),

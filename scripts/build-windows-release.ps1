@@ -1,13 +1,24 @@
 param(
     [string]$Configuration = "Release",
     [switch]$SkipSiteHashUpdate,
-    [switch]$SideBySideStaging
+    [switch]$SideBySideStaging,
+    [switch]$PaidProductionCandidate
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $root "src\KeyboardWtf.csproj"
-$publishName = if ($SideBySideStaging) { "keyboard-wtf-paid-staging-win-x64" } else { "keyboard-wtf-win-x64" }
+if ($SideBySideStaging -and $PaidProductionCandidate) {
+    throw "Choose either SideBySideStaging or PaidProductionCandidate, not both."
+}
+$isSideBySide = $SideBySideStaging -or $PaidProductionCandidate
+$publishName = if ($PaidProductionCandidate) {
+    "keyboard-wtf-paid-production-candidate-win-x64"
+} elseif ($SideBySideStaging) {
+    "keyboard-wtf-paid-staging-win-x64"
+} else {
+    "keyboard-wtf-win-x64"
+}
 $publishDir = Join-Path $root "dist\release\$publishName"
 $installerScript = Join-Path $root "installer\keyboard-wtf.iss"
 $installerDir = Join-Path $root "dist\installer"
@@ -45,16 +56,22 @@ if ($LASTEXITCODE -ne 0) {
     throw "Locked win-x64 restore failed with exit code $LASTEXITCODE"
 }
 
-dotnet publish $project `
-    --configuration $Configuration `
-    --runtime win-x64 `
-    --self-contained true `
-    --no-restore `
-    --output $publishDir `
-    -p:PublishSingleFile=true `
-    -p:PublishTrimmed=false `
-    -p:DebugType=None `
-    -p:DebugSymbols=false
+$publishArguments = @(
+    "publish", $project,
+    "--configuration", $Configuration,
+    "--runtime", "win-x64",
+    "--self-contained", "true",
+    "--no-restore",
+    "--output", $publishDir,
+    "-p:PublishSingleFile=true",
+    "-p:PublishTrimmed=false",
+    "-p:DebugType=None",
+    "-p:DebugSymbols=false"
+)
+if ($PaidProductionCandidate) {
+    $publishArguments += "-p:KeyboardWtfPaidProductionCandidate=true"
+}
+& dotnet @publishArguments
 
 if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE"
@@ -69,6 +86,23 @@ if ($SideBySideStaging) {
         '/DMyOutputBaseFilename=keyboard-wtf-paid-staging-setup',
         '/DMySourceDir=..\dist\release\keyboard-wtf-paid-staging-win-x64',
         '/DMyRunValueName=keyboard.wtf Paid Staging',
+        '/DMyDefaultGroupName=keyboard.wtf Paid Staging',
+        '/DMyShortcutName=keyboard.wtf Paid Staging',
+        '/DMyUserDataDir=keyboard.wtf-paid-staging',
+        '/DMySkipStartup'
+    )
+}
+if ($PaidProductionCandidate) {
+    $isccArguments += @(
+        '/DMyAppName=keyboard.wtf Paid Production Candidate',
+        '/DMyAppId={{C7905F92-81A1-4824-9E31-26A5E532B50F}',
+        '/DMyDefaultDirName={localappdata}\Programs\keyboard.wtf Paid Production Candidate',
+        '/DMyOutputBaseFilename=keyboard-wtf-paid-production-candidate-setup',
+        '/DMySourceDir=..\dist\release\keyboard-wtf-paid-production-candidate-win-x64',
+        '/DMyRunValueName=keyboard.wtf Paid Production Candidate',
+        '/DMyDefaultGroupName=keyboard.wtf Paid Production Candidate',
+        '/DMyShortcutName=keyboard.wtf Paid Production Candidate',
+        '/DMyUserDataDir=keyboard.wtf-paid-production-candidate',
         '/DMySkipStartup'
     )
 }
@@ -77,11 +111,17 @@ if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup failed with exit code $LASTEXITCODE"
 }
 
-$installerName = if ($SideBySideStaging) { "keyboard-wtf-paid-staging-setup.exe" } else { "keyboard-wtf-setup.exe" }
+$installerName = if ($PaidProductionCandidate) {
+    "keyboard-wtf-paid-production-candidate-setup.exe"
+} elseif ($SideBySideStaging) {
+    "keyboard-wtf-paid-staging-setup.exe"
+} else {
+    "keyboard-wtf-setup.exe"
+}
 $installer = Join-Path $installerDir $installerName
 $hash = Get-FileHash -LiteralPath $installer -Algorithm SHA256
 $sizeMb = [Math]::Round((Get-Item -LiteralPath $installer).Length / 1MB, 1)
-if (-not $SkipSiteHashUpdate -and -not $SideBySideStaging) {
+if (-not $SkipSiteHashUpdate -and -not $isSideBySide) {
     $siteHtml = Get-Content -LiteralPath $siteIndex -Raw
     $updatedSiteHtml = $siteHtml -replace 'SHA256 [A-Fa-f0-9]{64}', "SHA256 $($hash.Hash)"
     if ($updatedSiteHtml -eq $siteHtml -and $siteHtml -notmatch "SHA256 $($hash.Hash)") {

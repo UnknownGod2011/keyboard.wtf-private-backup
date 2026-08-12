@@ -30,7 +30,8 @@ try {
         if (-not (Test-Path -LiteralPath $fullPath) -or (Get-Item -LiteralPath $fullPath).Length -gt 5MB) { continue }
         $content = [IO.File]::ReadAllText($fullPath)
         foreach ($pattern in $patterns) {
-            if ($file -eq 'staging/site/config.js' -and $pattern.StartsWith('(api', [StringComparison]::Ordinal)) {
+            if (($file -in @('staging/site/config.js', 'production/site/config.js')) -and
+                $pattern.StartsWith('(api', [StringComparison]::Ordinal)) {
                 continue
             }
             if ([Text.RegularExpressions.Regex]::IsMatch($content, $pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
@@ -38,7 +39,7 @@ try {
                 break
             }
         }
-        if ($file -ne 'staging/site/config.js' -and
+        if (($file -notin @('staging/site/config.js', 'production/site/config.js')) -and
             [Text.RegularExpressions.Regex]::IsMatch($content, 'AIza[0-9A-Za-z_-]{30,}')) {
             [void]$matchedFiles.Add($file)
         }

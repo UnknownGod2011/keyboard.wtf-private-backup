@@ -116,8 +116,19 @@ public sealed class SettingsService
     };
 
     public static string AppDataDir { get; } = ResolveAppDataDir(
-        Environment.GetEnvironmentVariable("KEYBOARD_WTF_APPDATA_DIR"),
+        ConfiguredAppDataOverride(),
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+
+    private static string ConfiguredAppDataOverride()
+    {
+#if KEYBOARD_WTF_PAID_PRODUCTION_CANDIDATE
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "keyboard.wtf-paid-production-candidate");
+#else
+        return Environment.GetEnvironmentVariable("KEYBOARD_WTF_APPDATA_DIR");
+#endif
+    }
 
     internal static string ResolveAppDataDir(string overridePath, string localAppData)
     {

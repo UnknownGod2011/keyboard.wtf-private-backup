@@ -24,6 +24,14 @@
     <OutputPath>$(BaseOutputPath)$(Configuration)\bin\</OutputPath>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(KeyboardWtfPaidProduction)' == 'true'">
+    <DefineConstants>$(DefineConstants);KEYBOARD_WTF_PAID_PRODUCTION</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(KeyboardWtfPaidProductionCandidate)' == 'true'">
+    <DefineConstants>$(DefineConstants);KEYBOARD_WTF_PAID_PRODUCTION;KEYBOARD_WTF_PAID_PRODUCTION_CANDIDATE</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <EmbeddedResource Include="Resources\web\settings.html" LogicalName="web/settings.html" />
     <EmbeddedResource Include="Resources\web\browser-automation-fixture.html" LogicalName="web/browser-automation-fixture.html" />

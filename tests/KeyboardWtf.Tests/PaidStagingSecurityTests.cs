@@ -24,9 +24,9 @@ public sealed class PaidStagingSecurityTests
         {
             AiProviderRegistry.Initialize(claude, paid);
 
-            Assert.Equal("keyboard.wtf Cloud AI (staging)", AiProviderRegistry.Get(AiProvider.Gemini).DisplayName);
-            Assert.Equal("keyboard.wtf Cloud AI (staging)", AiProviderRegistry.Get(AiProvider.Claude).DisplayName);
-            Assert.Equal("keyboard.wtf Cloud AI (staging)", AiProviderRegistry.Get(AiProvider.OpenAi).DisplayName);
+            Assert.Equal("keyboard.wtf Cloud AI", AiProviderRegistry.Get(AiProvider.Gemini).DisplayName);
+            Assert.Equal("keyboard.wtf Cloud AI", AiProviderRegistry.Get(AiProvider.Claude).DisplayName);
+            Assert.Equal("keyboard.wtf Cloud AI", AiProviderRegistry.Get(AiProvider.OpenAi).DisplayName);
         }
         finally
         {
@@ -65,6 +65,7 @@ public sealed class PaidStagingSecurityTests
             ("KEYBOARD_WTF_PAID_WEB_URL", null));
         var configuration = PaidStagingConfiguration.FromEnvironment();
         Assert.False(configuration.Enabled);
+        Assert.False(configuration.PreserveExistingRegistrations);
     }
 
     [Fact]
@@ -78,6 +79,21 @@ public sealed class PaidStagingSecurityTests
     }
 
     [Fact]
+    public void Enabled_paid_staging_preserves_the_stable_install_registrations()
+    {
+        using var scope = new EnvironmentScope(
+            ("KEYBOARD_WTF_PAID_STAGING", "1"),
+            ("KEYBOARD_WTF_PAID_BACKEND_URL", "https://paid-api.example.test"),
+            ("KEYBOARD_WTF_PAID_WEB_URL", "https://paid.example.test"));
+
+        var configuration = PaidStagingConfiguration.FromEnvironment();
+
+        Assert.True(configuration.Enabled);
+        Assert.True(configuration.PreserveExistingRegistrations);
+        Assert.False(configuration.IsProduction);
+    }
+
+    [Fact]
     public void Remote_plain_http_paid_endpoint_is_rejected()
     {
         using var scope = new EnvironmentScope(
@@ -85,6 +101,21 @@ public sealed class PaidStagingSecurityTests
             ("KEYBOARD_WTF_PAID_BACKEND_URL", "http://example.test"),
             ("KEYBOARD_WTF_PAID_WEB_URL", "https://staging.example.test"));
         Assert.Throws<InvalidOperationException>(PaidStagingConfiguration.FromEnvironment);
+    }
+
+    [Fact]
+    public void Production_configuration_is_pinned_and_disables_emergency_byok()
+    {
+        var configuration = PaidStagingConfiguration.Production();
+
+        Assert.True(configuration.Enabled);
+        Assert.True(configuration.IsProduction);
+        Assert.False(configuration.EmergencyByokEnabled);
+        Assert.Equal("keyboard-wtf-paid-api-mhrc6c7goa-el.a.run.app", configuration.BackendBaseUri.Host);
+        Assert.Equal("keyboard-wtf-production-candidate.vercel.app", configuration.WebBaseUri.Host);
+        Assert.Equal(Uri.UriSchemeHttps, configuration.BackendBaseUri.Scheme);
+        Assert.Equal(Uri.UriSchemeHttps, configuration.WebBaseUri.Scheme);
+        Assert.False(configuration.PreserveExistingRegistrations);
     }
 
     [Fact]
@@ -203,6 +234,36 @@ public sealed class PaidStagingSecurityTests
         }
     }
 
+    [Fact]
+    public async Task Sign_out_all_devices_is_server_authoritative_and_clears_the_local_session()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var (store, directory) = CreateSessionStore();
+        try
+        {
+            SaveValidSession(store);
+            var handler = new PaidApiHandler(availableCreditMicros: 1_000_000);
+            using var account = CreateAccount(store, handler);
+            await account.InitializeAsync();
+
+            await account.SignOutAsync(allDevices: true);
+
+            Assert.False(account.IsSignedIn);
+            Assert.Null(store.Load());
+            var body = Assert.Single(
+                handler.Bodies,
+                pair => pair.Path == "/v1/sessions/logout").Body;
+            using var json = JsonDocument.Parse(body);
+            Assert.True(json.RootElement.GetProperty("allDevices").GetBoolean());
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
     private static PaidAccountService CreateAccount(PaidSessionStore store, HttpMessageHandler handler) =>
         new(
             new PaidStagingConfiguration(
@@ -233,16 +294,19 @@ public sealed class PaidStagingSecurityTests
     {
         private readonly long _availableCreditMicros;
         public List<string> Requests { get; } = [];
+        public List<(string Path, string Body)> Bodies { get; } = [];
 
         public PaidApiHandler(long availableCreditMicros) =>
             _availableCreditMicros = availableCreditMicros;
 
-        protected override Task<HttpResponseMessage> SendAsync(
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
             Requests.Add(path);
+            if (request.Content is not null)
+                Bodies.Add((path, await request.Content.ReadAsStringAsync(cancellationToken)));
             Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
             Assert.Equal("access-token", request.Headers.Authorization?.Parameter);
             var payload = path switch
@@ -264,6 +328,7 @@ public sealed class PaidStagingSecurityTests
                     subscriptionStatus = "none",
                 }),
                 "/v1/ready" => "{\"status\":\"ready\"}",
+                "/v1/sessions/logout" => "{}",
                 "/v1/ai/generate" => JsonSerializer.Serialize(new
                 {
                     requestId = "request-1",
@@ -276,10 +341,10 @@ public sealed class PaidStagingSecurityTests
                 }),
                 _ => throw new InvalidOperationException($"Unexpected paid API request: {path}"),
             };
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),
-            });
+            };
         }
     }
 

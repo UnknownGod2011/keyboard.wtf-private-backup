@@ -59,14 +59,14 @@ public sealed class KeyboardWtfApp : IDisposable
         _jarvisHistory.Load();
         _learnedMappings.Load();
         _paidAccount = new PaidAccountService();
-        if (!_paidAccount.Enabled)
+        if (!_paidAccount.PreserveExistingRegistrations)
         {
             SyncStartupRegistration();
             RegisterBrowserNativeHost();
         }
         else
         {
-            AppLog.Info("Paid staging mode: startup and native-host registrations were left unchanged");
+            AppLog.Info("Isolated paid candidate: startup and native-host registrations were left unchanged");
         }
         ApplySecretEnvironmentOverrides();
         AiProviderRegistry.Initialize(_claudeApi, _paidAccount);
