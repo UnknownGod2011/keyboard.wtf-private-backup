@@ -583,7 +583,7 @@ public sealed class WebSettingsService : IDisposable
                         ? "Sign in with Google"
                         : (_paidAccount.Account?.AvailableCreditMicros > 0
                             ? "Available through your keyboard.wtf account"
-                            : "Add credits to use"))
+                            : "Subscribe or manage your plan"))
                     : (string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey)
                         ? "Needs Gemini API key"
                         : (_settings?.Current.JarvisPermissionMode == JarvisPermissionMode.AutoExecute

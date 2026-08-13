@@ -10,11 +10,16 @@ using NAudio.Wave;
 public sealed class GeminiLiveConversationService : IDisposable
 {
     private const string Model = "gemini-3.1-flash-live-preview";
+    private const int PaidActivationBufferChunks = 16;
     private static readonly TimeSpan PreviousTurnGracePeriod = TimeSpan.FromSeconds(8);
     internal static readonly TimeSpan PlaybackBufferDuration = TimeSpan.FromSeconds(45);
     private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private readonly SemaphoreSlim _audioSendLock = new(1, 1);
     private readonly SemaphoreSlim _textTurnLock = new(1, 1);
     private readonly object _turnStateLock = new();
+    private readonly object _paidActivationLock = new();
+    private readonly Queue<byte[]> _paidActivationAudio = new();
+    private readonly LocalSpeechActivationGate _paidSpeechGate = new();
     private readonly NotificationService _notifications;
     private readonly SettingsService _settings;
     private readonly IntentMemoryService _memory;
@@ -31,9 +36,13 @@ public sealed class GeminiLiveConversationService : IDisposable
     private Task _receiveTask;
     private TaskCompletionSource<bool> _setupReady;
     private TaskCompletionSource<bool> _turnComplete = CompletedTurn();
+    private Task _paidActivationTask = Task.CompletedTask;
     private bool _autoEnding;
+    private bool _paidLiveReady;
+    private bool _suppressPaidActivationAudio;
     private bool _disposed;
     private int _startInProgress;
+    private int _paidActivationStarted;
 
     public GeminiLiveConversationService(
         NotificationService notifications,
@@ -55,7 +64,10 @@ public sealed class GeminiLiveConversationService : IDisposable
         _paidAccount = paidAccount;
     }
 
-    public bool IsActive => _socket?.State == WebSocketState.Open && _microphone != null;
+    public bool IsActive => _microphone != null
+        && _sessionCts is { IsCancellationRequested: false };
+    private bool IsProviderConnected => _paidLiveReady
+        && _socket?.State == WebSocketState.Open;
     public bool IsStarting => Volatile.Read(ref _startInProgress) == 1;
     public bool UsesPaidBackend => _paidAccount?.Enabled == true;
 
@@ -88,112 +100,151 @@ public sealed class GeminiLiveConversationService : IDisposable
             return;
         try
         {
-        if (_paidAccount?.Enabled == true)
-        {
-            if (!_paidAccount.IsSignedIn)
-            {
-                KeyboardWtfState.SetUi(VoiceUiPhase.Error, $"{AssistantName()} unavailable", "Sign in with Google in Account & Billing.");
-                _notifications.Warning("Jarvis mode", "Sign in with Google in Account & Billing first.");
-                return;
-            }
-            if (_paidAccount.Account?.AvailableCreditMicros <= 0)
-            {
-                KeyboardWtfState.SetUi(VoiceUiPhase.Error, $"{AssistantName()} unavailable", "Add credits in Account & Billing.");
-                _notifications.Warning("Jarvis mode", "This account has no usable credits.");
-                return;
-            }
-        }
-        else if (string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey))
-        {
-            KeyboardWtfState.SetUi(VoiceUiPhase.Error, $"{AssistantName()} unavailable", "Add a Gemini API key in settings.");
-            _notifications.Warning("Jarvis mode", "Add a Gemini API key in settings first.");
-            return;
-        }
-
-        await StopAsync(showDone: false);
-        _sessionCts = new CancellationTokenSource();
-        var token = _sessionCts.Token;
-        _setupReady = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        MarkTurnCompleted();
-        _autoEnding = false;
-
-        try
-        {
-            KeyboardWtfState.SetUi(VoiceUiPhase.Thinking, "Connecting", $"Starting {AssistantName()}...");
             if (_paidAccount?.Enabled == true)
             {
-                _socket = await _paidAccount.ConnectLiveAsync(token);
-            }
-            else
-            {
-                _socket = new ClientWebSocket();
-                var endpoint = new Uri(
-                    "wss://generativelanguage.googleapis.com/ws/" +
-                    "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent" +
-                    $"?key={Uri.EscapeDataString(KeyboardWtfState.GeminiApiKey)}");
-                await _socket.ConnectAsync(endpoint, token);
-            }
-
-            _receiveTask = Task.Run(() => ReceiveLoopAsync(token), token);
-            await SendJsonAsync(new
-            {
-                setup = new
+                if (!_paidAccount.IsSignedIn)
                 {
-                    model = $"models/{Model}",
-                    generationConfig = new
-                    {
-                        responseModalities = new[] { "AUDIO" },
-                        speechConfig = new
-                        {
-                            voiceConfig = new
-                            {
-                                prebuiltVoiceConfig = new { voiceName = KeyboardWtfState.GeminiVoice },
-                            },
-                        },
-                    },
-                    tools = BuildTools(),
-                    inputAudioTranscription = new { },
-                    outputAudioTranscription = new { },
-                    realtimeInputConfig = new
-                    {
-                        automaticActivityDetection = new
-                        {
-                            disabled = false,
-                            prefixPaddingMs = 80,
-                            silenceDurationMs = 550,
-                        },
-                    },
-                    systemInstruction = new
-                    {
-                        parts = new[]
-                        {
-                            new { text = BuildSystemInstruction() },
-                        },
-                    },
-                },
-            }, token);
+                    KeyboardWtfState.SetUi(VoiceUiPhase.Error, $"{AssistantName()} unavailable", "Sign in with Google in Account & Billing.");
+                    _notifications.Warning("Jarvis mode", "Sign in with Google in Account & Billing first.");
+                    return;
+                }
+                if (_paidAccount.Account?.AvailableCreditMicros <= 0)
+                {
+                    KeyboardWtfState.SetUi(VoiceUiPhase.Error, $"{AssistantName()} unavailable", "Subscribe in Account & Billing.");
+                    _notifications.Warning("Jarvis mode", "This account has no usable credits.");
+                    return;
+                }
+            }
+            else if (string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey))
+            {
+                KeyboardWtfState.SetUi(VoiceUiPhase.Error, $"{AssistantName()} unavailable", "Add a Gemini API key in settings.");
+                _notifications.Warning("Jarvis mode", "Add a Gemini API key in settings first.");
+                return;
+            }
 
-            await _setupReady.Task.WaitAsync(TimeSpan.FromSeconds(12), token);
-            StartPlayback();
-            StartMicrophone();
-            KeyboardWtfState.SetUi(
-                VoiceUiPhase.Listening,
-                AssistantName(),
-                $"Talk naturally. Press {JarvisHotkey()} or say bye to finish.");
-            _notifications.Info("Jarvis mode", "Conversation started.");
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            AppLog.Warning(ex, "Jarvis mode connection failed");
             await StopAsync(showDone: false);
-            KeyboardWtfState.SetUi(VoiceUiPhase.Error, "Jarvis mode failed", FriendlyError(ex));
-            _notifications.Error("Jarvis mode failed", FriendlyError(ex));
-        }
+            _sessionCts = new CancellationTokenSource();
+            var token = _sessionCts.Token;
+            _setupReady = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            MarkTurnCompleted();
+            _autoEnding = false;
+            ResetPaidActivation();
+
+            try
+            {
+                if (_paidAccount?.Enabled == true)
+                {
+                    // Paid mode listens and buffers only a short in-memory
+                    // pre-roll locally. Vertex is opened only after real speech
+                    // (or an explicit text turn), so activation and silence cost
+                    // no provider usage.
+                    StartMicrophone();
+                    KeyboardWtfState.SetUi(
+                        VoiceUiPhase.Listening,
+                        AssistantName(),
+                        $"Listening locally. Speak to begin, or press {JarvisHotkey()} to cancel.");
+                    _notifications.Info("Jarvis mode", "Listening locally. AI starts after you speak.");
+                    return;
+                }
+
+                KeyboardWtfState.SetUi(VoiceUiPhase.Thinking, "Connecting", $"Starting {AssistantName()}...");
+                await ConnectAndSetupLiveAsync(_sessionCts, token);
+                lock (_paidActivationLock)
+                    _paidLiveReady = true;
+                StartMicrophone();
+                ShowConversationReady();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                AppLog.Warning(ex, "Jarvis mode connection failed");
+                await StopAsync(showDone: false);
+                KeyboardWtfState.SetUi(VoiceUiPhase.Error, "Jarvis mode failed", FriendlyError(ex));
+                _notifications.Error("Jarvis mode failed", FriendlyError(ex));
+            }
         }
         finally
         {
             Volatile.Write(ref _startInProgress, 0);
         }
+    }
+
+    private async Task ConnectAndSetupLiveAsync(
+        CancellationTokenSource expectedSession,
+        CancellationToken token)
+    {
+        ClientWebSocket socket;
+        if (_paidAccount?.Enabled == true)
+        {
+            socket = await _paidAccount.ConnectLiveAsync(token);
+        }
+        else
+        {
+            socket = new ClientWebSocket();
+            var endpoint = new Uri(
+                "wss://generativelanguage.googleapis.com/ws/" +
+                "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent" +
+                $"?key={Uri.EscapeDataString(KeyboardWtfState.GeminiApiKey)}");
+            await socket.ConnectAsync(endpoint, token);
+        }
+
+        if (!ReferenceEquals(_sessionCts, expectedSession) || token.IsCancellationRequested)
+        {
+            socket.Dispose();
+            token.ThrowIfCancellationRequested();
+            throw new OperationCanceledException("The Jarvis session changed before connection completed.");
+        }
+
+        _socket = socket;
+        _receiveTask = Task.Run(() => ReceiveLoopAsync(token), token);
+        await SendJsonAsync(new
+        {
+            setup = new
+            {
+                model = $"models/{Model}",
+                generationConfig = new
+                {
+                    responseModalities = new[] { "AUDIO" },
+                    speechConfig = new
+                    {
+                        voiceConfig = new
+                        {
+                            prebuiltVoiceConfig = new { voiceName = KeyboardWtfState.GeminiVoice },
+                        },
+                    },
+                },
+                tools = BuildTools(),
+                inputAudioTranscription = new { },
+                outputAudioTranscription = new { },
+                realtimeInputConfig = new
+                {
+                    automaticActivityDetection = new
+                    {
+                        disabled = false,
+                        prefixPaddingMs = 80,
+                        silenceDurationMs = 550,
+                    },
+                },
+                systemInstruction = new
+                {
+                    parts = new[]
+                    {
+                        new { text = BuildSystemInstruction() },
+                    },
+                },
+            },
+        }, token);
+
+        await _setupReady.Task.WaitAsync(TimeSpan.FromSeconds(12), token);
+        StartPlayback();
+    }
+
+    private void ShowConversationReady()
+    {
+        KeyboardWtfState.SetUi(
+            VoiceUiPhase.Listening,
+            AssistantName(),
+            $"Talk naturally. Press {JarvisHotkey()} or say bye to finish.");
+        _notifications.Info("Jarvis mode", "Conversation started.");
     }
 
     public async Task StopAsync(bool showDone = true)
@@ -204,6 +255,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             catch (Exception ex) { AppLog.Warning(ex, "Jarvis session-end cleanup failed"); }
         }
         _sessionCts?.Cancel();
+        ResetPaidActivation();
         MarkTurnCompleted();
         StopMicrophone();
         StopPlayback();
@@ -247,6 +299,9 @@ public sealed class GeminiLiveConversationService : IDisposable
     {
         if (string.IsNullOrWhiteSpace(text))
             return;
+
+        if (_paidAccount?.Enabled == true && !IsProviderConnected)
+            await EnsurePaidLiveActivatedAsync(includeBufferedAudio: false, token);
 
         await _textTurnLock.WaitAsync(token);
         try
@@ -303,7 +358,7 @@ public sealed class GeminiLiveConversationService : IDisposable
         JarvisLifecycleAnnouncement announcement,
         CancellationToken token = default)
     {
-        if (announcement == null || !IsActive)
+        if (announcement == null || !IsProviderConnected)
             return false;
 
         try
@@ -371,27 +426,165 @@ public sealed class GeminiLiveConversationService : IDisposable
     {
         try
         {
-            if (_socket?.State != WebSocketState.Open)
-                return;
-
             var bytes = e.Buffer.AsSpan(0, e.BytesRecorded).ToArray();
-            KeyboardWtfState.InputLevelDb = PeakDb(bytes);
-            await SendJsonAsync(new
+            var peakDb = PeakDb(bytes);
+            KeyboardWtfState.InputLevelDb = peakDb;
+
+            if (_paidAccount?.Enabled == true)
             {
-                realtimeInput = new
+                var sendToLive = false;
+                var activate = false;
+                lock (_paidActivationLock)
                 {
-                    audio = new
+                    sendToLive = _paidLiveReady;
+                    if (!sendToLive && !_suppressPaidActivationAudio)
                     {
-                        data = Convert.ToBase64String(bytes),
-                        mimeType = "audio/pcm;rate=16000",
-                    },
-                },
-            }, _sessionCts?.Token ?? CancellationToken.None);
+                        _paidActivationAudio.Enqueue(bytes);
+                        while (_paidActivationAudio.Count > PaidActivationBufferChunks)
+                            _paidActivationAudio.Dequeue();
+                        activate = _paidSpeechGate.Observe(RmsDb(bytes), peakDb);
+                    }
+                }
+
+                if (!sendToLive)
+                {
+                    if (activate)
+                        ObservePaidActivation(EnsurePaidLiveActivatedAsync(
+                            includeBufferedAudio: true,
+                            _sessionCts?.Token ?? CancellationToken.None));
+                    return;
+                }
+            }
+
+            if (_socket?.State == WebSocketState.Open)
+                await SendAudioChunkAsync(bytes, _sessionCts?.Token ?? CancellationToken.None);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
             AppLog.Warning(ex, "Jarvis microphone send failed");
+        }
+    }
+
+    private Task EnsurePaidLiveActivatedAsync(
+        bool includeBufferedAudio,
+        CancellationToken cancellationToken)
+    {
+        if (_paidAccount?.Enabled != true || IsProviderConnected)
+            return Task.CompletedTask;
+        var session = _sessionCts
+            ?? throw new InvalidOperationException("Jarvis is not listening.");
+        cancellationToken.ThrowIfCancellationRequested();
+
+        lock (_paidActivationLock)
+        {
+            if (_paidLiveReady)
+                return Task.CompletedTask;
+            if (Volatile.Read(ref _paidActivationStarted) == 1)
+                return _paidActivationTask.WaitAsync(cancellationToken);
+
+            _suppressPaidActivationAudio = !includeBufferedAudio;
+            if (!includeBufferedAudio)
+                _paidActivationAudio.Clear();
+            Interlocked.Exchange(ref _paidActivationStarted, 1);
+            _paidActivationTask = ActivatePaidLiveAsync(
+                session,
+                includeBufferedAudio,
+                session.Token);
+            return _paidActivationTask.WaitAsync(cancellationToken);
+        }
+    }
+
+    private async Task ActivatePaidLiveAsync(
+        CancellationTokenSource expectedSession,
+        bool includeBufferedAudio,
+        CancellationToken token)
+    {
+        KeyboardWtfState.SetUi(
+            VoiceUiPhase.Thinking,
+            "Connecting",
+            $"Starting {AssistantName()} after speech detection...");
+        await ConnectAndSetupLiveAsync(expectedSession, token);
+
+        await _audioSendLock.WaitAsync(token);
+        try
+        {
+            byte[][] buffered;
+            lock (_paidActivationLock)
+            {
+                if (!ReferenceEquals(_sessionCts, expectedSession) || token.IsCancellationRequested)
+                    throw new OperationCanceledException(token);
+                buffered = includeBufferedAudio
+                    ? _paidActivationAudio.ToArray()
+                    : Array.Empty<byte[]>();
+                _paidActivationAudio.Clear();
+                _suppressPaidActivationAudio = false;
+                _paidLiveReady = true;
+            }
+
+            foreach (var chunk in buffered)
+                await SendAudioChunkCoreAsync(chunk, token);
+        }
+        finally
+        {
+            _audioSendLock.Release();
+        }
+
+        ShowConversationReady();
+    }
+
+    private async void ObservePaidActivation(Task activation)
+    {
+        try
+        {
+            await activation;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            AppLog.Warning(ex, "Jarvis paid speech activation failed");
+            await StopAsync(showDone: false);
+            KeyboardWtfState.SetUi(VoiceUiPhase.Error, "Jarvis mode failed", FriendlyError(ex));
+            _notifications.Error("Jarvis mode failed", FriendlyError(ex));
+        }
+    }
+
+    private async Task SendAudioChunkAsync(byte[] bytes, CancellationToken token)
+    {
+        await _audioSendLock.WaitAsync(token);
+        try
+        {
+            await SendAudioChunkCoreAsync(bytes, token);
+        }
+        finally
+        {
+            _audioSendLock.Release();
+        }
+    }
+
+    private Task SendAudioChunkCoreAsync(byte[] bytes, CancellationToken token) =>
+        SendJsonAsync(new
+        {
+            realtimeInput = new
+            {
+                audio = new
+                {
+                    data = Convert.ToBase64String(bytes),
+                    mimeType = "audio/pcm;rate=16000",
+                },
+            },
+        }, token);
+
+    private void ResetPaidActivation()
+    {
+        lock (_paidActivationLock)
+        {
+            _paidActivationAudio.Clear();
+            _paidSpeechGate.Reset();
+            _paidLiveReady = false;
+            _suppressPaidActivationAudio = false;
+            _paidActivationTask = Task.CompletedTask;
+            Interlocked.Exchange(ref _paidActivationStarted, 0);
         }
     }
 
@@ -1399,6 +1592,24 @@ public sealed class GeminiLiveConversationService : IDisposable
         return peak > 0 ? 20.0 * Math.Log10(peak / 32768.0) : -96;
     }
 
+    private static double RmsDb(byte[] bytes)
+    {
+        if (bytes.Length < 2)
+            return -96;
+        double sumSquares = 0;
+        var samples = 0;
+        for (var index = 0; index + 1 < bytes.Length; index += 2)
+        {
+            var sample = (short)(bytes[index] | (bytes[index + 1] << 8));
+            var normalized = sample / 32768.0;
+            sumSquares += normalized * normalized;
+            samples++;
+        }
+        if (samples == 0 || sumSquares <= 0)
+            return -96;
+        return Math.Max(-96, 20.0 * Math.Log10(Math.Sqrt(sumSquares / samples)));
+    }
+
     private static string FriendlyError(Exception ex)
     {
         if (ex is TimeoutException)
@@ -1434,6 +1645,61 @@ public sealed class GeminiLiveConversationService : IDisposable
         _socket?.Dispose();
         _socket = null;
         _sendLock.Dispose();
+        _audioSendLock.Dispose();
+        _textTurnLock.Dispose();
         _sessionCts?.Dispose();
+    }
+}
+
+internal sealed class LocalSpeechActivationGate
+{
+    private const int CalibrationFrames = 5;
+    private const int RequiredSpeechFrames = 3;
+    private double _noiseFloorDb = -60;
+    private int _observedFrames;
+    private int _consecutiveSpeechFrames;
+    private bool _triggered;
+
+    public bool Observe(double rmsDb, double peakDb)
+    {
+        if (_triggered)
+            return true;
+
+        rmsDb = Math.Clamp(rmsDb, -96, 0);
+        peakDb = Math.Clamp(peakDb, -96, 0);
+        var obviousSpeech = peakDb >= -28 && rmsDb >= -52;
+        if (_observedFrames < CalibrationFrames && !obviousSpeech)
+        {
+            _noiseFloorDb = _observedFrames == 0
+                ? rmsDb
+                : (_noiseFloorDb * 0.75) + (rmsDb * 0.25);
+            _observedFrames++;
+            _consecutiveSpeechFrames = 0;
+            return false;
+        }
+
+        _observedFrames++;
+        var thresholdDb = Math.Clamp(_noiseFloorDb + 10, -46, -34);
+        var speech = obviousSpeech || rmsDb >= thresholdDb;
+        if (speech)
+        {
+            _consecutiveSpeechFrames++;
+        }
+        else
+        {
+            _consecutiveSpeechFrames = 0;
+            _noiseFloorDb = (_noiseFloorDb * 0.9) + (rmsDb * 0.1);
+        }
+
+        _triggered = _consecutiveSpeechFrames >= RequiredSpeechFrames;
+        return _triggered;
+    }
+
+    public void Reset()
+    {
+        _noiseFloorDb = -60;
+        _observedFrames = 0;
+        _consecutiveSpeechFrames = 0;
+        _triggered = false;
     }
 }

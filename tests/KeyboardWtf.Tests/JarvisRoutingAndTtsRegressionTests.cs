@@ -171,6 +171,36 @@ public sealed class JarvisRoutingAndTtsRegressionTests
     }
 
     [Fact]
+    public void Paid_live_speech_gate_keeps_silence_and_steady_room_noise_local()
+    {
+        var gate = new LocalSpeechActivationGate();
+
+        for (var frame = 0; frame < 20; frame++)
+            Assert.False(gate.Observe(-90, -80));
+
+        gate.Reset();
+        for (var frame = 0; frame < 20; frame++)
+            Assert.False(gate.Observe(-42, -34));
+    }
+
+    [Fact]
+    public void Paid_live_speech_gate_requires_sustained_speech_and_resets_cleanly()
+    {
+        var gate = new LocalSpeechActivationGate();
+        for (var frame = 0; frame < 6; frame++)
+            Assert.False(gate.Observe(-65, -55));
+
+        Assert.False(gate.Observe(-28, -18));
+        Assert.False(gate.Observe(-29, -19));
+        Assert.True(gate.Observe(-30, -20));
+
+        gate.Reset();
+        Assert.False(gate.Observe(-28, -18));
+        Assert.False(gate.Observe(-65, -55));
+        Assert.False(gate.Observe(-28, -18));
+    }
+
+    [Fact]
     public void Zero_control_form_completion_uses_one_bounded_visual_recovery()
     {
         var decision = new BrowserPlannerDecision

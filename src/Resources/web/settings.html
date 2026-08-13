@@ -2404,7 +2404,7 @@ function renderPaidAccount(account) {
   document.getElementById('paidUsage').textContent = `${formatPaidCredits(used)} used this cycle - ${formatPaidCredits(totalUsable)} usable now`;
   document.getElementById('paidAccountMessage').textContent = account.lastError
     || (signedIn
-      ? (available > 0 ? 'Account active.' : 'This account has zero usable credits. Add credits before running AI tasks.')
+      ? (available > 0 ? 'Account active.' : 'This account has zero usable credits. Subscribe or manage your plan before running AI tasks.')
       : 'Sign in with Google to connect this Windows device.');
   document.getElementById('paidSignIn').style.display = signedIn ? 'none' : '';
   document.getElementById('paidRefresh').disabled = !signedIn;
