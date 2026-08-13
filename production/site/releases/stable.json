@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "channel": "stable",
+  "version": "1.3.0",
+  "minimumVersion": "1.2.0",
+  "publishedAt": "2026-08-13T12:59:55.3333491+00:00",
+  "packageUrl": "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.3.0/keyboard-wtf-setup.exe",
+  "sha256": "25da8eafd572066d5118537ac1c05cac18e04936e39ebf33d99f8a4c6c454686",
+  "sizeBytes": 84133895,
+  "releaseNotes": "# keyboard.wtf 1.3.0\n\nkeyboard.wtf 1.3.0 adds stable, opt-in browser automation for the user\u0027s\nexisting Chrome session while preserving the fast direct-open and search path\nfor simple commands.\n\n- Chrome Helper 2.1.21 with exact Store and unpacked-fallback identities.\n- Current-tab and same-window task execution with bounded recovery and concrete\n  verification.\n- Pause and cancel support, timer lifecycle updates, and Ctrl\u002BAlt\u002BX\n  cancellation.\n- First-task privacy disclosure and consent.\n- Store-recommended extension setup plus a clearly labelled unpacked fallback.\n- Safe single-instance Restart and registered Windows uninstall.\n- Public privacy and support documentation.\n\nThe installer is not Authenticode-signed. Download it only from the official\nkeyboard.wtf GitHub Release or keyboard-wtf.vercel.app.\n",
+  "keyId": "kwt-release-2026-01",
+  "signature": "PFsjho2gaEuYVR5a9rORz5/HkD0AsOvGvy8wpUmxiguTFk\u002Bw3qaWV84rWJEV9QV4Vz/FWnZgevSL11Jovjo2qA=="
+}

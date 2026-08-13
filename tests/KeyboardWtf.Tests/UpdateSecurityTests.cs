@@ -114,6 +114,32 @@ public sealed class UpdateSecurityTests
             service.CheckAsync("stable", CancellationToken.None));
     }
 
+    [Fact]
+    public void Published_stable_manifest_is_signed_by_the_embedded_release_key()
+    {
+        var manifestPath = Path.Combine(
+            FindRepositoryRoot(),
+            "production",
+            "site",
+            "releases",
+            "stable.json");
+        var json = File.ReadAllText(manifestPath);
+
+        var update = new UpdateManifestVerifier().Verify(
+            json,
+            "stable",
+            new Version(1, 2, 0),
+            DateTimeOffset.UtcNow);
+
+        Assert.Equal(new Version(1, 3, 0), update.Version);
+        Assert.Equal(new Version(1, 2, 0), update.MinimumVersion);
+        Assert.Equal(
+            "25da8eafd572066d5118537ac1c05cac18e04936e39ebf33d99f8a4c6c454686",
+            update.Sha256);
+        Assert.Equal(84_133_895, update.SizeBytes);
+        Assert.Equal(UpdateManifestVerifier.CurrentKeyId, update.KeyId);
+    }
+
     private static UpdateManifestVerifier VerifierFor(ECDsa key) => new(
         new Dictionary<string, string>
         {
@@ -152,6 +178,19 @@ public sealed class UpdateSecurityTests
         bytes.Length,
         "Fixture",
         UpdateManifestVerifier.CurrentKeyId);
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (Directory.Exists(Path.Combine(directory.FullName, ".git"))
+                && Directory.Exists(Path.Combine(directory.FullName, "production")))
+                return directory.FullName;
+            directory = directory.Parent;
+        }
+        throw new DirectoryNotFoundException("Repository root was not found.");
+    }
 
     private sealed class StaticResponseHandler(byte[] bytes) : HttpMessageHandler
     {

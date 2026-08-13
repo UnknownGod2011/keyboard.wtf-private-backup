@@ -25,6 +25,9 @@ mono_crash.*
 # source and must survive a clean clone.
 !docs/[Rr]eleases/
 !docs/[Rr]eleases/*.md
+# Signed public update feeds are release source, not generated build output.
+!production/site/[Rr]eleases/
+!production/site/[Rr]eleases/*.json
 # Release build output is ignored, but source-controlled release tooling lives
 # under scripts/release and must remain available to clean CI checkouts.
 !scripts/[Rr]elease/
