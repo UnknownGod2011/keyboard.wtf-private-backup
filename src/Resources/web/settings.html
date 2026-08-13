@@ -1357,6 +1357,7 @@
 let currentSettings = {};
 let paidSignInPollTimer;
 let paidSignInRequestPending = false;
+let paidLastSignInState = 'idle';
 
 // ── Scroll-spy ──────────────────────────────────────────────────────────────
 (function () {
@@ -2398,6 +2399,7 @@ function renderPaidAccount(account) {
   const signedIn = account.signedIn === true;
   const signInPending = account.signInPending === true;
   const signInState = String(account.signInState || 'idle');
+  paidLastSignInState = signInState;
   const available = Number(account.availableCreditMicros || 0);
   const subscriptionAvailable = Number(account.subscriptionAllowanceCreditMicros || 0);
   const subscriptionReserved = Number(account.subscriptionReservedCreditMicros || 0);
@@ -2589,7 +2591,11 @@ async function paidAccountAction(action) {
     buttons.forEach(button => button.disabled = true);
   }
   try {
-    const response = await fetch(`/api/paid/${action}`, {
+    const requestAction = action === 'sign-in'
+      && ['failed', 'cancelled', 'expired'].includes(paidLastSignInState)
+      ? 'retry-sign-in'
+      : action;
+    const response = await fetch(`/api/paid/${requestAction}`, {
       method: 'POST',
       headers: { 'X-Keyboard-Wtf-Settings-Action': '1' }
     });

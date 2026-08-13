@@ -155,7 +155,15 @@ internal sealed class PaidAccountService : IDisposable
         }
     }
 
-    public Task<PaidAccountSnapshot> SignInAsync(CancellationToken cancellationToken = default)
+    public Task<PaidAccountSnapshot> SignInAsync(CancellationToken cancellationToken = default) =>
+        StartSignInAsync(allowTerminalRetry: false, cancellationToken);
+
+    public Task<PaidAccountSnapshot> RetrySignInAsync(CancellationToken cancellationToken = default) =>
+        StartSignInAsync(allowTerminalRetry: true, cancellationToken);
+
+    private Task<PaidAccountSnapshot> StartSignInAsync(
+        bool allowTerminalRetry,
+        CancellationToken cancellationToken)
     {
         EnsureEnabled();
         if (IsSignedIn)
@@ -166,6 +174,9 @@ internal sealed class PaidAccountService : IDisposable
         {
             if (_activeSignInTask is { IsCompleted: false })
                 task = _activeSignInTask;
+            else if (_signInState is "cancelled" or "expired" or "failed" && !allowTerminalRetry)
+                task = Task.FromException<PaidAccountSnapshot>(new InvalidOperationException(
+                    "The previous sign-in has ended. Use Try again to start one fresh request."));
             else
             {
                 _activeSignInCancellation?.Dispose();

@@ -345,6 +345,12 @@ public sealed class PaidStagingSecurityTests
             Assert.False(account.SignInPending);
             Assert.Equal(0, handler.ExchangeCalls);
             Assert.False(account.IsSignedIn);
+
+            var lateDuplicate = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => account.SignInAsync());
+            Assert.Contains("Try again", lateDuplicate.Message, StringComparison.Ordinal);
+            Assert.Equal(1, handler.StartCalls);
+            Assert.Equal(1, browserLaunches);
         }
         finally
         {

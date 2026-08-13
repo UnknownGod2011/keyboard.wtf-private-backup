@@ -1470,6 +1470,9 @@ public sealed class WebSettingsService : IDisposable
                 case "/api/paid/sign-in":
                     await _paidAccount.SignInAsync(_cts?.Token ?? CancellationToken.None);
                     break;
+                case "/api/paid/retry-sign-in":
+                    await _paidAccount.RetrySignInAsync(_cts?.Token ?? CancellationToken.None);
+                    break;
                 case "/api/paid/cancel-sign-in":
                     await _paidAccount.CancelSignInAsync();
                     break;
