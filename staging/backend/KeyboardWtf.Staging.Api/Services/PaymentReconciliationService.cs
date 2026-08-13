@@ -228,7 +228,7 @@ public sealed class PaymentReconciliationService
                     subscription.CurrentCycleEndsAt,
                     _clock.UtcNow);
                 var lifecycle = await _store.ApplyPaymentWebhookAsync(
-                    $"reconcile:v3:{objectId}:{String(data, "status", "unknown")}:to:{subscription.Status}:{lifecyclePhase}",
+                    $"reconcile:v4:{objectId}:{String(data, "status", "unknown")}:to:{subscription.Status}:{lifecyclePhase}",
                     lifecycleEvent,
                     objectId,
                     null,

@@ -2686,6 +2686,15 @@ public sealed class FirestoreAccountStore : IAccountStore
         if (eventType.Contains("dispute", StringComparison.OrdinalIgnoreCase)
             || eventType.Contains("chargeback", StringComparison.OrdinalIgnoreCase))
             return "disputed";
+        if (string.Equals(purchaseKind, "subscription", StringComparison.Ordinal))
+        {
+            if (string.Equals(eventType, "subscription.charged", StringComparison.Ordinal))
+                return "paid";
+            if (purchaseCredited && eventType.StartsWith("subscription.", StringComparison.Ordinal))
+                return currentStatus.Trim().ToLowerInvariant() is "refunded" or "disputed"
+                    ? currentStatus
+                    : "paid";
+        }
         if (!string.Equals(purchaseKind, "credits", StringComparison.Ordinal)
             || !purchaseCredited
             || IsReversalEvent(eventType))

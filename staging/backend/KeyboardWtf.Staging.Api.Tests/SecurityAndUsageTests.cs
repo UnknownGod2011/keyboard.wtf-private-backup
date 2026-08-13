@@ -1055,7 +1055,10 @@ public sealed class SecurityAndUsageTests
     [InlineData("paid", "authorized", "credits", true, "payment.authorized", "paid")]
     [InlineData("captured", "refunded", "credits", true, "refund.processed", "refunded")]
     [InlineData("pending", "failed", "credits", false, "payment.failed", "failed")]
-    [InlineData("active", "halted", "subscription", true, "subscription.halted", "halted")]
+    [InlineData("active", "halted", "subscription", true, "subscription.halted", "paid")]
+    [InlineData("cancelled", "cancelled", "subscription", true, "subscription.cancelled", "paid")]
+    [InlineData("refunded", "cancelled", "subscription", true, "subscription.cancelled", "refunded")]
+    [InlineData("pending", "active", "subscription", false, "subscription.charged", "paid")]
     public void Stale_payment_events_do_not_downgrade_fulfilled_one_time_purchases(
         string currentStatus,
         string incomingStatus,
@@ -2109,6 +2112,8 @@ public sealed class SecurityAndUsageTests
             Assert.Equal("active", retained.SubscriptionStatus);
             Assert.Equal("scheduled", retained.SubscriptionCancellationStatus);
             Assert.Equal(cycleEnd, retained.SubscriptionCancelsAt);
+            var retainedPurchase = await account.Collection("purchases").Document(purchaseId).GetSnapshotAsync();
+            Assert.Equal("paid", retainedPurchase.GetValue<string>("status"));
 
             var afterCycleStore = new FirestoreAccountStore(
                 db,
@@ -2122,6 +2127,8 @@ public sealed class SecurityAndUsageTests
             Assert.Equal("none", expired.PlanId);
             Assert.Equal("cancelled", expired.SubscriptionStatus);
             Assert.Equal("cancelled", expired.SubscriptionCancellationStatus);
+            var expiredPurchase = await account.Collection("purchases").Document(purchaseId).GetSnapshotAsync();
+            Assert.Equal("paid", expiredPurchase.GetValue<string>("status"));
         }
         finally
         {
