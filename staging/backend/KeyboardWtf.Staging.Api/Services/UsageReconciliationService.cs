@@ -160,6 +160,22 @@ public sealed class UsageReconciliationService
             return ReservationReconciliationResult.Repaired;
         }
 
+        // A completed non-success Vertex HTTP response is authoritative
+        // no-charge evidence. Normally AiUsageService releases it immediately;
+        // retaining this path lets maintenance recover safely if the process
+        // stopped between recording the response and releasing the reservation.
+        var providerHttpStatus = Long(data, "providerHttpStatus");
+        if (CanReleaseVerifiedProviderRejection(providerHttpStatus))
+        {
+            await _store.ReleaseReservationAsync(
+                userId,
+                requestId,
+                "provider_rejected",
+                cancellationToken);
+            await CloseIssueAsync(reservation, "verified_provider_rejection_released", runId, cancellationToken);
+            return ReservationReconciliationResult.Repaired;
+        }
+
         var expiresAt = Date(data, "expiresAt");
         if (expiresAt != DateTimeOffset.UnixEpoch && expiresAt > _clock.UtcNow)
             return ReservationReconciliationResult.Unchanged;
@@ -188,6 +204,10 @@ public sealed class UsageReconciliationService
         await QuarantineAsync(reservation, category, runId, status, cancellationToken);
         return ReservationReconciliationResult.Quarantined;
     }
+
+    internal static bool CanReleaseVerifiedProviderRejection(long statusCode) =>
+        statusCode is >= int.MinValue and <= int.MaxValue
+        && AiUsageService.IsDefinitivelyNonBillable((int)statusCode);
 
     private Task QuarantineAsync(
         DocumentSnapshot reservation,

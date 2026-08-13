@@ -165,6 +165,14 @@ if (!string.IsNullOrWhiteSpace(maintenanceJob))
             .LogError(exception, "Maintenance command failed job={Job}", maintenanceJob);
         Environment.ExitCode = 1;
     }
+    finally
+    {
+        // A Cloud Run Job owns this process rather than an HTTP server. Dispose
+        // the built host explicitly so logging, HTTP handlers, and gRPC channels
+        // shut down before Main exits. Without this, the platform can report an
+        // otherwise completed one-shot command as signal-terminated.
+        await app.DisposeAsync();
+    }
     return;
 }
 app.UseMiddleware<ApiExceptionMiddleware>();

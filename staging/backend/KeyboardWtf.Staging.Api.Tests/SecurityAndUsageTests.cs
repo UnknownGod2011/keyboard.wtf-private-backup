@@ -249,6 +249,59 @@ public sealed class SecurityAndUsageTests
         Assert.Equal(expected, ModelRoutingService.ResolveRouteName(taskKind));
 
     [Fact]
+    public void Vertex_global_location_uses_the_global_service_host_and_resource_path()
+    {
+        var endpoint = VertexAiClient.BuildGenerateContentEndpoint(
+            "example-project",
+            "global",
+            "gemini-example");
+
+        Assert.Equal(
+            "https://aiplatform.googleapis.com/v1/projects/example-project/locations/global/publishers/google/models/gemini-example:generateContent",
+            endpoint);
+        Assert.DoesNotContain("global-aiplatform.googleapis.com", endpoint, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Vertex_regional_location_keeps_the_regional_service_host()
+    {
+        var endpoint = VertexAiClient.BuildGenerateContentEndpoint(
+            "example-project",
+            "us-central1",
+            "gemini-example");
+
+        Assert.StartsWith("https://us-central1-aiplatform.googleapis.com/", endpoint, StringComparison.Ordinal);
+        Assert.Contains("/locations/us-central1/", endpoint, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(400)]
+    [InlineData(404)]
+    [InlineData(429)]
+    [InlineData(500)]
+    [InlineData(503)]
+    public void Completed_vertex_http_rejections_are_definitively_non_billable(int statusCode) =>
+        Assert.True(AiUsageService.IsDefinitivelyNonBillable(statusCode));
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(200)]
+    [InlineData(299)]
+    [InlineData(600)]
+    public void Non_rejection_statuses_are_not_classified_as_completed_provider_rejections(int statusCode) =>
+        Assert.False(AiUsageService.IsDefinitivelyNonBillable(statusCode));
+
+    [Theory]
+    [InlineData(404, true)]
+    [InlineData(503, true)]
+    [InlineData(200, false)]
+    [InlineData(0, false)]
+    public void Usage_reconciliation_releases_only_recorded_non_success_http_responses(
+        long statusCode,
+        bool expected) =>
+        Assert.Equal(expected, UsageReconciliationService.CanReleaseVerifiedProviderRejection(statusCode));
+
+    [Fact]
     public void Canary_selection_is_deterministic_and_preserves_a_stable_fallback()
     {
         var pricing = new FakeCatalog().Pricing;
@@ -400,9 +453,9 @@ public sealed class SecurityAndUsageTests
     [Theory]
     [InlineData(400, true)]
     [InlineData(500, true)]
-    [InlineData(404, false)]
-    [InlineData(429, false)]
-    [InlineData(503, false)]
+    [InlineData(404, true)]
+    [InlineData(429, true)]
+    [InlineData(503, true)]
     [InlineData(401, false)]
     [InlineData(403, false)]
     public void Model_fallback_is_bounded_to_definitive_non_billable_failures(
@@ -1804,7 +1857,7 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
-    public async Task Ambiguous_provider_rejection_is_held_for_reconciliation()
+    public async Task Completed_provider_http_rejection_releases_the_reservation()
     {
         var store = new FakeStore { Available = 1_000_000_000 };
         var service = CreateAi(store, new FakeVertex(new VertexRequestRejectedException(429)));
@@ -1814,8 +1867,8 @@ public sealed class SecurityAndUsageTests
             CancellationToken.None));
         Assert.Equal(1, store.ProviderStartedCalls);
         Assert.Equal(0, store.SettleCalls);
-        Assert.Equal(0, store.ReleaseCalls);
-        Assert.Equal(1, store.ReconciliationCalls);
+        Assert.Equal(1, store.ReleaseCalls);
+        Assert.Equal(0, store.ReconciliationCalls);
     }
 
     [Fact]

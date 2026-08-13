@@ -34,8 +34,10 @@ public sealed class VertexAiClient : IVertexAiClient
         IReadOnlyList<InlineImageRequest>? images,
         CancellationToken cancellationToken)
     {
-        var endpoint =
-            $"https://{Uri.EscapeDataString(location)}-aiplatform.googleapis.com/v1/projects/{Uri.EscapeDataString(_options.ProjectId)}/locations/{Uri.EscapeDataString(location)}/publishers/google/models/{Uri.EscapeDataString(model)}:generateContent";
+        var endpoint = BuildGenerateContentEndpoint(
+            _options.ProjectId,
+            location,
+            model);
         var parts = new List<object> { new { text = prompt } };
         if (images is not null)
         {
@@ -86,6 +88,21 @@ public sealed class VertexAiClient : IVertexAiClient
         var text = ExtractText(root);
         var usage = ExtractUsage(root, response.Headers);
         return new VertexGenerateResult(text, usage);
+    }
+
+    internal static string BuildGenerateContentEndpoint(
+        string projectId,
+        string location,
+        string model)
+    {
+        // Vertex's global location is represented in the resource path while
+        // the service host remains aiplatform.googleapis.com. Regional calls
+        // continue to use the documented regional service host.
+        var host = string.Equals(location, "global", StringComparison.OrdinalIgnoreCase)
+            ? "aiplatform.googleapis.com"
+            : $"{Uri.EscapeDataString(location)}-aiplatform.googleapis.com";
+        return
+            $"https://{host}/v1/projects/{Uri.EscapeDataString(projectId)}/locations/{Uri.EscapeDataString(location)}/publishers/google/models/{Uri.EscapeDataString(model)}:generateContent";
     }
 
     private static string ExtractText(JsonElement root)

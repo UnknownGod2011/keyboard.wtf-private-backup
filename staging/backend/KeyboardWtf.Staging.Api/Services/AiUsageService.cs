@@ -281,14 +281,18 @@ public sealed class AiUsageService
     }
 
     internal static bool IsSafeProviderFallback(int statusCode) =>
-        IsDefinitivelyNonBillable(statusCode);
+        // Retry only failures for which a different server-owned model can
+        // plausibly help. Authentication/authorization rejections are also
+        // non-billable, but retrying them against another model is pointless.
+        statusCode is 400 or 404 or 408 or 409 or 429 or 500 or 502 or 503 or 504;
 
     internal static bool IsDefinitivelyNonBillable(int statusCode) =>
-        // Current Google pricing explicitly guarantees no token charge for
-        // failed 400 and 500 inference responses. Other post-dispatch status
-        // codes remain financially ambiguous and must be reconciled instead of
-        // automatically refunded or retried against another model.
-        statusCode is 400 or 500;
+        // Vertex pricing explicitly states that only successful HTTP 200
+        // inference responses are billed. VertexRequestRejectedException is
+        // created only after a complete provider HTTP response, so all of its
+        // non-success HTTP statuses are definitive and safe to release. Network
+        // failures and timeouts never enter this branch and remain quarantined.
+        statusCode is >= 300 and <= 599;
 
     private static void ValidateImages(IReadOnlyList<InlineImageRequest>? images)
     {
