@@ -159,6 +159,7 @@ public sealed class VertexLiveProxyService
 
             using var session = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             session.CancelAfter(TimeSpan.FromSeconds(livePolicy.MaxSessionSeconds));
+            using var accountingGate = new SemaphoreSlim(1, 1);
             long reservedCreditMicros = reservation.Reservation.ReservedCreditMicros;
             async Task EnsureBudgetAsync(CancellationToken token)
             {
@@ -177,11 +178,19 @@ public sealed class VertexLiveProxyService
                     livePolicy.MaxSessionCostCreditMicros);
                 if (target <= Interlocked.Read(ref reservedCreditMicros))
                     return;
-                var ensured = await _store.EnsureReservationCapacityAsync(
-                    caller.UserId,
-                    requestId,
-                    target,
-                    token);
+                var ensured = await RunSerializedAccountingAsync(accountingGate, async () =>
+                {
+                    // Both WebSocket relay directions observe usage. Recheck
+                    // after entering the gate so only one rolling-reservation
+                    // extension can transact for this session at a time.
+                    if (target <= Interlocked.Read(ref reservedCreditMicros))
+                        return Interlocked.Read(ref reservedCreditMicros);
+                    return await _store.EnsureReservationCapacityAsync(
+                        caller.UserId,
+                        requestId,
+                        target,
+                        token);
+                }, token);
                 Max(ref reservedCreditMicros, ensured);
             }
 
@@ -202,6 +211,7 @@ public sealed class VertexLiveProxyService
                 requestId,
                 usage,
                 selectedCandidate.Pricing,
+                accountingGate,
                 session.Token);
             var idle = WaitForPostTurnIdleAsync(
                 activity,
@@ -561,6 +571,7 @@ public sealed class VertexLiveProxyService
         string requestId,
         LiveUsageAccumulator usage,
         PricingSnapshot pricing,
+        SemaphoreSlim accountingGate,
         CancellationToken cancellationToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(_options.LiveUsageCheckpointSeconds));
@@ -573,13 +584,51 @@ public sealed class VertexLiveProxyService
                 pricing,
                 measured,
                 _options.LiveEstimateSafetyBasisPoints);
-            await _store.CheckpointReservationUsageAsync(
-                userId,
-                requestId,
-                measured,
-                charge,
-                providerCost,
-                cancellationToken);
+            await RunSerializedAccountingAsync(accountingGate, async () =>
+            {
+                // Checkpoints touch the same reservation/account documents as
+                // rolling budget extensions. Serialize those mutations while
+                // leaving both media relay directions fully concurrent.
+                await _store.CheckpointReservationUsageAsync(
+                    userId,
+                    requestId,
+                    measured,
+                    charge,
+                    providerCost,
+                    cancellationToken);
+            }, cancellationToken);
+        }
+    }
+
+    internal static async Task RunSerializedAccountingAsync(
+        SemaphoreSlim gate,
+        Func<Task> operation,
+        CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            await operation();
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    internal static async Task<T> RunSerializedAccountingAsync<T>(
+        SemaphoreSlim gate,
+        Func<Task<T>> operation,
+        CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            return await operation();
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 

@@ -2265,6 +2265,30 @@ public sealed class SecurityAndUsageTests
         long expected) =>
         Assert.Equal(expected, VertexLiveProxyService.RequiredLiveReservation(charged, window, cap));
 
+    [Fact]
+    public async Task Live_accounting_mutations_are_serialized_per_session()
+    {
+        using var gate = new SemaphoreSlim(1, 1);
+        var active = 0;
+        var maximumActive = 0;
+        var completed = 0;
+
+        var operations = Enumerable.Range(0, 20).Select(_ =>
+            VertexLiveProxyService.RunSerializedAccountingAsync(gate, async () =>
+            {
+                var current = Interlocked.Increment(ref active);
+                maximumActive = Math.Max(maximumActive, current);
+                await Task.Delay(5);
+                Interlocked.Decrement(ref active);
+                Interlocked.Increment(ref completed);
+            }, CancellationToken.None));
+
+        await Task.WhenAll(operations);
+
+        Assert.Equal(1, maximumActive);
+        Assert.Equal(20, completed);
+    }
+
     private static readonly CallerIdentity Caller = new(
         "uid-1", "person@example.test", "Test Person", "firebase");
 

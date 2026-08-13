@@ -613,7 +613,7 @@ public sealed class FirestoreAccountStore : IAccountStore
         }, cancellationToken: cancellationToken);
     }
 
-    public Task<long> EnsureReservationCapacityAsync(
+    public async Task<long> EnsureReservationCapacityAsync(
         string userId,
         string requestId,
         long targetReservedCreditMicros,
@@ -624,7 +624,7 @@ public sealed class FirestoreAccountStore : IAccountStore
         var accountRef = Account(userId);
         var reservationRef = accountRef.Collection("reservations").Document(SafeId(requestId));
         var now = _clock.UtcNow;
-        return _db.RunTransactionAsync(async transaction =>
+        async Task<long> ExecuteCapacityTransactionAsync() => await _db.RunTransactionAsync(async transaction =>
         {
             var accountSnapshot = await transaction.GetSnapshotAsync(accountRef, cancellationToken);
             var reservationSnapshot = await transaction.GetSnapshotAsync(reservationRef, cancellationToken);
@@ -739,6 +739,25 @@ public sealed class FirestoreAccountStore : IAccountStore
             }, SetOptions.MergeAll);
             return targetReservedCreditMicros;
         }, cancellationToken: cancellationToken);
+
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await ExecuteCapacityTransactionAsync();
+            }
+            catch (RpcException exception) when (
+                exception.StatusCode == StatusCode.Aborted
+                && attempt < _options.MaxRetries)
+            {
+                // Live traffic can extend the same rolling reservation while
+                // other account/global-shard transactions settle. Firestore has
+                // rolled the aborted transaction back, so retry from fresh state
+                // with a bounded delay. The target amount and ledger event ID are
+                // deterministic, keeping a lost-response retry idempotent.
+                await Task.Delay(TimeSpan.FromMilliseconds(40 * (attempt + 1)), cancellationToken);
+            }
+        }
     }
 
     public Task RecordProviderCompletionAsync(

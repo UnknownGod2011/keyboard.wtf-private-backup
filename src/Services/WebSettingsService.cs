@@ -243,7 +243,8 @@ public sealed class WebSettingsService : IDisposable
             }
             else if (path == "/api/jarvis/stop" && method == "POST")
             {
-                _app?.Commands?.CancelCurrent();
+                if (_app?.Commands != null)
+                    await _app.Commands.CancelCurrentAndWaitAsync();
                 await WriteJson(resp, new { ok = true });
             }
             else if (path == "/api/app/restart" && method == "POST")

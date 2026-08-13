@@ -94,6 +94,7 @@ public sealed class CommandRegistry
         _ = _liveConversation.StartAsync();
     }
     public void CancelCurrent() => _ = CancelCurrentAsync();
+    public Task CancelCurrentAndWaitAsync() => CancelCurrentAsync();
     public void QuickSendDefault() => _ = _capture.QuickSendAsync(_settings.Current.DefaultDestination ?? "Clipboard");
     public void OpenSettings() => _app.OpenSettings();
     public object PendingSensitiveAction => _automation?.PendingSnapshot();
