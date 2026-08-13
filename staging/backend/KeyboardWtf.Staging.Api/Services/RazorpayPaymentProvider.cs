@@ -79,7 +79,7 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
     {
         EnsureConfigured();
         if (string.IsNullOrWhiteSpace(product.RazorpayPlanId))
-            throw new InvalidOperationException("The staging Razorpay subscription plan is not configured.");
+            throw new InvalidOperationException("The Razorpay subscription plan is not configured.");
         var payload = new
         {
             plan_id = product.RazorpayPlanId,
@@ -442,7 +442,7 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
     private void EnsureConfigured()
     {
         if (!IsConfigured)
-            throw new InvalidOperationException("Razorpay Test Mode is not configured.");
+            throw new InvalidOperationException("Razorpay is not configured.");
     }
 
     internal sealed class RazorpayProviderHttpException(int statusCode)

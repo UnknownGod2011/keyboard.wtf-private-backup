@@ -17,6 +17,8 @@ public static class DeploymentSafety
             RejectStagingMarker(options.WebBaseUrl, "website URL");
             foreach (var origin in options.AllowedOrigins)
                 RejectStagingMarker(origin, "allowed origin");
+            if (options.ProviderCostReconciliationEnabled)
+                RejectStagingMarker(options.BillingExportTable, "billing export table");
         }
 
         return true;

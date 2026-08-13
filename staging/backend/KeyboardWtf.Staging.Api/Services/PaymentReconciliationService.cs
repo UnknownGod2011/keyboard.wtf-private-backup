@@ -49,7 +49,7 @@ public sealed class PaymentReconciliationService
             return new ReconciliationRunResult(
                 job, runId, 0, 0, 0, 0, false, startedAt, _clock.UtcNow);
         if (!_provider.IsConfigured)
-            throw new InvalidOperationException("Razorpay Test Mode is not configured for reconciliation.");
+            throw new InvalidOperationException("Razorpay is not configured for reconciliation.");
 
         var examined = 0;
         var repaired = 0;

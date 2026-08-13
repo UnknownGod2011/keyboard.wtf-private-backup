@@ -231,7 +231,7 @@ public sealed class FirestoreAccountStore : IAccountStore
             _options.GlobalUsageShardCount,
             cancellationToken);
         if (shardedDailyCap <= 0)
-            throw new InvalidOperationException("The staging daily spending cap has been reached.");
+            throw new InvalidOperationException("The daily spending cap has been reached.");
         var globalShardIndex = GlobalUsageShardIndex(
             globalUsageDate,
             caller.UserId,
@@ -284,7 +284,7 @@ public sealed class FirestoreAccountStore : IAccountStore
                 globalDailyCap,
                 _options.GlobalUsageShardCount);
             if (effectiveShardedCap <= 0)
-                throw new InvalidOperationException("The staging daily spending cap has been reached.");
+                throw new InvalidOperationException("The daily spending cap has been reached.");
             var globalShardCap = GlobalUsageShardCap(
                 effectiveShardedCap,
                 _options.GlobalUsageShardCount,
@@ -292,7 +292,7 @@ public sealed class FirestoreAccountStore : IAccountStore
             var global = globalSnapshot.Exists ? globalSnapshot.ToDictionary() : [];
             var globalCommitted = Long(global, "settledCreditMicros") + Long(global, "reservedCreditMicros");
             if (globalCommitted + reserveCreditMicros > globalShardCap)
-                throw new InvalidOperationException("The staging daily spending cap has been reached.");
+                throw new InvalidOperationException("The daily spending cap has been reached.");
             var userDailySnapshot = await transaction.GetSnapshotAsync(userDailyRef, cancellationToken);
             var userDaily = userDailySnapshot.Exists ? userDailySnapshot.ToDictionary() : [];
             var userDailyCommitted = Long(userDaily, "settledCreditMicros")

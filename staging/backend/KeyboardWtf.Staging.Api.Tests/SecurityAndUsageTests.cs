@@ -171,6 +171,20 @@ public sealed class SecurityAndUsageTests
             DeploymentSafety.Validate(options, "rzp_live_public"));
     }
 
+    [Fact]
+    public void Production_rejects_staging_owned_billing_export()
+    {
+        var options = TestOptions(
+            PaidDeploymentEnvironment.Production,
+            allowBootstrapCatalog: false,
+            useStagingIdentifiers: false,
+            providerCostReconciliationEnabled: true,
+            billingExportTable: "keyboard-wtf-staging.billing_export.gcp_billing_export");
+
+        Assert.Throws<InvalidOperationException>(() =>
+            DeploymentSafety.Validate(options, "rzp_live_public"));
+    }
+
     [Theory]
     [InlineData(null, "secret", "webhook")]
     [InlineData("rzp_live_public", null, "webhook")]
