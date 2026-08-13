@@ -1363,6 +1363,11 @@ let paidSignInRequestPending = false;
   const mainEl  = document.getElementById('main-scroll');
   const navLinks = Array.from(document.querySelectorAll('#sidebar-nav a'));
   const sections = Array.from(document.querySelectorAll('.main section[id]'));
+  let scrollFrame;
+
+  function visibleSections() {
+    return sections.filter(section => section.offsetParent !== null);
+  }
 
   function setActive(id) {
     navLinks.forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + id));
@@ -1374,7 +1379,8 @@ let paidSignInRequestPending = false;
       e.preventDefault();
       const id = a.getAttribute('href').slice(1);
       const target = document.getElementById(id);
-      if (!target) return;
+      if (!target || target.offsetParent === null) return;
+      setActive(id);
       const mainTop    = mainEl.getBoundingClientRect().top;
       const targetTop  = target.getBoundingClientRect().top;
       mainEl.scrollTo({ top: mainEl.scrollTop + (targetTop - mainTop) - 24, behavior: 'smooth' });
@@ -1384,20 +1390,34 @@ let paidSignInRequestPending = false;
   // Scroll-spy: find the last section whose top edge has passed 80px into .main.
   // Special case: if scrolled to the very bottom, always activate the last section.
   function onScroll() {
+    const candidates = visibleSections();
+    if (candidates.length === 0) {
+      setActive(undefined);
+      return;
+    }
     const atBottom = mainEl.scrollTop + mainEl.clientHeight >= mainEl.scrollHeight - 4;
     if (atBottom) {
-      setActive(sections[sections.length - 1]?.id);
+      setActive(candidates[candidates.length - 1].id);
       return;
     }
     const mainTop = mainEl.getBoundingClientRect().top;
-    let activeId  = sections[0]?.id;
-    for (const s of sections) {
+    let activeId  = candidates[0].id;
+    for (const s of candidates) {
       if (s.getBoundingClientRect().top - mainTop <= 80) activeId = s.id;
     }
     setActive(activeId);
   }
 
-  mainEl.addEventListener('scroll', onScroll, { passive: true });
+  function scheduleScrollSpy() {
+    if (scrollFrame) cancelAnimationFrame(scrollFrame);
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = undefined;
+      onScroll();
+    });
+  }
+
+  mainEl.addEventListener('scroll', scheduleScrollSpy, { passive: true });
+  window.refreshSettingsScrollSpy = scheduleScrollSpy;
   onScroll();
 })();
 
@@ -2363,6 +2383,7 @@ function renderPaidAccount(account) {
   [apiSection, aiSection, apiLink, aiLink].forEach(element => {
     if (element) element.style.display = hideByok ? 'none' : '';
   });
+  window.refreshSettingsScrollSpy?.();
   if (!enabled) return;
 
   const browserAiHint = document.getElementById('browserAutomationAiHint');
