@@ -69,7 +69,7 @@ jobs:
 
       - name: Generate SBOM
         shell: pwsh
-        run: scripts/release/generate-sbom.ps1 -BuildDirectory dist/release/keyboard-wtf-win-x64 -Version 1.4.0
+        run: scripts/release/generate-sbom.ps1 -BuildDirectory dist/release/keyboard-wtf-paid-production-candidate-win-x64 -Version 1.4.0
 
       - name: Record provenance
         shell: pwsh
