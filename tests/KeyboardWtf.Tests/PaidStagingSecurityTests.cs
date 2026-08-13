@@ -270,6 +270,64 @@ public sealed class PaidStagingSecurityTests
     }
 
     [Fact]
+    public async Task Revoking_another_device_is_server_authoritative_and_refreshes_the_account()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var (store, directory) = CreateSessionStore();
+        try
+        {
+            SaveValidSession(store);
+            var handler = new PaidApiHandler(availableCreditMicros: 1_000_000);
+            using var account = CreateAccount(store, handler);
+            await account.InitializeAsync();
+
+            await account.RevokeDeviceAsync("other-device");
+
+            var request = Assert.Single(
+                handler.Bodies,
+                pair => pair.Path == "/v1/devices/revoke").Body;
+            using var json = JsonDocument.Parse(request);
+            Assert.Equal("other-device", json.RootElement.GetProperty("deviceId").GetString());
+            Assert.Equal(2, handler.Requests.Count(path => path == "/v1/account"));
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task Desktop_cancellation_uses_the_authenticated_server_endpoint_and_refreshes_account()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var (store, directory) = CreateSessionStore();
+        try
+        {
+            SaveValidSession(store);
+            var handler = new PaidApiHandler(availableCreditMicros: 1_000_000);
+            using var account = CreateAccount(store, handler);
+            await account.InitializeAsync();
+
+            await account.CancelSubscriptionAtCycleEndAsync();
+
+            var request = Assert.Single(
+                handler.Bodies,
+                pair => pair.Path == "/v1/billing/subscription/cancel").Body;
+            using var json = JsonDocument.Parse(request);
+            Assert.True(json.RootElement.GetProperty("atCycleEnd").GetBoolean());
+            Assert.Equal(2, handler.Requests.Count(path => path == "/v1/account"));
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task Concurrent_desktop_sign_in_requests_share_one_attempt_and_one_browser_launch()
     {
         if (!OperatingSystem.IsWindows())
@@ -477,7 +535,7 @@ public sealed class PaidStagingSecurityTests
             SaveValidSession(store);
             var handler = new DesktopLoginHandler();
             var browserLaunches = 0;
-            string? launchedUrl = null;
+            string launchedUrl = null;
             using var account = new PaidAccountService(
                 new PaidStagingConfiguration(
                     true,
@@ -586,6 +644,8 @@ public sealed class PaidStagingSecurityTests
                 }),
                 "/v1/ready" => "{\"status\":\"ready\"}",
                 "/v1/sessions/logout" => "{}",
+                "/v1/devices/revoke" => "{}",
+                "/v1/billing/subscription/cancel" => "{}",
                 "/v1/ai/generate" => JsonSerializer.Serialize(new
                 {
                     requestId = "request-1",

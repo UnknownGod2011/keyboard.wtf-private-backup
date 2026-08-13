@@ -456,6 +456,35 @@ internal sealed class PaidAccountService : IDisposable
         }
     }
 
+    public async Task RevokeDeviceAsync(string deviceId, CancellationToken cancellationToken = default)
+    {
+        EnsureEnabled();
+        if (string.IsNullOrWhiteSpace(deviceId) || deviceId.Length > 128)
+            throw new ArgumentException("A valid device is required.", nameof(deviceId));
+        if (_account?.Devices.Any(device =>
+                device.IsCurrent
+                && string.Equals(device.DeviceId, deviceId, StringComparison.Ordinal)) == true)
+            throw new InvalidOperationException("Sign out to remove the current device.");
+
+        await SendAuthorizedAsync<JsonElement>(
+            HttpMethod.Post,
+            "v1/devices/revoke",
+            new { deviceId },
+            cancellationToken);
+        await RefreshAccountAsync(cancellationToken);
+    }
+
+    public async Task CancelSubscriptionAtCycleEndAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureEnabled();
+        await SendAuthorizedAsync<JsonElement>(
+            HttpMethod.Post,
+            "v1/billing/subscription/cancel",
+            new { atCycleEnd = true },
+            cancellationToken);
+        await RefreshAccountAsync(cancellationToken);
+    }
+
     public void OpenManageAccount() => OpenWeb("account.html");
     public void OpenBilling() => OpenWeb("account.html#billing");
 

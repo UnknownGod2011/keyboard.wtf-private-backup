@@ -208,7 +208,7 @@ public sealed class WebSettingsService : IDisposable
                     await WriteJson(resp, new { ok = false, error = "Settings action header required." });
                     return;
                 }
-                await HandlePaidAccountAction(path, resp);
+                await HandlePaidAccountAction(req, path, resp);
             }
             else if (path == "/api/intent-memory/delete" && method == "POST")
             {
@@ -1468,7 +1468,10 @@ public sealed class WebSettingsService : IDisposable
         };
     }
 
-    private async Task HandlePaidAccountAction(string path, HttpListenerResponse response)
+    private async Task HandlePaidAccountAction(
+        HttpListenerRequest request,
+        string path,
+        HttpListenerResponse response)
     {
         try
         {
@@ -1496,6 +1499,21 @@ public sealed class WebSettingsService : IDisposable
                     break;
                 case "/api/paid/sign-out-all":
                     await _paidAccount.SignOutAsync(true, _cts?.Token ?? CancellationToken.None);
+                    break;
+                case "/api/paid/revoke-device":
+                    using (var document = await JsonDocument.ParseAsync(
+                               request.InputStream,
+                               cancellationToken: _cts?.Token ?? CancellationToken.None))
+                    {
+                        var deviceId = GetJsonString(document.RootElement, "deviceId");
+                        await _paidAccount.RevokeDeviceAsync(
+                            deviceId,
+                            _cts?.Token ?? CancellationToken.None);
+                    }
+                    break;
+                case "/api/paid/cancel-subscription":
+                    await _paidAccount.CancelSubscriptionAtCycleEndAsync(
+                        _cts?.Token ?? CancellationToken.None);
                     break;
                 case "/api/paid/manage":
                     _paidAccount.OpenManageAccount();

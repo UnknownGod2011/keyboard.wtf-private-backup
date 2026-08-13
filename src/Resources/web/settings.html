@@ -627,6 +627,7 @@
         <button class="ghost" id="paidCancelSignIn" style="display:none" onclick="paidAccountAction('cancel-sign-in')">Cancel sign-in</button>
         <button class="ghost" id="paidRefresh" onclick="paidAccountAction('refresh')">Refresh account</button>
         <button class="ghost" id="paidBilling" onclick="paidAccountAction('billing')">Subscribe / Manage Billing</button>
+        <button class="ghost" id="paidCancelSubscription" style="display:none" onclick="paidAccountAction('cancel-subscription')">Cancel renewal</button>
         <button class="ghost" id="paidManage" onclick="paidAccountAction('manage')">Manage account</button>
         <button class="ghost" id="paidSwitchAccount" onclick="paidAccountAction('switch-account')">Switch Google account</button>
         <button class="ghost" id="paidSignOut" onclick="paidAccountAction('sign-out')">Sign out</button>
@@ -2506,6 +2507,12 @@ function renderPaidAccount(account) {
   document.getElementById('paidCancelSignIn').disabled = false;
   document.getElementById('paidRefresh').disabled = !signedIn;
   document.getElementById('paidBilling').disabled = !signedIn || accountLoading;
+  const canCancelSubscription = signedIn
+    && !accountLoading
+    && String(account.subscriptionStatus || '').toLowerCase() === 'active'
+    && String(account.subscriptionCancellationStatus || '').toLowerCase() !== 'scheduled';
+  document.getElementById('paidCancelSubscription').style.display = canCancelSubscription ? '' : 'none';
+  document.getElementById('paidCancelSubscription').disabled = !canCancelSubscription;
   document.getElementById('paidManage').disabled = !signedIn || accountLoading;
   document.getElementById('paidSwitchAccount').style.display = signedIn ? '' : 'none';
   document.getElementById('paidSignOut').style.display = signedIn ? '' : 'none';
@@ -2514,8 +2521,7 @@ function renderPaidAccount(account) {
     `${formatPaidActivity(row.activityType)} - ${formatPaidCredits(row.chargedCreditMicros)} credits - ${formatPaidStatus(row.accountingStatus !== 'settled' ? row.accountingStatus : row.outcome)} - ${formatPaidDate(row.createdAt)}`);
   renderPaidRows('paidRecentPurchases', account.recentPurchases, 'No payments yet.', row =>
     `${row.displayName || 'Jarvis Monthly'} - ${formatPaidStatus(row.status)} - ${formatPaidMoney(row.amountMinor, row.currency)} - ${formatPaidDate(row.createdAt)}`);
-  renderPaidRows('paidDevices', account.devices, 'No connected devices.', row =>
-    `${row.name || 'Windows device'}${row.isCurrent ? ' (this device)' : ''} - ${row.platform || 'Windows'} - ${formatPaidStatus(row.status)} - last seen ${formatPaidDate(row.lastSeenAt)}`);
+  renderPaidDevices(account.devices);
   schedulePaidSignInRefresh(signInPending);
 }
 
@@ -2550,6 +2556,35 @@ function renderPaidRows(containerId, rows, emptyText, formatter) {
   container.appendChild(list);
 }
 
+function renderPaidDevices(rows) {
+  const container = document.getElementById('paidDevices');
+  container.replaceChildren();
+  if (!Array.isArray(rows) || rows.length === 0) {
+    container.textContent = 'No connected devices.';
+    return;
+  }
+  for (const row of rows.slice(0, 10)) {
+    const item = document.createElement('div');
+    item.style.display = 'flex';
+    item.style.alignItems = 'center';
+    item.style.justifyContent = 'space-between';
+    item.style.gap = '12px';
+    item.style.marginBottom = '8px';
+    const description = document.createElement('span');
+    description.textContent = `${row.name || 'Windows device'}${row.isCurrent ? ' (this device)' : ''} - ${row.platform || 'Windows'} - ${formatPaidStatus(row.status)} - last seen ${formatPaidDate(row.lastSeenAt)}`;
+    item.appendChild(description);
+    if (!row.isCurrent && String(row.status || '').toLowerCase() !== 'revoked') {
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'button-link';
+      remove.textContent = 'Remove';
+      remove.addEventListener('click', () => paidAccountAction('revoke-device', { deviceId: row.deviceId }));
+      item.appendChild(remove);
+    }
+    container.appendChild(item);
+  }
+}
+
 function formatPaidPlan(planId) {
   if (!planId || planId === 'none') return 'No active plan';
   return planId.includes('monthly') ? 'Jarvis Monthly' : 'Subscription';
@@ -2570,8 +2605,8 @@ function formatPaidActivity(activityType) {
 function formatPaidStatus(value) {
   const status = String(value || '').trim().toLowerCase();
   return ({
-    none: 'None', active: 'Active', completed: 'Completed', provider_completed: 'Completed',
-    settled: 'Completed', cancelled: 'Cancelled', failed: 'Failed', captured: 'Paid',
+    none: 'None', active: 'Active', completed: 'Completed', provider_completed: 'Completed', verified: 'Completed',
+    settled: 'Completed', cancelled: 'Cancelled', provider_cancelled: 'Cancelled', failed: 'Failed', provider_failed: 'Failed', captured: 'Paid',
     paid: 'Paid', charged: 'Paid', refunded: 'Refunded', reconciliation_pending: 'Finalizing usage...'
   })[status] || (status ? status.replaceAll('_', ' ') : 'Recorded');
 }
@@ -2646,11 +2681,13 @@ function formatPaidCredits(micros) {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(Number(micros || 0) / 1000000);
 }
 
-async function paidAccountAction(action) {
+async function paidAccountAction(action, payload = null) {
   const beginsSignIn = action === 'sign-in' || action === 'switch-account';
   if (beginsSignIn && paidSignInRequestPending) return;
   if (action === 'sign-out-all'
       && !confirm('Sign out every keyboard.wtf device and session for this account?')) return;
+  if (action === 'cancel-subscription'
+      && !confirm('Cancel renewal at the end of your current paid billing cycle? You will keep access until then.')) return;
   const buttons = Array.from(document.querySelectorAll('#account-billing button'));
   if (beginsSignIn) {
     paidSignInRequestPending = true;
@@ -2669,7 +2706,11 @@ async function paidAccountAction(action) {
       : action;
     const response = await fetch(`/api/paid/${requestAction}`, {
       method: 'POST',
-      headers: { 'X-Keyboard-Wtf-Settings-Action': '1' }
+      headers: {
+        'X-Keyboard-Wtf-Settings-Action': '1',
+        ...(payload ? { 'Content-Type': 'application/json' } : {})
+      },
+      body: payload ? JSON.stringify(payload) : undefined
     });
     const data = await response.json();
     if (!response.ok || !data.ok) throw new Error(data.error || 'Account action failed');

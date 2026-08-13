@@ -57,8 +57,11 @@ const activityLabels = {
 const friendlyStatus = (value) => ({
   completed: "Completed",
   provider_completed: "Completed",
+  verified: "Completed",
   cancelled: "Cancelled",
+  provider_cancelled: "Cancelled",
   failed: "Failed",
+  provider_failed: "Failed",
   active: "Active",
   captured: "Paid",
   paid: "Paid",
@@ -96,7 +99,7 @@ function renderUsageRows() {
       const label = activityLabels[row.activityType] || "Jarvis AI";
       const status = row.accountingStatus && row.accountingStatus !== "settled"
         ? "Finalizing usage…"
-        : row.outcome === "completed" ? "Verified" : row.outcome;
+        : friendlyStatus(row.outcome);
       const audio = Number(row.inputAudioTokens || 0) + Number(row.outputAudioTokens || 0);
       const images = Number(row.inputImageTokens || 0) + Number(row.outputImageTokens || 0);
       return `<li class="usage-row"><details><summary><span>${escape(label)}<br><span class="small">${new Date(row.createdAt).toLocaleString()} · ${escape(status)}</span></span><strong>${formatCredits(row.chargedCreditMicros)}</strong></summary><div class="small usage-details">Model: ${escape(row.model || "—")}<br>Input/output: ${Number(row.inputTokens || 0).toLocaleString()} / ${Number(row.outputTokens || 0).toLocaleString()} tokens${audio ? `<br>Audio: ${audio.toLocaleString()} tokens` : ""}${images ? `<br>Images: ${images.toLocaleString()} tokens` : ""}<br>Pricing: ${escape(row.pricingVersion || "—")} · ${row.usageEstimated ? "estimated" : "provider-reported"}</div></details></li>`;
