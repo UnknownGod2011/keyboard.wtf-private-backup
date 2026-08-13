@@ -140,7 +140,11 @@ public sealed class VertexLiveProxyService
             providerConnected = true;
 
             client = await context.WebSockets.AcceptWebSocketAsync();
-            var setup = await ReceiveTextAsync(client, MaxMessageBytes, cancellationToken);
+            var setup = await ReceiveJsonAsync(
+                client,
+                MaxMessageBytes,
+                acceptBinary: false,
+                cancellationToken);
             var rewritten = RewriteSetup(
                 setup,
                 $"projects/{_options.ProjectId}/locations/{selectedCandidate.Location}/" +
@@ -181,13 +185,13 @@ public sealed class VertexLiveProxyService
                 Max(ref reservedCreditMicros, ensured);
             }
 
-            var toProvider = RelayAsync(client, provider, async (message, token) =>
+            var toProvider = RelayAsync(client, provider, acceptBinary: false, async (message, token) =>
             {
                 usage.ObserveClient(message);
                 await EnsureBudgetAsync(token);
             }, session.Token);
             var activity = new LiveActivityTracker();
-            var toClient = RelayAsync(provider, client, async (message, token) =>
+            var toClient = RelayAsync(provider, client, acceptBinary: true, async (message, token) =>
             {
                 usage.ObserveProvider(message);
                 activity.ObserveProvider(message);
@@ -468,6 +472,7 @@ public sealed class VertexLiveProxyService
     private static async Task RelayAsync(
         WebSocket source,
         WebSocket destination,
+        bool acceptBinary,
         Func<string, CancellationToken, Task> observe,
         CancellationToken cancellationToken)
     {
@@ -475,33 +480,58 @@ public sealed class VertexLiveProxyService
                && source.State == WebSocketState.Open
                && destination.State == WebSocketState.Open)
         {
-            var message = await ReceiveTextAsync(source, MaxMessageBytes, cancellationToken);
+            var message = await ReceiveJsonAsync(
+                source,
+                MaxMessageBytes,
+                acceptBinary,
+                cancellationToken);
             await observe(message, cancellationToken);
             await SendTextAsync(destination, message, cancellationToken);
         }
     }
 
-    private static async Task<string> ReceiveTextAsync(
+    private static async Task<string> ReceiveJsonAsync(
         WebSocket socket,
         int maxBytes,
+        bool acceptBinary,
         CancellationToken cancellationToken)
     {
         var buffer = new byte[64 * 1024];
         using var stream = new MemoryStream();
         WebSocketReceiveResult result;
+        WebSocketMessageType? messageType = null;
         do
         {
             result = await socket.ReceiveAsync(buffer, cancellationToken);
             if (result.MessageType == WebSocketMessageType.Close)
                 throw new OperationCanceledException("The peer closed the Live session.", cancellationToken);
-            if (result.MessageType != WebSocketMessageType.Text)
-                throw new ArgumentException("Only JSON text WebSocket messages are supported.");
+            if (!IsAcceptedJsonMessageType(result.MessageType, acceptBinary))
+                throw new ArgumentException("The Live peer sent an unsupported WebSocket message type.");
+            if (messageType is not null && messageType != result.MessageType)
+                throw new ArgumentException("A fragmented Live message changed its WebSocket message type.");
+            messageType ??= result.MessageType;
             if (stream.Length + result.Count > maxBytes)
                 throw new ArgumentException("A Live message exceeded the size limit.");
             await stream.WriteAsync(buffer.AsMemory(0, result.Count), cancellationToken);
         } while (!result.EndOfMessage);
-        return Encoding.UTF8.GetString(stream.GetBuffer(), 0, checked((int)stream.Length));
+        try
+        {
+            return new UTF8Encoding(false, true).GetString(
+                stream.GetBuffer(),
+                0,
+                checked((int)stream.Length));
+        }
+        catch (DecoderFallbackException exception)
+        {
+            throw new ArgumentException("A Live JSON message was not valid UTF-8.", exception);
+        }
     }
+
+    internal static bool IsAcceptedJsonMessageType(
+        WebSocketMessageType messageType,
+        bool acceptBinary) =>
+        messageType == WebSocketMessageType.Text
+        || (acceptBinary && messageType == WebSocketMessageType.Binary);
 
     private static Task SendTextAsync(
         WebSocket socket,

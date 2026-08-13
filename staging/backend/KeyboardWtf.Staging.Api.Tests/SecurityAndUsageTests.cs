@@ -8,6 +8,7 @@ using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Firestore;
 using Microsoft.Extensions.Options;
 using System.Net;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using Xunit;
@@ -300,6 +301,20 @@ public sealed class SecurityAndUsageTests
         long statusCode,
         bool expected) =>
         Assert.Equal(expected, UsageReconciliationService.CanReleaseVerifiedProviderRejection(statusCode));
+
+    [Theory]
+    [InlineData(WebSocketMessageType.Text, false, true)]
+    [InlineData(WebSocketMessageType.Text, true, true)]
+    [InlineData(WebSocketMessageType.Binary, false, false)]
+    [InlineData(WebSocketMessageType.Binary, true, true)]
+    [InlineData(WebSocketMessageType.Close, true, false)]
+    public void Live_proxy_accepts_provider_binary_json_but_not_desktop_binary_input(
+        WebSocketMessageType messageType,
+        bool providerDirection,
+        bool expected) =>
+        Assert.Equal(
+            expected,
+            VertexLiveProxyService.IsAcceptedJsonMessageType(messageType, providerDirection));
 
     [Fact]
     public void Canary_selection_is_deterministic_and_preserves_a_stable_fallback()
