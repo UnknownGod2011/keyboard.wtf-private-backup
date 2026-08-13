@@ -156,13 +156,24 @@ internal sealed class PaidAccountService : IDisposable
     }
 
     public Task<PaidAccountSnapshot> SignInAsync(CancellationToken cancellationToken = default) =>
-        StartSignInAsync(allowTerminalRetry: false, cancellationToken);
+        StartSignInAsync(allowTerminalRetry: false, forceAccountChooser: false, cancellationToken);
 
     public Task<PaidAccountSnapshot> RetrySignInAsync(CancellationToken cancellationToken = default) =>
-        StartSignInAsync(allowTerminalRetry: true, cancellationToken);
+        StartSignInAsync(allowTerminalRetry: true, forceAccountChooser: false, cancellationToken);
+
+    public async Task<PaidAccountSnapshot> SwitchAccountAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureEnabled();
+        await SignOutAsync(allDevices: false, cancellationToken);
+        return await StartSignInAsync(
+            allowTerminalRetry: true,
+            forceAccountChooser: true,
+            cancellationToken);
+    }
 
     private Task<PaidAccountSnapshot> StartSignInAsync(
         bool allowTerminalRetry,
+        bool forceAccountChooser,
         CancellationToken cancellationToken)
     {
         EnsureEnabled();
@@ -184,7 +195,9 @@ internal sealed class PaidAccountService : IDisposable
                 _signInState = "starting";
                 _signInExpiresAt = null;
                 _lastError = "";
-                task = _activeSignInTask = RunSignInAsync(_activeSignInCancellation.Token);
+                task = _activeSignInTask = RunSignInAsync(
+                    forceAccountChooser,
+                    _activeSignInCancellation.Token);
             }
         }
         return WaitForSharedSignInAsync(task, cancellationToken);
@@ -225,7 +238,9 @@ internal sealed class PaidAccountService : IDisposable
         return true;
     }
 
-    private async Task<PaidAccountSnapshot> RunSignInAsync(CancellationToken cancellationToken)
+    private async Task<PaidAccountSnapshot> RunSignInAsync(
+        bool forceAccountChooser,
+        CancellationToken cancellationToken)
     {
         await _authGate.WaitAsync(cancellationToken);
         try
@@ -255,7 +270,9 @@ internal sealed class PaidAccountService : IDisposable
             using var listener = new HttpListener();
             listener.Prefixes.Add($"http://127.0.0.1:{port}/");
             listener.Start();
-            _browserLauncher(start.BrowserUrl);
+            _browserLauncher(forceAccountChooser
+                ? AppendQueryParameter(start.BrowserUrl, "switch", "1")
+                : start.BrowserUrl);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var remaining = start.ExpiresAt - DateTimeOffset.UtcNow;
             timeout.CancelAfter(remaining > TimeSpan.Zero ? remaining : TimeSpan.FromMilliseconds(1));
@@ -278,7 +295,7 @@ internal sealed class PaidAccountService : IDisposable
                 && !string.IsNullOrWhiteSpace(authorizationCode);
             if (!valid)
             {
-                await WriteCallbackResponseAsync(context.Response, false, cancellationToken);
+                await WriteCallbackResponseAsync(context.Response, false, _configuration.WebBaseUri, cancellationToken);
                 throw new UnauthorizedAccessException("The desktop sign-in callback did not match this request.");
             }
 
@@ -302,11 +319,11 @@ internal sealed class PaidAccountService : IDisposable
                     cancellationToken);
                 SaveTokens(exchanged, deviceInstallationId);
                 account = await RefreshAccountAsync(cancellationToken);
-                await WriteCallbackResponseAsync(context.Response, true, cancellationToken);
+                await WriteCallbackResponseAsync(context.Response, true, _configuration.WebBaseUri, cancellationToken);
             }
             catch
             {
-                await TryWriteCallbackResponseAsync(context.Response, success: false);
+                await TryWriteCallbackResponseAsync(context.Response, success: false, _configuration.WebBaseUri);
                 throw;
             }
             lock (_signInSync)
@@ -622,11 +639,15 @@ internal sealed class PaidAccountService : IDisposable
     private static async Task WriteCallbackResponseAsync(
         HttpListenerResponse response,
         bool success,
+        Uri webBaseUri,
         CancellationToken cancellationToken)
     {
+        var targetOrigin = JsonSerializer.Serialize(webBaseUri.GetLeftPart(UriPartial.Authority));
+        var successJson = success ? "true" : "false";
         var html = success
             ? "<!doctype html><meta charset=utf-8><title>Jarvis connected</title><h1>Jarvis connected</h1><p>You can close this tab and return to keyboard.wtf.</p>"
             : "<!doctype html><meta charset=utf-8><title>Connection rejected</title><h1>Connection rejected</h1><p>Return to keyboard.wtf and try again.</p>";
+        html += $"<script>if(parent!==window)parent.postMessage({{type:'keyboard-wtf-desktop-callback',success:{successJson}}},{targetOrigin});</script>";
         var bytes = Encoding.UTF8.GetBytes(html);
         response.StatusCode = success ? 200 : 400;
         response.ContentType = "text/html; charset=utf-8";
@@ -637,11 +658,12 @@ internal sealed class PaidAccountService : IDisposable
 
     private static async Task TryWriteCallbackResponseAsync(
         HttpListenerResponse response,
-        bool success)
+        bool success,
+        Uri webBaseUri)
     {
         try
         {
-            await WriteCallbackResponseAsync(response, success, CancellationToken.None);
+            await WriteCallbackResponseAsync(response, success, webBaseUri, CancellationToken.None);
         }
         catch (Exception exception) when (exception is HttpListenerException or IOException or ObjectDisposedException)
         {
@@ -651,6 +673,18 @@ internal sealed class PaidAccountService : IDisposable
     }
 
     private static string RandomToken(int bytes) => Base64Url(RandomNumberGenerator.GetBytes(bytes));
+
+    private static string AppendQueryParameter(string url, string name, string value)
+    {
+        var builder = new UriBuilder(url);
+        var separator = string.IsNullOrEmpty(builder.Query) ? "" : "&";
+        builder.Query = builder.Query.TrimStart('?')
+            + separator
+            + Uri.EscapeDataString(name)
+            + "="
+            + Uri.EscapeDataString(value);
+        return builder.Uri.ToString();
+    }
     private static string Base64Url(byte[] bytes) =>
         Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 

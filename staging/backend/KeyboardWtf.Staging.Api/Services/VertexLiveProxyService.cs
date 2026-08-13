@@ -89,7 +89,7 @@ public sealed class VertexLiveProxyService
             throw new ArgumentException("A stable live-session request ID is required.");
 
         var catalog = await _catalog.GetAsync(cancellationToken);
-        if (catalog.KillSwitch)
+        if (catalog.KillSwitch && !CatalogService.IsAiCanary(_options, caller.Email))
             throw new InvalidOperationException(catalog.KillSwitchMessage ?? "Paid AI is temporarily unavailable.");
         var route = await _routing.ResolveAsync(
             "live-audio",

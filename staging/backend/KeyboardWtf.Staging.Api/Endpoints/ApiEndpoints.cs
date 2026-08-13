@@ -92,12 +92,15 @@ public static class ApiEndpoints
             HttpContext context,
             IIdentityService identities,
             IAccountStore store,
+            ICatalogService catalog,
             IOptions<PaidSystemOptions> options,
             CancellationToken token) =>
         {
             var caller = await RequireCallerAsync(context, identities, token);
             await store.EnsureAccountAsync(caller, token);
             var account = await store.GetAccountAsync(caller.UserId, token);
+            var catalogSnapshot = await catalog.GetAsync(token);
+            var paymentCanary = CatalogService.IsPaymentCanary(options.Value, caller.Email);
             return TypedResults.Ok(new
             {
                 account.UserId,
@@ -123,6 +126,8 @@ public static class ApiEndpoints
                 IsAdmin = options.Value.AdminEmails.Contains(
                     caller.Email,
                     StringComparer.OrdinalIgnoreCase),
+                PaymentsEnabled = !catalogSnapshot.PaymentsKillSwitch || paymentCanary,
+                PaymentCanary = paymentCanary,
             });
         });
 
@@ -217,12 +222,16 @@ public static class ApiEndpoints
         IAccountStore store,
         ICatalogService catalog,
         IPaymentProvider payments,
+        IOptions<PaidSystemOptions> options,
         CancellationToken token)
     {
         var caller = await RequireCallerAsync(context, identities, token);
         if (string.IsNullOrWhiteSpace(request.IdempotencyKey) || request.IdempotencyKey.Length > 200)
             throw new ArgumentException("A checkout idempotency key is required.");
-        var product = await catalog.GetProductAsync(request.ProductSku, token);
+        var product = await catalog.GetProductAsync(
+            request.ProductSku,
+            token,
+            CatalogService.IsPaymentCanary(options.Value, caller.Email));
         var purchaseId = $"pur_{Crypto.Sha256($"{caller.UserId}:{request.IdempotencyKey}")[..24]}";
         if (!await store.BeginPurchaseAsync(
                 caller.UserId, purchaseId, product, request.IdempotencyKey, token))

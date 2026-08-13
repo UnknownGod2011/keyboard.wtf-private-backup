@@ -2,11 +2,13 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/11.10.0/fireba
 import {
   browserLocalPersistence,
   getAuth,
+  getRedirectResult,
   GoogleAuthProvider,
   onAuthStateChanged,
   reauthenticateWithPopup,
   setPersistence,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
 } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js";
 import { runtimeConfig } from "./config.js";
@@ -155,6 +157,17 @@ export async function googleSignIn() {
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
   return signInWithPopup(auth, provider);
+}
+
+export async function switchGoogleAccount() {
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: "select_account" });
+  await signOut(auth);
+  await signInWithRedirect(auth, provider);
+}
+
+export async function completeGoogleRedirect() {
+  return getRedirectResult(auth);
 }
 
 export async function googleSignOut() {

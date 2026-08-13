@@ -395,6 +395,61 @@ public sealed class PaidStagingSecurityTests
         }
     }
 
+    [Fact]
+    public async Task Switching_accounts_revokes_the_current_session_and_forces_one_account_chooser()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var (store, directory) = CreateSessionStore();
+        try
+        {
+            SaveValidSession(store);
+            var handler = new DesktopLoginHandler();
+            var browserLaunches = 0;
+            string? launchedUrl = null;
+            using var account = new PaidAccountService(
+                new PaidStagingConfiguration(
+                    true,
+                    false,
+                    new Uri("https://paid-api.example.test/"),
+                    new Uri("https://paid.example.test/")),
+                store,
+                handler,
+                browserUrl =>
+                {
+                    launchedUrl = browserUrl;
+                    Interlocked.Increment(ref browserLaunches);
+                    _ = Task.Run(async () =>
+                    {
+                        var request = await handler.LoginStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                        var callback = new UriBuilder(request.CallbackUri);
+                        callback.Query = $"attempt=attempt-1&state={Uri.EscapeDataString(request.State)}&code={new string('a', 43)}";
+                        using var client = new HttpClient();
+                        using var response = await client.GetAsync(callback.Uri);
+                        response.EnsureSuccessStatusCode();
+                        handler.CallbackHtml = await response.Content.ReadAsStringAsync();
+                    });
+                });
+            await account.InitializeAsync();
+
+            var result = await account.SwitchAccountAsync().WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal("uid-1", result.UserId);
+            Assert.Equal(1, handler.LogoutCalls);
+            Assert.Equal(1, handler.StartCalls);
+            Assert.Equal(1, handler.ExchangeCalls);
+            Assert.Equal(1, browserLaunches);
+            Assert.Contains("switch=1", launchedUrl, StringComparison.Ordinal);
+            Assert.Contains("keyboard-wtf-desktop-callback", handler.CallbackHtml, StringComparison.Ordinal);
+            Assert.DoesNotContain("location.replace", handler.CallbackHtml, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
     private static PaidAccountService CreateAccount(PaidSessionStore store, HttpMessageHandler handler) =>
         new(
             new PaidStagingConfiguration(
@@ -491,6 +546,8 @@ public sealed class PaidStagingSecurityTests
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int StartCalls;
         public int ExchangeCalls;
+        public int LogoutCalls;
+        public string CallbackHtml = "";
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -515,6 +572,12 @@ public sealed class PaidStagingSecurityTests
                         expiresAt = DateTimeOffset.UtcNow.AddMinutes(2),
                     });
                     break;
+                case "/v1/sessions/logout":
+                    Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
+                    Assert.Equal("access-token", request.Headers.Authorization?.Parameter);
+                    Interlocked.Increment(ref LogoutCalls);
+                    payload = "{}";
+                    break;
                 case "/v1/desktop-login/exchange":
                     Assert.Null(request.Headers.Authorization);
                     Interlocked.Increment(ref ExchangeCalls);
@@ -530,7 +593,9 @@ public sealed class PaidStagingSecurityTests
                     break;
                 case "/v1/account":
                     Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
-                    Assert.Equal("desktop-access-token", request.Headers.Authorization?.Parameter);
+                    Assert.Contains(
+                        request.Headers.Authorization?.Parameter,
+                        new[] { "access-token", "desktop-access-token" });
                     payload = JsonSerializer.Serialize(new
                     {
                         userId = "uid-1",

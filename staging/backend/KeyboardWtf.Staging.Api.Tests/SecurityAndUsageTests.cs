@@ -208,6 +208,36 @@ public sealed class SecurityAndUsageTests
     }
 
     [Theory]
+    [InlineData("owner@example.test", true)]
+    [InlineData("OWNER@example.test", true)]
+    [InlineData("another@example.test", false)]
+    [InlineData("", false)]
+    public void Payment_canary_is_limited_to_the_server_allowlist(string email, bool expected)
+    {
+        var options = new PaidSystemOptions
+        {
+            PaymentCanaryEmails = ["owner@example.test"],
+        };
+
+        Assert.Equal(expected, CatalogService.IsPaymentCanary(options, email));
+    }
+
+    [Theory]
+    [InlineData("owner@example.test", true)]
+    [InlineData("OWNER@example.test", true)]
+    [InlineData("another@example.test", false)]
+    [InlineData("", false)]
+    public void Ai_canary_is_limited_to_the_server_allowlist(string email, bool expected)
+    {
+        var options = new PaidSystemOptions
+        {
+            AiCanaryEmails = ["owner@example.test"],
+        };
+
+        Assert.Equal(expected, CatalogService.IsAiCanary(options, email));
+    }
+
+    [Theory]
     [InlineData("browser-plan", "browser_planner")]
     [InlineData("browser-vision-recovery", "browser_planner")]
     [InlineData("screen-guidance", "screen_reasoning")]
@@ -1820,6 +1850,27 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
+    public async Task Ai_canary_can_use_ai_while_the_global_kill_switch_remains_closed()
+    {
+        var store = new FakeStore { Available = 1_000_000_000 };
+        var catalog = new FakeCatalog { KillSwitch = true };
+        var vertex = new FakeVertex(new VertexGenerateResult(
+            "ok",
+            new ProviderUsage(1, 1, 0, 0, 0, 0, 2, "provider-request", "model-version")));
+        var service = CreateAi(store, vertex, catalog, [Caller.Email]);
+
+        var response = await service.GenerateAsync(
+            Caller,
+            new GenerateRequest("request-ai-canary", "hello", null, 128),
+            CancellationToken.None);
+
+        Assert.True(response.Verified);
+        Assert.Equal(1, vertex.Calls);
+        Assert.Equal(1, store.ReserveCalls);
+        Assert.Equal(1, store.SettleCalls);
+    }
+
+    [Fact]
     public async Task Cancellation_after_provider_dispatch_is_held_for_reconciliation()
     {
         var store = new FakeStore { Available = 1_000_000_000 };
@@ -2152,7 +2203,8 @@ public sealed class SecurityAndUsageTests
     private static AiUsageService CreateAi(
         FakeStore store,
         FakeVertex vertex,
-        FakeCatalog? catalog = null)
+        FakeCatalog? catalog = null,
+        string[]? aiCanaryEmails = null)
     {
         var selectedCatalog = catalog ?? new FakeCatalog();
         return new(
@@ -2160,7 +2212,7 @@ public sealed class SecurityAndUsageTests
             selectedCatalog,
             new FakeRouting(selectedCatalog.Pricing),
             vertex,
-            Options.Create(TestOptions()));
+            Options.Create(TestOptions(aiCanaryEmails: aiCanaryEmails)));
     }
 
     private static async Task DeleteIntegrationAccountAsync(FirestoreDb db, string userId)
@@ -2268,7 +2320,8 @@ public sealed class SecurityAndUsageTests
         bool useStagingIdentifiers = true,
         bool? allowBootstrapModelRouting = null,
         bool providerCostReconciliationEnabled = false,
-        string billingExportTable = "") => new()
+        string billingExportTable = "",
+        string[]? aiCanaryEmails = null) => new()
     {
         DeploymentEnvironment = environment,
         ProjectId = useStagingIdentifiers ? "keyboard-wtf-staging" : "keyboard-wtf-prod",
@@ -2286,6 +2339,7 @@ public sealed class SecurityAndUsageTests
             ?? environment != PaidDeploymentEnvironment.Production,
         ProviderCostReconciliationEnabled = providerCostReconciliationEnabled,
         BillingExportTable = billingExportTable,
+        AiCanaryEmails = aiCanaryEmails ?? [],
     };
 
     private sealed class FakeClock : IClock
@@ -2335,7 +2389,7 @@ public sealed class SecurityAndUsageTests
         public Task<CatalogSnapshot> GetAsync(CancellationToken cancellationToken) =>
             Task.FromResult(new CatalogSnapshot("test-v1", [], _pricing, KillSwitch, "disabled"));
 
-        public Task<CatalogProduct> GetProductAsync(string sku, CancellationToken cancellationToken) =>
+        public Task<CatalogProduct> GetProductAsync(string sku, CancellationToken cancellationToken, bool allowPaymentCanary = false) =>
             throw new NotSupportedException();
 
         public long EstimateReservationCreditMicros(

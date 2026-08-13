@@ -621,6 +621,7 @@
         <button class="ghost" id="paidRefresh" onclick="paidAccountAction('refresh')">Refresh account</button>
         <button class="ghost" id="paidBilling" onclick="paidAccountAction('billing')">Subscribe / Manage Billing</button>
         <button class="ghost" id="paidManage" onclick="paidAccountAction('manage')">Manage account</button>
+        <button class="ghost" id="paidSwitchAccount" onclick="paidAccountAction('switch-account')">Switch Google account</button>
         <button class="ghost" id="paidSignOut" onclick="paidAccountAction('sign-out')">Sign out</button>
         <button class="ghost" id="paidSignOutAll" onclick="paidAccountAction('sign-out-all')">Sign out all devices</button>
       </div>
@@ -2458,6 +2459,7 @@ function renderPaidAccount(account) {
   document.getElementById('paidRefresh').disabled = !signedIn;
   document.getElementById('paidBilling').disabled = !signedIn;
   document.getElementById('paidManage').disabled = !signedIn;
+  document.getElementById('paidSwitchAccount').style.display = signedIn ? '' : 'none';
   document.getElementById('paidSignOut').style.display = signedIn ? '' : 'none';
   document.getElementById('paidSignOutAll').style.display = signedIn ? '' : 'none';
   renderPaidRows('paidRecentUsage', account.recentUsage, 'No recent usage.', row =>
@@ -2576,14 +2578,15 @@ function formatPaidCredits(micros) {
 }
 
 async function paidAccountAction(action) {
-  if (action === 'sign-in' && paidSignInRequestPending) return;
+  const beginsSignIn = action === 'sign-in' || action === 'switch-account';
+  if (beginsSignIn && paidSignInRequestPending) return;
   if (action === 'sign-out-all'
       && !confirm('Sign out every keyboard.wtf device and session for this account?')) return;
   const buttons = Array.from(document.querySelectorAll('#account-billing button'));
-  if (action === 'sign-in') {
+  if (beginsSignIn) {
     paidSignInRequestPending = true;
     document.getElementById('paidSignIn').disabled = true;
-    document.getElementById('paidSignIn').textContent = 'Waiting for Google sign-in...';
+    if (action === 'sign-in') document.getElementById('paidSignIn').textContent = 'Waiting for Google sign-in...';
     document.getElementById('paidCancelSignIn').style.display = '';
     document.getElementById('paidCancelSignIn').disabled = false;
     document.getElementById('paidAccountMessage').textContent = 'Waiting for Google sign-in in your browser...';
@@ -2601,7 +2604,7 @@ async function paidAccountAction(action) {
     });
     const data = await response.json();
     if (!response.ok || !data.ok) throw new Error(data.error || 'Account action failed');
-    showToast(action === 'sign-in'
+    showToast(beginsSignIn
       ? 'Account connected'
       : action === 'cancel-sign-in'
         ? 'Sign-in cancelled'
@@ -2611,7 +2614,7 @@ async function paidAccountAction(action) {
     showToast(error.message || 'Account action failed');
     await loadSettings();
   } finally {
-    if (action === 'sign-in') paidSignInRequestPending = false;
+    if (beginsSignIn) paidSignInRequestPending = false;
     if (action !== 'cancel-sign-in') buttons.forEach(button => button.disabled = false);
   }
 }

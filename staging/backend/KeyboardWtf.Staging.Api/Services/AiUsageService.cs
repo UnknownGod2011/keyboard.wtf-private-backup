@@ -71,7 +71,7 @@ public sealed class AiUsageService
             cancellationToken);
         await Task.WhenAll(catalogTask, routeTask);
         var catalog = await catalogTask;
-        if (catalog.KillSwitch)
+        if (catalog.KillSwitch && !CatalogService.IsAiCanary(_options, caller.Email))
             throw new InvalidOperationException(catalog.KillSwitchMessage ?? "Paid AI is temporarily unavailable.");
         var route = await routeTask;
         var configurationMs = Stopwatch.GetElapsedTime(configurationStarted).TotalMilliseconds;

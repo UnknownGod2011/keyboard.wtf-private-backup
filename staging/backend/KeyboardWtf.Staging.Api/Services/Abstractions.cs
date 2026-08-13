@@ -174,7 +174,10 @@ public interface IAccountStore
 public interface ICatalogService
 {
     Task<CatalogSnapshot> GetAsync(CancellationToken cancellationToken);
-    Task<CatalogProduct> GetProductAsync(string sku, CancellationToken cancellationToken);
+    Task<CatalogProduct> GetProductAsync(
+        string sku,
+        CancellationToken cancellationToken,
+        bool allowPaymentCanary = false);
     long EstimateReservationCreditMicros(
         PricingSnapshot pricing,
         string prompt,

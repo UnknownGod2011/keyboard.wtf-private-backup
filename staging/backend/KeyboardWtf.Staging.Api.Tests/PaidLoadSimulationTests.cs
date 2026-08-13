@@ -128,7 +128,7 @@ public sealed class PaidLoadSimulationTests(ITestOutputHelper output)
 
         public Task<CatalogSnapshot> GetAsync(CancellationToken cancellationToken) =>
             Task.FromResult(new CatalogSnapshot("load-v1", [], Pricing, false, null));
-        public Task<CatalogProduct> GetProductAsync(string sku, CancellationToken cancellationToken) =>
+        public Task<CatalogProduct> GetProductAsync(string sku, CancellationToken cancellationToken, bool allowPaymentCanary = false) =>
             throw new NotSupportedException();
         public long EstimateReservationCreditMicros(PricingSnapshot pricing, string prompt, int maxOutputTokens, long taskCapCreditMicros) =>
             Math.Min(1_000, taskCapCreditMicros);

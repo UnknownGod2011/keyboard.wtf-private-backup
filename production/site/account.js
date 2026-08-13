@@ -134,13 +134,13 @@ async function render(expectedUser, epoch, quiet = false) {
       }
     }));
     const products = (catalog.products || []).filter((product) => product.kind === "subscription");
-    const checkoutClosed = catalog.paymentsKillSwitch !== false;
+    const checkoutClosed = account.paymentsEnabled !== true;
     byId("products").innerHTML = products.map((product) => `<article class="card"><div class="eyebrow">Monthly plan</div><h2>${escape(product.displayName)}</h2><div class="balance" style="font-size:32px">${formatMoney(product.amountMinor, product.currency)}<span class="price-suffix">/month</span></div><p>${formatCredits(product.creditMicros)} provider-cost-backed credits per billing cycle.</p><button class="buy" data-sku="${escape(product.sku)}" ${checkoutClosed ? "disabled" : ""}>${checkoutClosed ? "Coming soon" : "Subscribe"}</button></article>`).join("");
     document.querySelectorAll(".buy").forEach((button) => button.addEventListener("click", async () => {
       button.disabled = true;
       try {
         const product = catalog.products.find((item) => item.sku === button.dataset.sku);
-        if (catalog.paymentsKillSwitch !== false)
+        if (account.paymentsEnabled !== true)
           throw new Error(catalog.paymentsKillSwitchMessage || "Subscriptions are not open yet.");
         setStatus("Opening secure Razorpay Checkout…");
         const purchaseId = await beginCheckout(product);

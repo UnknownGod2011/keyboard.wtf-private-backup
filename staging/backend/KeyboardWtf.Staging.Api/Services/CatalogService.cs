@@ -48,14 +48,26 @@ public sealed class CatalogService : ICatalogService
         }
     }
 
-    public async Task<CatalogProduct> GetProductAsync(string sku, CancellationToken cancellationToken)
+    public async Task<CatalogProduct> GetProductAsync(
+        string sku,
+        CancellationToken cancellationToken,
+        bool allowPaymentCanary = false)
     {
         var catalog = await GetAsync(cancellationToken);
-        EnsurePaymentsEnabled(catalog);
+        if (!allowPaymentCanary)
+            EnsurePaymentsEnabled(catalog);
         return catalog.Products.FirstOrDefault(product =>
                 product.Enabled && string.Equals(product.Sku, sku, StringComparison.Ordinal))
             ?? throw new InvalidOperationException("The requested product is unavailable.");
     }
+
+    internal static bool IsPaymentCanary(PaidSystemOptions options, string email) =>
+        !string.IsNullOrWhiteSpace(email)
+        && options.PaymentCanaryEmails.Contains(email, StringComparer.OrdinalIgnoreCase);
+
+    internal static bool IsAiCanary(PaidSystemOptions options, string email) =>
+        !string.IsNullOrWhiteSpace(email)
+        && options.AiCanaryEmails.Contains(email, StringComparer.OrdinalIgnoreCase);
 
     internal static void EnsurePaymentsEnabled(CatalogSnapshot catalog)
     {
