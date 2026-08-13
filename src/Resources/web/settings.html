@@ -531,7 +531,7 @@
           <option value="ru">Русский (Russian)</option>
           <option value="zh">中文 (Chinese)</option>
         </select>
-        <div class="hint">Uses your configured AI provider to translate the transcript. Requires an API key.</div>
+        <div class="hint" id="translateProviderHint">Uses your configured AI provider to translate the transcript. Requires an API key.</div>
       </div>
 
       <div class="field">
@@ -2365,6 +2365,10 @@ function renderPaidAccount(account) {
   const browserAiHint = document.getElementById('browserAutomationAiHint');
   if (browserAiHint) {
     browserAiHint.textContent = 'Requires the Chrome Helper, Google sign-in, and usable account credits. It never silently launches a separate browser profile.';
+  }
+  const translateProviderHint = document.getElementById('translateProviderHint');
+  if (translateProviderHint) {
+    translateProviderHint.textContent = 'Translation uses your keyboard.wtf account and is included in server-authoritative usage.';
   }
 
   const signedIn = account.signedIn === true;
