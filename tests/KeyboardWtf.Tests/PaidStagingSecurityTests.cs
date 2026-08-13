@@ -264,6 +264,131 @@ public sealed class PaidStagingSecurityTests
         }
     }
 
+    [Fact]
+    public async Task Concurrent_desktop_sign_in_requests_share_one_attempt_and_one_browser_launch()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var (store, directory) = CreateSessionStore();
+        try
+        {
+            var handler = new DesktopLoginHandler();
+            var browserLaunches = 0;
+            using var account = new PaidAccountService(
+                new PaidStagingConfiguration(
+                    true,
+                    false,
+                    new Uri("https://paid-api.example.test/"),
+                    new Uri("https://paid.example.test/")),
+                store,
+                handler,
+                browserUrl =>
+                {
+                    Assert.Contains("desktop-login", browserUrl, StringComparison.Ordinal);
+                    Interlocked.Increment(ref browserLaunches);
+                    _ = Task.Run(async () =>
+                    {
+                        var request = await handler.LoginStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                        var callback = new UriBuilder(request.CallbackUri);
+                        callback.Query = $"attempt=attempt-1&state={Uri.EscapeDataString(request.State)}&code={new string('a', 43)}";
+                        using var client = new HttpClient();
+                        using var response = await client.GetAsync(callback.Uri);
+                        response.EnsureSuccessStatusCode();
+                    });
+                });
+
+            var first = account.SignInAsync();
+            var second = account.SignInAsync();
+            var results = await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal(1, browserLaunches);
+            Assert.Equal("completed", account.SignInState);
+            Assert.True(account.IsSignedIn);
+            Assert.All(results, result => Assert.Equal("uid-1", result.UserId));
+            Assert.Equal(1, handler.StartCalls);
+            Assert.Equal(1, handler.ExchangeCalls);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task Cancelling_desktop_sign_in_stops_the_pending_attempt_without_exchange()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var (store, directory) = CreateSessionStore();
+        try
+        {
+            var handler = new DesktopLoginHandler();
+            var browserLaunches = 0;
+            using var account = new PaidAccountService(
+                new PaidStagingConfiguration(
+                    true,
+                    false,
+                    new Uri("https://paid-api.example.test/"),
+                    new Uri("https://paid.example.test/")),
+                store,
+                handler,
+                _ => Interlocked.Increment(ref browserLaunches));
+
+            var signIn = account.SignInAsync();
+            await handler.LoginStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(await account.CancelSignInAsync());
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => signIn);
+
+            Assert.Equal(1, browserLaunches);
+            Assert.Equal("cancelled", account.SignInState);
+            Assert.False(account.SignInPending);
+            Assert.Equal(0, handler.ExchangeCalls);
+            Assert.False(account.IsSignedIn);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task Existing_desktop_session_refreshes_without_opening_another_browser()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var (store, directory) = CreateSessionStore();
+        try
+        {
+            SaveValidSession(store);
+            var handler = new PaidApiHandler(availableCreditMicros: 0);
+            var browserLaunches = 0;
+            using var account = new PaidAccountService(
+                new PaidStagingConfiguration(
+                    true,
+                    false,
+                    new Uri("https://paid-api.example.test/"),
+                    new Uri("https://paid.example.test/")),
+                store,
+                handler,
+                _ => Interlocked.Increment(ref browserLaunches));
+            await account.InitializeAsync();
+
+            var result = await account.SignInAsync();
+
+            Assert.Equal("uid-1", result.UserId);
+            Assert.Equal(0, browserLaunches);
+            Assert.DoesNotContain(handler.Requests, path =>
+                path.Contains("desktop-login", StringComparison.Ordinal));
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
     private static PaidAccountService CreateAccount(PaidSessionStore store, HttpMessageHandler handler) =>
         new(
             new PaidStagingConfiguration(
@@ -341,6 +466,85 @@ public sealed class PaidStagingSecurityTests
                 }),
                 _ => throw new InvalidOperationException($"Unexpected paid API request: {path}"),
             };
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            };
+        }
+    }
+
+    private sealed record DesktopLoginStartBody(
+        string State,
+        string DeviceNonce,
+        string PkceChallenge,
+        string CallbackUri);
+
+    private sealed class DesktopLoginHandler : HttpMessageHandler
+    {
+        public TaskCompletionSource<DesktopLoginStartBody> LoginStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int StartCalls;
+        public int ExchangeCalls;
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            string payload;
+            switch (path)
+            {
+                case "/v1/desktop-login/start":
+                    Assert.Null(request.Headers.Authorization);
+                    Interlocked.Increment(ref StartCalls);
+                    var startJson = await request.Content!.ReadAsStringAsync(cancellationToken);
+                    var start = JsonSerializer.Deserialize<DesktopLoginStartBody>(
+                        startJson,
+                        new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+                    LoginStarted.TrySetResult(start);
+                    payload = JsonSerializer.Serialize(new
+                    {
+                        attemptId = "attempt-1",
+                        browserUrl = "https://paid.example.test/desktop-login.html?attempt=attempt-1",
+                        expiresAt = DateTimeOffset.UtcNow.AddMinutes(2),
+                    });
+                    break;
+                case "/v1/desktop-login/exchange":
+                    Assert.Null(request.Headers.Authorization);
+                    Interlocked.Increment(ref ExchangeCalls);
+                    payload = JsonSerializer.Serialize(new
+                    {
+                        accessToken = "desktop-access-token",
+                        accessTokenExpiresAt = DateTimeOffset.UtcNow.AddMinutes(10),
+                        refreshToken = "desktop-refresh-token",
+                        refreshTokenExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+                        sessionId = "session-1",
+                        deviceId = "device-1",
+                    });
+                    break;
+                case "/v1/account":
+                    Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
+                    Assert.Equal("desktop-access-token", request.Headers.Authorization?.Parameter);
+                    payload = JsonSerializer.Serialize(new
+                    {
+                        userId = "uid-1",
+                        email = "person@example.test",
+                        displayName = "Test Person",
+                        status = "active",
+                        planId = "none",
+                        availableCreditMicros = 0,
+                        reservedCreditMicros = 0,
+                        cycleUsageCreditMicros = 0,
+                        cycleEndsAt = (DateTimeOffset?)null,
+                        devices = Array.Empty<object>(),
+                        recentUsage = Array.Empty<object>(),
+                        recentPurchases = Array.Empty<object>(),
+                        subscriptionStatus = "none",
+                    });
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unexpected desktop-login request: {path}");
+            }
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),

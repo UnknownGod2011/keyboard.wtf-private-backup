@@ -1453,6 +1453,9 @@ public sealed class WebSettingsService : IDisposable
             recentPurchases = account?.RecentPurchases ?? Array.Empty<PaidPurchaseSnapshot>(),
             lastError = _paidAccount?.LastError ?? "",
             emergencyByokEnabled = _paidAccount?.EmergencyByokEnabled ?? false,
+            signInState = _paidAccount?.SignInState ?? "idle",
+            signInPending = _paidAccount?.SignInPending ?? false,
+            signInExpiresAt = _paidAccount?.SignInExpiresAt,
         };
     }
 
@@ -1466,6 +1469,9 @@ public sealed class WebSettingsService : IDisposable
             {
                 case "/api/paid/sign-in":
                     await _paidAccount.SignInAsync(_cts?.Token ?? CancellationToken.None);
+                    break;
+                case "/api/paid/cancel-sign-in":
+                    await _paidAccount.CancelSignInAsync();
                     break;
                 case "/api/paid/refresh":
                     await _paidAccount.RefreshAccountAsync(_cts?.Token ?? CancellationToken.None);

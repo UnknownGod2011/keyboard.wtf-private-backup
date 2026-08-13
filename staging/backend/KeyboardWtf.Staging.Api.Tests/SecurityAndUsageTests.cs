@@ -1174,6 +1174,134 @@ public sealed class SecurityAndUsageTests
 
     [Fact]
     [Trait("Category", "FirestoreIntegration")]
+    public async Task Firestore_desktop_login_is_state_bound_expiring_and_exactly_once_when_enabled()
+    {
+        var accessToken = Environment.GetEnvironmentVariable("KEYBOARD_WTF_FIRESTORE_TEST_ACCESS_TOKEN");
+        if (string.IsNullOrWhiteSpace(accessToken))
+            return;
+
+        var db = new FirestoreDbBuilder
+        {
+            ProjectId = "keyboard-wtf-staging",
+            Credential = GoogleCredential.FromAccessToken(accessToken),
+        }.Build();
+        var store = new FirestoreAccountStore(db, new SystemClock(), Options.Create(TestOptions()));
+        var suffix = Guid.NewGuid().ToString("N");
+        var caller = new CallerIdentity(
+            $"integration-login-{suffix}",
+            $"login-{suffix}@example.invalid",
+            "Integration Login",
+            "test");
+        DesktopLoginAttempt? attempt = null;
+        DesktopLoginAttempt? expiredAttempt = null;
+        DesktopSessionTokens? session = null;
+        try
+        {
+            await store.EnsureAccountAsync(caller, CancellationToken.None);
+            var state = Crypto.RandomToken(32);
+            var nonce = Crypto.RandomToken(32);
+            var verifier = Crypto.RandomToken(48);
+            attempt = await store.CreateLoginAttemptAsync(
+                Crypto.Sha256(state),
+                Crypto.Sha256(nonce),
+                Crypto.PkceChallenge(verifier),
+                "http://127.0.0.1:49152/keyboard-wtf/callback",
+                DateTimeOffset.UtcNow.AddMinutes(2),
+                CancellationToken.None);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                store.AuthorizeLoginAttemptAsync(
+                    attempt.AttemptId,
+                    Crypto.Sha256(state + "wrong"),
+                    Crypto.Sha256(nonce),
+                    caller.UserId,
+                    CancellationToken.None));
+
+            var authorized = await store.AuthorizeLoginAttemptAsync(
+                attempt.AttemptId,
+                Crypto.Sha256(state),
+                Crypto.Sha256(nonce),
+                caller.UserId,
+                CancellationToken.None);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                store.AuthorizeLoginAttemptAsync(
+                    attempt.AttemptId,
+                    Crypto.Sha256(state),
+                    Crypto.Sha256(nonce),
+                    caller.UserId,
+                    CancellationToken.None));
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                store.ExchangeLoginAttemptAsync(
+                    attempt.AttemptId,
+                    Crypto.Sha256(state),
+                    Crypto.Sha256(nonce),
+                    Crypto.Sha256(authorized.AuthorizationCode + "wrong"),
+                    verifier,
+                    "Integration device",
+                    $"install-{suffix}",
+                    TimeSpan.FromMinutes(10),
+                    TimeSpan.FromDays(30),
+                    CancellationToken.None));
+
+            session = await store.ExchangeLoginAttemptAsync(
+                attempt.AttemptId,
+                Crypto.Sha256(state),
+                Crypto.Sha256(nonce),
+                Crypto.Sha256(authorized.AuthorizationCode),
+                verifier,
+                "Integration device",
+                $"install-{suffix}",
+                TimeSpan.FromMinutes(10),
+                TimeSpan.FromDays(30),
+                CancellationToken.None);
+            var authenticated = await store.AuthenticateDesktopTokenAsync(
+                session.AccessToken,
+                CancellationToken.None);
+            Assert.Equal(caller.UserId, authenticated?.UserId);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                store.ExchangeLoginAttemptAsync(
+                    attempt.AttemptId,
+                    Crypto.Sha256(state),
+                    Crypto.Sha256(nonce),
+                    Crypto.Sha256(authorized.AuthorizationCode),
+                    verifier,
+                    "Integration device",
+                    $"install-{suffix}",
+                    TimeSpan.FromMinutes(10),
+                    TimeSpan.FromDays(30),
+                    CancellationToken.None));
+
+            expiredAttempt = await store.CreateLoginAttemptAsync(
+                Crypto.Sha256(Crypto.RandomToken(32)),
+                Crypto.Sha256(Crypto.RandomToken(32)),
+                Crypto.PkceChallenge(Crypto.RandomToken(48)),
+                "http://127.0.0.1:49153/keyboard-wtf/callback",
+                DateTimeOffset.UtcNow.AddSeconds(-1),
+                CancellationToken.None);
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                store.AuthorizeLoginAttemptAsync(
+                    expiredAttempt.AttemptId,
+                    expiredAttempt.StateHash,
+                    expiredAttempt.DeviceNonceHash,
+                    caller.UserId,
+                    CancellationToken.None));
+        }
+        finally
+        {
+            if (attempt is not null)
+                await db.Collection("desktopLoginAttempts").Document(attempt.AttemptId).DeleteAsync();
+            if (expiredAttempt is not null)
+                await db.Collection("desktopLoginAttempts").Document(expiredAttempt.AttemptId).DeleteAsync();
+            if (session is not null)
+                await db.Collection("desktopSessions").Document(session.SessionId).DeleteAsync();
+            await DeleteIntegrationAccountAsync(db, caller.UserId);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "FirestoreIntegration")]
     public async Task Firestore_multi_account_reservations_are_isolated_when_enabled()
     {
         var accessToken = Environment.GetEnvironmentVariable("KEYBOARD_WTF_FIRESTORE_TEST_ACCESS_TOKEN");

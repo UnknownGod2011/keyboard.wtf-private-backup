@@ -74,7 +74,7 @@ public sealed class FirebaseIdentityService : IIdentityService
                 emailVerified,
                 string.IsNullOrWhiteSpace(signInProvider) ? "missing" : signInProvider);
             throw new UnauthorizedAccessException(
-                "A verified Google sign-in is required for this staging account.");
+                "A verified Google sign-in is required for this keyboard.wtf account.");
         }
         var name = GetString(token.Claims, "name");
         var authenticatedAtUnix = GetLong(token.Claims, "auth_time");

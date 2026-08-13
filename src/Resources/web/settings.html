@@ -617,6 +617,7 @@
 
       <div class="btn-row">
         <button id="paidSignIn" onclick="paidAccountAction('sign-in')">Sign in with Google</button>
+        <button class="ghost" id="paidCancelSignIn" style="display:none" onclick="paidAccountAction('cancel-sign-in')">Cancel sign-in</button>
         <button class="ghost" id="paidRefresh" onclick="paidAccountAction('refresh')">Refresh account</button>
         <button class="ghost" id="paidBilling" onclick="paidAccountAction('billing')">Subscribe / Manage Billing</button>
         <button class="ghost" id="paidManage" onclick="paidAccountAction('manage')">Manage account</button>
@@ -1354,6 +1355,8 @@
 
 <script>
 let currentSettings = {};
+let paidSignInPollTimer;
+let paidSignInRequestPending = false;
 
 // ── Scroll-spy ──────────────────────────────────────────────────────────────
 (function () {
@@ -2372,6 +2375,8 @@ function renderPaidAccount(account) {
   }
 
   const signedIn = account.signedIn === true;
+  const signInPending = account.signInPending === true;
+  const signInState = String(account.signInState || 'idle');
   const available = Number(account.availableCreditMicros || 0);
   const subscriptionAvailable = Number(account.subscriptionAllowanceCreditMicros || 0);
   const subscriptionReserved = Number(account.subscriptionReservedCreditMicros || 0);
@@ -2402,11 +2407,31 @@ function renderPaidAccount(account) {
   document.getElementById('paidBalance').textContent = `${percentage.toFixed(1)}%`;
   document.getElementById('paidBalanceBar').style.width = `${percentage}%`;
   document.getElementById('paidUsage').textContent = `${formatPaidCredits(used)} used this cycle - ${formatPaidCredits(totalUsable)} usable now`;
-  document.getElementById('paidAccountMessage').textContent = account.lastError
+  const signInMessage = signInState === 'starting'
+    ? 'Starting secure Google sign-in...'
+    : signInState === 'waiting_for_google'
+      ? 'Waiting for Google sign-in in your browser...'
+      : signInState === 'cancelling'
+        ? 'Cancelling sign-in...'
+        : signInState === 'cancelled'
+          ? 'Sign-in was cancelled. Try again when ready.'
+          : signInState === 'expired'
+            ? 'The sign-in request expired. Try again to open one fresh request.'
+          : signInState === 'failed'
+            ? (account.lastError || 'Sign-in could not be completed. Try again.')
+            : '';
+  document.getElementById('paidAccountMessage').textContent = signInMessage
+    || account.lastError
     || (signedIn
       ? (available > 0 ? 'Account active.' : 'This account has zero usable credits. Subscribe or manage your plan before running AI tasks.')
       : 'Sign in with Google to connect this Windows device.');
   document.getElementById('paidSignIn').style.display = signedIn ? 'none' : '';
+  document.getElementById('paidSignIn').disabled = signInPending;
+  document.getElementById('paidSignIn').textContent = signInPending
+    ? 'Waiting for Google sign-in...'
+    : (['failed', 'cancelled', 'expired'].includes(signInState) ? 'Try again' : 'Sign in with Google');
+  document.getElementById('paidCancelSignIn').style.display = signInPending ? '' : 'none';
+  document.getElementById('paidCancelSignIn').disabled = false;
   document.getElementById('paidRefresh').disabled = !signedIn;
   document.getElementById('paidBilling').disabled = !signedIn;
   document.getElementById('paidManage').disabled = !signedIn;
@@ -2418,6 +2443,19 @@ function renderPaidAccount(account) {
     `${row.productSku || 'Subscription'} - ${row.status || 'unknown'} - ${formatPaidMoney(row.amountMinor, row.currency)} - ${formatPaidDate(row.createdAt)}`);
   renderPaidRows('paidDevices', account.devices, 'No connected devices.', row =>
     `${row.name || 'Jarvis device'} - ${row.status || 'unknown'} - last seen ${formatPaidDate(row.lastSeenAt)}`);
+  schedulePaidSignInRefresh(signInPending);
+}
+
+function schedulePaidSignInRefresh(pending) {
+  if (paidSignInPollTimer) {
+    clearTimeout(paidSignInPollTimer);
+    paidSignInPollTimer = undefined;
+  }
+  if (!pending) return;
+  paidSignInPollTimer = setTimeout(async () => {
+    paidSignInPollTimer = undefined;
+    await loadSettings();
+  }, 1500);
 }
 
 function renderPaidRows(containerId, rows, emptyText, formatter) {
@@ -2515,10 +2553,20 @@ function formatPaidCredits(micros) {
 }
 
 async function paidAccountAction(action) {
+  if (action === 'sign-in' && paidSignInRequestPending) return;
   if (action === 'sign-out-all'
       && !confirm('Sign out every keyboard.wtf device and session for this account?')) return;
   const buttons = Array.from(document.querySelectorAll('#account-billing button'));
-  buttons.forEach(button => button.disabled = true);
+  if (action === 'sign-in') {
+    paidSignInRequestPending = true;
+    document.getElementById('paidSignIn').disabled = true;
+    document.getElementById('paidSignIn').textContent = 'Waiting for Google sign-in...';
+    document.getElementById('paidCancelSignIn').style.display = '';
+    document.getElementById('paidCancelSignIn').disabled = false;
+    document.getElementById('paidAccountMessage').textContent = 'Waiting for Google sign-in in your browser...';
+  } else if (action !== 'cancel-sign-in') {
+    buttons.forEach(button => button.disabled = true);
+  }
   try {
     const response = await fetch(`/api/paid/${action}`, {
       method: 'POST',
@@ -2526,13 +2574,18 @@ async function paidAccountAction(action) {
     });
     const data = await response.json();
     if (!response.ok || !data.ok) throw new Error(data.error || 'Account action failed');
-    showToast(action === 'sign-in' ? 'Account connected' : 'Account updated');
+    showToast(action === 'sign-in'
+      ? 'Account connected'
+      : action === 'cancel-sign-in'
+        ? 'Sign-in cancelled'
+        : 'Account updated');
     await loadSettings();
   } catch (error) {
     showToast(error.message || 'Account action failed');
     await loadSettings();
   } finally {
-    buttons.forEach(button => button.disabled = false);
+    if (action === 'sign-in') paidSignInRequestPending = false;
+    if (action !== 'cancel-sign-in') buttons.forEach(button => button.disabled = false);
   }
 }
 

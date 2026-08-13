@@ -80,16 +80,23 @@ internal sealed class PaidAccountService : IDisposable
     private readonly PaidStagingConfiguration _configuration;
     private readonly PaidSessionStore _sessionStore;
     private readonly HttpClient _http;
+    private readonly Action<string> _browserLauncher;
     private readonly SemaphoreSlim _authGate = new(1, 1);
+    private readonly object _signInSync = new();
     private PaidSessionTokens _tokens;
     private PaidAccountSnapshot _account;
+    private Task<PaidAccountSnapshot> _activeSignInTask;
+    private CancellationTokenSource _activeSignInCancellation;
+    private string _signInState = "idle";
+    private DateTimeOffset? _signInExpiresAt;
     private string _lastError = "";
     private bool _disposed;
 
     public PaidAccountService(
         PaidStagingConfiguration configuration = null,
         PaidSessionStore sessionStore = null,
-        HttpMessageHandler handler = null)
+        HttpMessageHandler handler = null,
+        Action<string> browserLauncher = null)
     {
         _configuration = configuration ?? PaidStagingConfiguration.FromEnvironment();
         _sessionStore = sessionStore ?? new PaidSessionStore(Path.Combine(
@@ -99,6 +106,11 @@ internal sealed class PaidAccountService : IDisposable
                 : "paid-staging-session.dat"));
         _http = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: true);
         _http.Timeout = TimeSpan.FromSeconds(40);
+        _browserLauncher = browserLauncher ?? (url => Process.Start(new ProcessStartInfo
+        {
+            FileName = url,
+            UseShellExecute = true,
+        }));
     }
 
     public bool Enabled => _configuration.Enabled;
@@ -108,6 +120,22 @@ internal sealed class PaidAccountService : IDisposable
     public PaidAccountSnapshot Account => _account;
     public string LastError => _lastError;
     public Uri WebBaseUri => _configuration.WebBaseUri;
+    public string SignInState
+    {
+        get { lock (_signInSync) return _signInState; }
+    }
+    public DateTimeOffset? SignInExpiresAt
+    {
+        get { lock (_signInSync) return _signInExpiresAt; }
+    }
+    public bool SignInPending
+    {
+        get
+        {
+            lock (_signInSync)
+                return _activeSignInTask is { IsCompleted: false };
+        }
+    }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -127,12 +155,72 @@ internal sealed class PaidAccountService : IDisposable
         }
     }
 
-    public async Task<PaidAccountSnapshot> SignInAsync(CancellationToken cancellationToken = default)
+    public Task<PaidAccountSnapshot> SignInAsync(CancellationToken cancellationToken = default)
     {
         EnsureEnabled();
+        if (IsSignedIn)
+            return RefreshAccountAsync(cancellationToken);
+
+        Task<PaidAccountSnapshot> task;
+        lock (_signInSync)
+        {
+            if (_activeSignInTask is { IsCompleted: false })
+                task = _activeSignInTask;
+            else
+            {
+                _activeSignInCancellation?.Dispose();
+                _activeSignInCancellation = new CancellationTokenSource();
+                _signInState = "starting";
+                _signInExpiresAt = null;
+                _lastError = "";
+                task = _activeSignInTask = RunSignInAsync(_activeSignInCancellation.Token);
+            }
+        }
+        return WaitForSharedSignInAsync(task, cancellationToken);
+    }
+
+    public bool CancelSignIn()
+    {
+        lock (_signInSync)
+        {
+            if (_activeSignInTask is not { IsCompleted: false })
+                return false;
+            _signInState = "cancelling";
+            _activeSignInCancellation?.Cancel();
+            return true;
+        }
+    }
+
+    public async Task<bool> CancelSignInAsync()
+    {
+        Task<PaidAccountSnapshot> task;
+        lock (_signInSync)
+        {
+            if (_activeSignInTask is not { IsCompleted: false })
+                return false;
+            task = _activeSignInTask;
+            _signInState = "cancelling";
+            _activeSignInCancellation?.Cancel();
+        }
+        try
+        {
+            await task;
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected: cancellation is complete only after the shared sign-in
+            // task has unwound and can no longer exchange or persist a session.
+        }
+        return true;
+    }
+
+    private async Task<PaidAccountSnapshot> RunSignInAsync(CancellationToken cancellationToken)
+    {
         await _authGate.WaitAsync(cancellationToken);
         try
         {
+            if (IsSignedIn)
+                return await RefreshAccountAsync(cancellationToken);
             var state = RandomToken(32);
             var nonce = RandomToken(32);
             var verifier = RandomToken(48);
@@ -147,13 +235,28 @@ internal sealed class PaidAccountService : IDisposable
                 authenticated: false,
                 cancellationToken);
 
+            lock (_signInSync)
+            {
+                _signInState = "waiting_for_google";
+                _signInExpiresAt = start.ExpiresAt;
+            }
+
             using var listener = new HttpListener();
             listener.Prefixes.Add($"http://127.0.0.1:{port}/");
             listener.Start();
-            Process.Start(new ProcessStartInfo { FileName = start.BrowserUrl, UseShellExecute = true });
+            _browserLauncher(start.BrowserUrl);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromMinutes(5));
-            var context = await listener.GetContextAsync().WaitAsync(timeout.Token);
+            var remaining = start.ExpiresAt - DateTimeOffset.UtcNow;
+            timeout.CancelAfter(remaining > TimeSpan.Zero ? remaining : TimeSpan.FromMilliseconds(1));
+            HttpListenerContext context;
+            try
+            {
+                context = await listener.GetContextAsync().WaitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException("The desktop sign-in request expired. Try again.");
+            }
             var request = context.Request;
             var callbackState = request.QueryString["state"];
             var callbackAttempt = request.QueryString["attempt"];
@@ -162,33 +265,85 @@ internal sealed class PaidAccountService : IDisposable
                 && string.Equals(callbackState, state, StringComparison.Ordinal)
                 && string.Equals(callbackAttempt, start.AttemptId, StringComparison.Ordinal)
                 && !string.IsNullOrWhiteSpace(authorizationCode);
-            await WriteCallbackResponseAsync(context.Response, valid, timeout.Token);
             if (!valid)
+            {
+                await WriteCallbackResponseAsync(context.Response, false, cancellationToken);
                 throw new UnauthorizedAccessException("The desktop sign-in callback did not match this request.");
+            }
 
-            var exchanged = await SendAsync<SessionTokenResponse>(
-                HttpMethod.Post,
-                "v1/desktop-login/exchange",
-                new
-                {
-                    attemptId = start.AttemptId,
-                    state,
-                    deviceNonce = nonce,
-                    authorizationCode,
-                    pkceVerifier = verifier,
-                    deviceName = Environment.MachineName,
-                    deviceInstallationId,
-                },
-                authenticated: false,
-                cancellationToken);
-            SaveTokens(exchanged, deviceInstallationId);
-            return await RefreshAccountAsync(cancellationToken);
+            PaidAccountSnapshot account;
+            try
+            {
+                var exchanged = await SendAsync<SessionTokenResponse>(
+                    HttpMethod.Post,
+                    "v1/desktop-login/exchange",
+                    new
+                    {
+                        attemptId = start.AttemptId,
+                        state,
+                        deviceNonce = nonce,
+                        authorizationCode,
+                        pkceVerifier = verifier,
+                        deviceName = Environment.MachineName,
+                        deviceInstallationId,
+                    },
+                    authenticated: false,
+                    cancellationToken);
+                SaveTokens(exchanged, deviceInstallationId);
+                account = await RefreshAccountAsync(cancellationToken);
+                await WriteCallbackResponseAsync(context.Response, true, cancellationToken);
+            }
+            catch
+            {
+                await TryWriteCallbackResponseAsync(context.Response, success: false);
+                throw;
+            }
+            lock (_signInSync)
+            {
+                _signInState = "completed";
+                _signInExpiresAt = null;
+            }
+            return account;
+        }
+        catch (OperationCanceledException)
+        {
+            lock (_signInSync)
+            {
+                _signInState = "cancelled";
+                _signInExpiresAt = null;
+            }
+            throw;
+        }
+        catch (TimeoutException exception)
+        {
+            _lastError = exception.Message;
+            lock (_signInSync)
+            {
+                _signInState = "expired";
+                _signInExpiresAt = null;
+            }
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _lastError = UserError(exception);
+            lock (_signInSync)
+            {
+                _signInState = "failed";
+                _signInExpiresAt = null;
+            }
+            throw;
         }
         finally
         {
             _authGate.Release();
         }
     }
+
+    private static async Task<PaidAccountSnapshot> WaitForSharedSignInAsync(
+        Task<PaidAccountSnapshot> task,
+        CancellationToken cancellationToken) =>
+        await task.WaitAsync(cancellationToken);
 
     public async Task<PaidAccountSnapshot> RefreshAccountAsync(CancellationToken cancellationToken = default)
     {
@@ -226,6 +381,7 @@ internal sealed class PaidAccountService : IDisposable
     {
         if (!Enabled)
             return;
+        await CancelSignInAsync();
         try
         {
             if (_tokens is not null)
@@ -242,6 +398,11 @@ internal sealed class PaidAccountService : IDisposable
             _tokens = null;
             _account = null;
             _sessionStore.Clear();
+            lock (_signInSync)
+            {
+                _signInState = "idle";
+                _signInExpiresAt = null;
+            }
         }
     }
 
@@ -463,6 +624,21 @@ internal sealed class PaidAccountService : IDisposable
         response.Close();
     }
 
+    private static async Task TryWriteCallbackResponseAsync(
+        HttpListenerResponse response,
+        bool success)
+    {
+        try
+        {
+            await WriteCallbackResponseAsync(response, success, CancellationToken.None);
+        }
+        catch (Exception exception) when (exception is HttpListenerException or IOException or ObjectDisposedException)
+        {
+            // The browser may have closed the callback tab. The desktop session
+            // result remains authoritative and is surfaced in Settings.
+        }
+    }
+
     private static string RandomToken(int bytes) => Base64Url(RandomNumberGenerator.GetBytes(bytes));
     private static string Base64Url(byte[] bytes) =>
         Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
@@ -492,7 +668,10 @@ internal sealed class PaidAccountService : IDisposable
         if (_disposed)
             return;
         _disposed = true;
-        _authGate.Dispose();
+        CancelSignIn();
+        _activeSignInCancellation?.Dispose();
+        if (_activeSignInTask is not { IsCompleted: false })
+            _authGate.Dispose();
         _http.Dispose();
     }
 
