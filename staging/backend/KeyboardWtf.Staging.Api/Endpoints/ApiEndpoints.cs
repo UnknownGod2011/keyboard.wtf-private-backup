@@ -232,6 +232,13 @@ public static class ApiEndpoints
             request.ProductSku,
             token,
             CatalogService.IsPaymentCanary(options.Value, caller.Email));
+        if (string.Equals(product.Kind, "subscription", StringComparison.Ordinal))
+        {
+            var account = await store.GetAccountAsync(caller.UserId, token);
+            if (!CanStartSubscriptionCheckout(account.SubscriptionStatus))
+                throw new InvalidOperationException(
+                    "This account already has a subscription that must be managed before starting another checkout.");
+        }
         var purchaseId = $"pur_{Crypto.Sha256($"{caller.UserId}:{request.IdempotencyKey}")[..24]}";
         if (!await store.BeginPurchaseAsync(
                 caller.UserId, purchaseId, product, request.IdempotencyKey, token))
@@ -261,6 +268,10 @@ public static class ApiEndpoints
             throw;
         }
     }
+
+    internal static bool CanStartSubscriptionCheckout(string? subscriptionStatus) =>
+        (subscriptionStatus ?? "none").Trim().ToLowerInvariant() is
+            "" or "none" or "cancelled" or "completed" or "expired" or "failed";
 
     private static async Task<IResult> ConfirmCheckoutAsync(
         CheckoutConfirmationRequest request,

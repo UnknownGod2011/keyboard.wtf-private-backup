@@ -2056,6 +2056,22 @@ public sealed class SecurityAndUsageTests
         Assert.DoesNotContain("code=", response.BrowserUrl, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("none", true)]
+    [InlineData("cancelled", true)]
+    [InlineData("completed", true)]
+    [InlineData("expired", true)]
+    [InlineData("failed", true)]
+    [InlineData("active", false)]
+    [InlineData("authenticated", false)]
+    [InlineData("pending", false)]
+    [InlineData("paused", false)]
+    [InlineData("halted", false)]
+    public void Subscription_checkout_is_blocked_while_an_existing_subscription_requires_management(
+        string status,
+        bool expected) =>
+        Assert.Equal(expected, ApiEndpoints.CanStartSubscriptionCheckout(status));
+
     [Fact]
     public void Live_proxy_applies_server_owned_setup_policy()
     {
