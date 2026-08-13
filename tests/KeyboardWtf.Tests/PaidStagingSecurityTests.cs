@@ -396,6 +396,38 @@ public sealed class PaidStagingSecurityTests
     }
 
     [Fact]
+    public async Task Restored_session_reports_loading_until_authoritative_account_arrives()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var (store, directory) = CreateSessionStore();
+        try
+        {
+            SaveValidSession(store);
+            var handler = new BlockingAccountHandler();
+            using var account = CreateAccount(store, handler);
+
+            var initialize = account.InitializeAsync();
+            await handler.AccountRequested.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(account.IsSignedIn);
+            Assert.True(account.IsAccountLoading);
+            Assert.Null(account.Account);
+
+            handler.ReleaseAccount.TrySetResult();
+            await initialize.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.False(account.IsAccountLoading);
+            Assert.NotNull(account.Account);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task Switching_accounts_revokes_the_current_session_and_forces_one_account_chooser()
     {
         if (!OperatingSystem.IsWindows())
@@ -527,6 +559,44 @@ public sealed class PaidStagingSecurityTests
                 }),
                 _ => throw new InvalidOperationException($"Unexpected paid API request: {path}"),
             };
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            };
+        }
+    }
+
+    private sealed class BlockingAccountHandler : HttpMessageHandler
+    {
+        public TaskCompletionSource AccountRequested { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseAccount { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal("/v1/account", request.RequestUri!.AbsolutePath);
+            Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
+            AccountRequested.TrySetResult();
+            await ReleaseAccount.Task.WaitAsync(cancellationToken);
+            var payload = JsonSerializer.Serialize(new
+            {
+                userId = "uid-1",
+                email = "person@example.test",
+                displayName = "Test Person",
+                status = "active",
+                planId = "monthly_standard_inr_999_v1",
+                availableCreditMicros = 500_000_000,
+                reservedCreditMicros = 0,
+                cycleUsageCreditMicros = 0,
+                cycleEndsAt = DateTimeOffset.UtcNow.AddDays(30),
+                devices = Array.Empty<object>(),
+                recentUsage = Array.Empty<object>(),
+                recentPurchases = Array.Empty<object>(),
+                subscriptionStatus = "active",
+            });
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),

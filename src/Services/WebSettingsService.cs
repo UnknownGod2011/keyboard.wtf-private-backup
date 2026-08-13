@@ -1433,6 +1433,7 @@ public sealed class WebSettingsService : IDisposable
         {
             enabled = _paidAccount?.Enabled ?? false,
             signedIn = _paidAccount?.IsSignedIn ?? false,
+            accountLoading = _paidAccount?.IsAccountLoading ?? false,
             email = account?.Email ?? "",
             displayName = account?.DisplayName ?? "",
             status = account?.Status ?? "signed_out",

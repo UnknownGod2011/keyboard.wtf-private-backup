@@ -2398,6 +2398,7 @@ function renderPaidAccount(account) {
   }
 
   const signedIn = account.signedIn === true;
+  const accountLoading = account.accountLoading === true;
   const signInPending = account.signInPending === true;
   const signInState = String(account.signInState || 'idle');
   paidLastSignInState = signInState;
@@ -2416,21 +2417,27 @@ function renderPaidAccount(account) {
     ? subscriptionOriginal
     : Math.max(0, remaining + used);
   const percentage = total > 0 ? Math.max(0, Math.min(100, remaining * 100 / total)) : 0;
-  document.getElementById('paidAccountDot').className = signedIn ? 'dot ok' : 'dot warn';
-  document.getElementById('paidPlanDot').className = account.planId && account.planId !== 'none' ? 'dot ok' : 'dot';
+  document.getElementById('paidAccountDot').className = signedIn && !accountLoading ? 'dot ok' : 'dot warn';
+  document.getElementById('paidPlanDot').className = !accountLoading && account.planId && account.planId !== 'none' ? 'dot ok' : 'dot';
   document.getElementById('paidDeviceDot').className = account.deviceId ? 'dot ok' : 'dot';
   document.getElementById('paidCycleDot').className = account.cycleEndsAt ? 'dot ok' : 'dot';
   document.getElementById('paidAccountIdentity').textContent = signedIn
-    ? (account.displayName ? `${account.displayName} (${account.email})` : account.email)
+    ? (accountLoading ? 'Checking account...' : (account.displayName ? `${account.displayName} (${account.email})` : account.email))
     : 'Signed out';
-  document.getElementById('paidPlan').textContent = `${formatPaidPlan(account.planId)} - ${account.subscriptionStatus || 'none'}`;
-  document.getElementById('paidDevice').textContent = account.deviceId || 'Not connected';
-  document.getElementById('paidCycle').textContent = account.cycleEndsAt
+  document.getElementById('paidPlan').textContent = accountLoading
+    ? 'Loading authoritative plan...'
+    : `${formatPaidPlan(account.planId)} - ${account.subscriptionStatus || 'none'}`;
+  document.getElementById('paidDevice').textContent = accountLoading ? 'Checking session...' : (account.deviceId || 'Not connected');
+  document.getElementById('paidCycle').textContent = accountLoading
+    ? 'Checking billing cycle...'
+    : account.cycleEndsAt
     ? `Renews ${new Date(account.cycleEndsAt).toLocaleDateString()}`
     : 'No active cycle';
-  document.getElementById('paidBalance').textContent = `${percentage.toFixed(1)}%`;
-  document.getElementById('paidBalanceBar').style.width = `${percentage}%`;
-  document.getElementById('paidUsage').textContent = `${formatPaidCredits(used)} used this cycle - ${formatPaidCredits(totalUsable)} usable now`;
+  document.getElementById('paidBalance').textContent = accountLoading ? '...' : `${percentage.toFixed(1)}%`;
+  document.getElementById('paidBalanceBar').style.width = accountLoading ? '0' : `${percentage}%`;
+  document.getElementById('paidUsage').textContent = accountLoading
+    ? 'Loading server-owned usage...'
+    : `${formatPaidCredits(used)} used this cycle - ${formatPaidCredits(totalUsable)} usable now`;
   const signInMessage = signInState === 'starting'
     ? 'Starting secure Google sign-in...'
     : signInState === 'waiting_for_google'
@@ -2446,6 +2453,7 @@ function renderPaidAccount(account) {
             : '';
   document.getElementById('paidAccountMessage').textContent = signInMessage
     || account.lastError
+    || (accountLoading ? 'Restoring your secure account and current usage...' : '')
     || (signedIn
       ? (available > 0 ? 'Account active.' : 'This account has zero usable credits. Subscribe or manage your plan before running AI tasks.')
       : 'Sign in with Google to connect this Windows device.');
@@ -2457,8 +2465,8 @@ function renderPaidAccount(account) {
   document.getElementById('paidCancelSignIn').style.display = signInPending ? '' : 'none';
   document.getElementById('paidCancelSignIn').disabled = false;
   document.getElementById('paidRefresh').disabled = !signedIn;
-  document.getElementById('paidBilling').disabled = !signedIn;
-  document.getElementById('paidManage').disabled = !signedIn;
+  document.getElementById('paidBilling').disabled = !signedIn || accountLoading;
+  document.getElementById('paidManage').disabled = !signedIn || accountLoading;
   document.getElementById('paidSwitchAccount').style.display = signedIn ? '' : 'none';
   document.getElementById('paidSignOut').style.display = signedIn ? '' : 'none';
   document.getElementById('paidSignOutAll').style.display = signedIn ? '' : 'none';

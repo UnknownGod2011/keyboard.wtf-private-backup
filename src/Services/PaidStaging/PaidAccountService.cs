@@ -117,6 +117,7 @@ internal sealed class PaidAccountService : IDisposable
     public bool EmergencyByokEnabled => _configuration.EmergencyByokEnabled;
     public bool PreserveExistingRegistrations => _configuration.PreserveExistingRegistrations;
     public bool IsSignedIn => _tokens is not null && _tokens.RefreshTokenExpiresAt > DateTimeOffset.UtcNow;
+    public bool IsAccountLoading => IsSignedIn && _account is null;
     public PaidAccountSnapshot Account => _account;
     public string LastError => _lastError;
     public Uri WebBaseUri => _configuration.WebBaseUri;
