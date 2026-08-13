@@ -2466,7 +2466,11 @@ function renderPaidAccount(account) {
   document.getElementById('paidPlan').textContent = accountLoading
     ? 'Loading authoritative plan...'
     : `${account.planDisplayName || formatPaidPlan(account.planId)} - ${formatPaidStatus(account.subscriptionStatus || 'none')}`;
-  document.getElementById('paidDevice').textContent = accountLoading ? 'Checking session...' : (account.deviceId || 'Not connected');
+  document.getElementById('paidDevice').textContent = accountLoading
+    ? 'Checking session...'
+    : account.deviceName
+      ? `${account.deviceName} - ${account.devicePlatform || 'Windows'}`
+      : 'Not connected';
   document.getElementById('paidCycle').textContent = accountLoading
     ? 'Checking billing cycle...'
     : account.subscriptionCancellationStatus === 'scheduled' && account.subscriptionCancelsAt

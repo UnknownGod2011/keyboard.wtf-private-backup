@@ -1429,6 +1429,9 @@ public sealed class WebSettingsService : IDisposable
     private object PaidAccountSettingsSnapshot()
     {
         var account = _paidAccount?.Account;
+        var currentDevice = account?.Devices?.FirstOrDefault(device => device.IsCurrent)
+            ?? account?.Devices?.FirstOrDefault(device =>
+                string.Equals(device.Status, "active", StringComparison.OrdinalIgnoreCase));
         return new
         {
             enabled = _paidAccount?.Enabled ?? false,
@@ -1453,13 +1456,52 @@ public sealed class WebSettingsService : IDisposable
             subscriptionConsumedCreditMicros = account?.SubscriptionConsumedCreditMicros ?? 0,
             topUpCreditMicros = account?.TopUpCreditMicros ?? 0,
             cycleEndsAt = account?.CycleEndsAt,
-            deviceId = account?.Devices?.FirstOrDefault(device => device.IsCurrent)?.DeviceId
-                ?? account?.Devices?.FirstOrDefault(device =>
-                    string.Equals(device.Status, "active", StringComparison.OrdinalIgnoreCase))?.DeviceId
-                ?? "",
-            devices = account?.Devices ?? Array.Empty<PaidDeviceSnapshot>(),
-            recentUsage = account?.RecentUsage ?? Array.Empty<PaidUsageSnapshot>(),
-            recentPurchases = account?.RecentPurchases ?? Array.Empty<PaidPurchaseSnapshot>(),
+            deviceId = currentDevice?.DeviceId ?? "",
+            deviceName = currentDevice?.Name ?? "",
+            devicePlatform = currentDevice?.Platform ?? "Windows",
+            devices = account?.Devices?.Select(device => new
+            {
+                deviceId = device.DeviceId,
+                name = device.Name,
+                status = device.Status,
+                lastSeenAt = device.LastSeenAt,
+                createdAt = device.CreatedAt,
+                platform = device.Platform,
+                isCurrent = device.IsCurrent,
+            }).ToArray() ?? [],
+            recentUsage = account?.RecentUsage?.Select(usage => new
+            {
+                requestId = usage.RequestId,
+                model = usage.Model,
+                outcome = usage.Outcome,
+                chargedCreditMicros = usage.ChargedCreditMicros,
+                inputTokens = usage.InputTokens,
+                outputTokens = usage.OutputTokens,
+                createdAt = usage.CreatedAt,
+                activityType = usage.ActivityType,
+                pricingVersion = usage.PricingVersion,
+                cachedInputTokens = usage.CachedInputTokens,
+                reasoningTokens = usage.ReasoningTokens,
+                inputAudioTokens = usage.InputAudioTokens,
+                outputAudioTokens = usage.OutputAudioTokens,
+                inputImageTokens = usage.InputImageTokens,
+                outputImageTokens = usage.OutputImageTokens,
+                usageEstimated = usage.UsageEstimated,
+                providerModelVersion = usage.ProviderModelVersion,
+                accountingStatus = usage.AccountingStatus,
+            }).ToArray() ?? [],
+            recentPurchases = account?.RecentPurchases?.Select(purchase => new
+            {
+                purchaseId = purchase.PurchaseId,
+                productSku = purchase.ProductSku,
+                provider = purchase.Provider,
+                status = purchase.Status,
+                amountMinor = purchase.AmountMinor,
+                currency = purchase.Currency,
+                createdAt = purchase.CreatedAt,
+                fulfilled = purchase.Fulfilled,
+                displayName = purchase.DisplayName,
+            }).ToArray() ?? [],
             lastError = _paidAccount?.LastError ?? "",
             emergencyByokEnabled = _paidAccount?.EmergencyByokEnabled ?? false,
             signInState = _paidAccount?.SignInState ?? "idle",
