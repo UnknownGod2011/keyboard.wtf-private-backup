@@ -13,7 +13,12 @@ closed and a human explicitly approves the production operation.
 4. Run a locked restore, Release build, unit tests, the real isolated Firestore
    gate, frontend/extension syntax checks, secret scan, and transitive
    vulnerability scan.
-5. Verify staging payment reconciliation, usage reconciliation, ledger
+5. Run `scripts/production/configure-runtime-identity.ps1` for the production
+   project and verify the Cloud Run runtime has
+   `roles/firebaseauth.viewer`. This read-only permission is required by the
+   server's revocation-aware Firebase ID-token validation; do not work around a
+   missing role by disabling `checkRevoked`.
+6. Verify staging payment reconciliation, usage reconciliation, ledger
    invariants, kill switches, backups, monitoring, and the release gates.
 
 ## 2. Build and authenticate the candidate
