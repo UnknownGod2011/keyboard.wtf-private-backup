@@ -2035,12 +2035,23 @@ public sealed class FirestoreAccountStore : IAccountStore
                     && (subscriptionLifecycleEvent || recurringCharge))
                 {
                     var subscriptionFulfilled = purchaseCredited || shouldCredit;
-                    accountUpdates["planId"] = PlanAfterSubscriptionStatus(
-                        String(accountData, "planId", "none"),
-                        String(purchaseData, "productSku", "none"),
+                    var currentPlan = String(accountData, "planId", "none");
+                    var accountCycleEnd = Date(accountData, "cycleEndsAt");
+                    var retainedCycleEnd = subscriptionCycleEndsAt
+                        ?? (accountCycleEnd == DateTimeOffset.UnixEpoch ? null : accountCycleEnd);
+                    var retainCancelledCycle = ShouldRetainCancelledSubscriptionCycle(
                         status,
-                        subscriptionFulfilled);
-                    accountUpdates["subscriptionStatus"] = status;
+                        subscriptionFulfilled,
+                        retainedCycleEnd,
+                        now);
+                    accountUpdates["planId"] = retainCancelledCycle
+                        ? currentPlan
+                        : PlanAfterSubscriptionStatus(
+                            currentPlan,
+                            String(purchaseData, "productSku", "none"),
+                            status,
+                            subscriptionFulfilled);
+                    accountUpdates["subscriptionStatus"] = retainCancelledCycle ? "active" : status;
                     if (string.Equals(status, "active", StringComparison.OrdinalIgnoreCase)
                         && subscriptionFulfilled)
                     {
@@ -2055,6 +2066,13 @@ public sealed class FirestoreAccountStore : IAccountStore
                         }
                         if (subscriptionCycleEndsAt is DateTimeOffset activeCycleEnd)
                             accountUpdates["cycleEndsAt"] = Ts(activeCycleEnd);
+                    }
+                    else if (retainCancelledCycle && retainedCycleEnd is DateTimeOffset retainedEnd)
+                    {
+                        accountUpdates["subscriptionCancellationStatus"] = "scheduled";
+                        accountUpdates["subscriptionCancellationProviderStatus"] = status;
+                        accountUpdates["subscriptionCancelsAt"] = Ts(retainedEnd);
+                        accountUpdates["cycleEndsAt"] = Ts(retainedEnd);
                     }
                     else if (IsTerminalSubscriptionStatus(status))
                     {
@@ -2595,6 +2613,16 @@ public sealed class FirestoreAccountStore : IAccountStore
             "cancelled" or "completed" or "expired" or "halted" => "none",
             _ => currentPlan,
         };
+
+    internal static bool ShouldRetainCancelledSubscriptionCycle(
+        string? providerStatus,
+        bool fulfilled,
+        DateTimeOffset? cycleEndsAt,
+        DateTimeOffset now) =>
+        fulfilled
+        && string.Equals(providerStatus?.Trim(), "cancelled", StringComparison.OrdinalIgnoreCase)
+        && cycleEndsAt is DateTimeOffset boundary
+        && boundary > now;
 
     internal static bool ShouldApplySubscriptionAccountState(
         string currentSubscriptionId,

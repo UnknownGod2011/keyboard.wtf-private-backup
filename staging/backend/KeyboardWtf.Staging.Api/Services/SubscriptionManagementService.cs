@@ -45,7 +45,10 @@ public sealed class SubscriptionManagementService
             var providerResult = await _provider.CancelSubscriptionAtCycleEndAsync(
                 request.ProviderSubscriptionId,
                 cancellationToken);
-            var cancelsAt = ValidateScheduledCancellation(providerResult, request.CycleEndsAt);
+            var cancelsAt = ValidateScheduledCancellation(
+                providerResult,
+                request.CycleEndsAt,
+                _clock.UtcNow);
             await MarkScheduledAsync(
                 userId,
                 request,
@@ -61,10 +64,14 @@ public sealed class SubscriptionManagementService
                 var inspection = await _provider.InspectSubscriptionAsync(
                     request.ProviderSubscriptionId,
                     cancellationToken);
-                if (IsScheduledAtCycleEnd(inspection))
+                var cancellationBoundary = CancellationBoundary(
+                    inspection.Status,
+                    inspection.HasScheduledChanges,
+                    inspection.ScheduledChangeAt,
+                    inspection.CurrentCycleEndsAt ?? request.CycleEndsAt,
+                    _clock.UtcNow);
+                if (cancellationBoundary is DateTimeOffset cancelsAt)
                 {
-                    var cancelsAt = inspection.CurrentCycleEndsAt ?? request.CycleEndsAt
-                        ?? throw new InvalidOperationException("Razorpay did not return the cancellation date.");
                     await MarkScheduledAsync(
                         userId,
                         request,
@@ -109,17 +116,21 @@ public sealed class SubscriptionManagementService
                     StringComparison.Ordinal))
                 return 0;
 
-            if (IsScheduledAtCycleEnd(inspection))
+            var cancellationBoundary = CancellationBoundary(
+                inspection.Status,
+                inspection.HasScheduledChanges,
+                inspection.ScheduledChangeAt,
+                inspection.CurrentCycleEndsAt,
+                now);
+            if (cancellationBoundary is DateTimeOffset cancelsAt)
             {
-                var cancelsAt = inspection.CurrentCycleEndsAt;
-                if (cancelsAt is not null)
-                    transaction.Update(accountRef, new Dictionary<string, object>
-                    {
-                        ["subscriptionCancellationStatus"] = "scheduled",
-                        ["subscriptionCancelsAt"] = Timestamp.FromDateTime(cancelsAt.Value.UtcDateTime),
-                        ["subscriptionCancellationProviderStatus"] = inspection.Status,
-                        ["updatedAt"] = Timestamp.FromDateTime(now.UtcDateTime),
-                    });
+                transaction.Update(accountRef, new Dictionary<string, object>
+                {
+                    ["subscriptionCancellationStatus"] = "scheduled",
+                    ["subscriptionCancelsAt"] = Timestamp.FromDateTime(cancelsAt.UtcDateTime),
+                    ["subscriptionCancellationProviderStatus"] = inspection.Status,
+                    ["updatedAt"] = Timestamp.FromDateTime(now.UtcDateTime),
+                });
             }
             else if (string.Equals(inspection.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
             {
@@ -276,13 +287,35 @@ public sealed class SubscriptionManagementService
 
     internal static DateTimeOffset ValidateScheduledCancellation(
         ProviderSubscriptionCancellation result,
-        DateTimeOffset? accountCycleEndsAt)
+        DateTimeOffset? accountCycleEndsAt,
+        DateTimeOffset now)
     {
-        if (!result.HasScheduledChanges
-            || !string.Equals(result.ScheduledChangeAt, "cycle_end", StringComparison.OrdinalIgnoreCase))
+        var boundary = CancellationBoundary(
+            result.Status,
+            result.HasScheduledChanges,
+            result.ScheduledChangeAt,
+            result.CurrentCycleEndsAt ?? accountCycleEndsAt,
+            now);
+        if (boundary is null)
             throw new InvalidOperationException("Razorpay did not schedule cancellation at the billing-cycle boundary.");
-        return result.CurrentCycleEndsAt ?? accountCycleEndsAt
-            ?? throw new InvalidOperationException("Razorpay did not return the cancellation date.");
+        return boundary.Value;
+    }
+
+    internal static DateTimeOffset? CancellationBoundary(
+        string providerStatus,
+        bool hasScheduledChanges,
+        string? scheduledChangeAt,
+        DateTimeOffset? cycleEndsAt,
+        DateTimeOffset now)
+    {
+        if (cycleEndsAt is null || cycleEndsAt <= now)
+            return null;
+        if (hasScheduledChanges
+            && string.Equals(scheduledChangeAt, "cycle_end", StringComparison.OrdinalIgnoreCase))
+            return cycleEndsAt;
+        return string.Equals(providerStatus, "cancelled", StringComparison.OrdinalIgnoreCase)
+            ? cycleEndsAt
+            : null;
     }
 
     private DocumentReference Account(string userId)

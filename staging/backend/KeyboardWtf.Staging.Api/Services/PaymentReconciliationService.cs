@@ -223,8 +223,12 @@ public sealed class PaymentReconciliationService
 
                 stage = "apply_subscription_lifecycle";
                 var lifecycleEvent = SubscriptionLifecycleEvent(subscription.Status);
+                var lifecyclePhase = TerminalLifecyclePhase(
+                    subscription.Status,
+                    subscription.CurrentCycleEndsAt,
+                    _clock.UtcNow);
                 var lifecycle = await _store.ApplyPaymentWebhookAsync(
-                    $"reconcile:v2:{objectId}:{String(data, "status", "unknown")}:to:{subscription.Status}",
+                    $"reconcile:v3:{objectId}:{String(data, "status", "unknown")}:to:{subscription.Status}:{lifecyclePhase}",
                     lifecycleEvent,
                     objectId,
                     null,
@@ -538,6 +542,16 @@ public sealed class PaymentReconciliationService
             "expired" => "subscription.completed",
             _ => "subscription.updated",
         };
+
+    internal static string TerminalLifecyclePhase(
+        string? status,
+        DateTimeOffset? cycleEndsAt,
+        DateTimeOffset now) =>
+        status?.Trim().ToLowerInvariant() is "cancelled" or "completed" or "expired" or "halted"
+            ? cycleEndsAt is DateTimeOffset boundary && boundary > now
+                ? "before-cycle-end"
+                : "after-cycle-end"
+            : "current";
 
     private static bool MatchesPurchase(string? providerPurchaseId, string purchaseId) =>
         !string.IsNullOrWhiteSpace(providerPurchaseId)

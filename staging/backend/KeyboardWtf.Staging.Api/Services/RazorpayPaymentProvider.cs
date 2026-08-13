@@ -113,7 +113,47 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
             $"subscriptions/{subscriptionId}/cancel",
             new { cancel_at_cycle_end = true },
             cancellationToken);
-        var root = document.RootElement;
+        var scheduled = ParseSubscriptionCancellation(document.RootElement, subscriptionId);
+        if (IsScheduledAtCycleEnd(scheduled))
+            return scheduled;
+
+        // Some recurring UPI subscriptions acknowledge cancel_at_cycle_end
+        // without scheduling it. Confirm the state before stopping the provider
+        // mandate immediately; the account service preserves the already-paid
+        // entitlement until the verified current_end boundary.
+        await Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken);
+        var confirmed = await InspectSubscriptionCancellationStateAsync(subscriptionId, cancellationToken);
+        if (IsScheduledAtCycleEnd(confirmed)
+            || string.Equals(confirmed.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
+            return confirmed;
+
+        using var immediateDocument = await SendAsync(
+            HttpMethod.Post,
+            $"subscriptions/{subscriptionId}/cancel",
+            new { cancel_at_cycle_end = false },
+            cancellationToken);
+        var immediate = ParseSubscriptionCancellation(immediateDocument.RootElement, subscriptionId);
+        if (!string.Equals(immediate.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Razorpay did not stop the recurring subscription.");
+        return immediate;
+    }
+
+    private async Task<ProviderSubscriptionCancellation> InspectSubscriptionCancellationStateAsync(
+        string subscriptionId,
+        CancellationToken cancellationToken)
+    {
+        using var document = await SendAsync(
+            HttpMethod.Get,
+            $"subscriptions/{subscriptionId}",
+            null,
+            cancellationToken);
+        return ParseSubscriptionCancellation(document.RootElement, subscriptionId);
+    }
+
+    private static ProviderSubscriptionCancellation ParseSubscriptionCancellation(
+        JsonElement root,
+        string subscriptionId)
+    {
         var returnedId = Text(root, "id");
         if (!string.Equals(returnedId, subscriptionId, StringComparison.Ordinal))
             throw new InvalidOperationException("Razorpay returned another subscription during cancellation.");
@@ -125,6 +165,10 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
             UnixTime(root, "current_end"),
             UnixTime(root, "change_scheduled_at"));
     }
+
+    private static bool IsScheduledAtCycleEnd(ProviderSubscriptionCancellation cancellation) =>
+        cancellation.HasScheduledChanges
+        && string.Equals(cancellation.ScheduledChangeAt, "cycle_end", StringComparison.OrdinalIgnoreCase);
 
     public async Task<ProviderOrderInspection> InspectOrderAsync(
         string orderId,

@@ -555,6 +555,35 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
+    public async Task Razorpay_cycle_end_cancellation_stops_a_provider_mandate_when_scheduling_is_a_noop()
+    {
+        Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", "rzp_test_public");
+        Environment.SetEnvironmentVariable("RAZORPAY_KEY_SECRET", "unit_test_secret");
+        try
+        {
+            var handler = new RazorpayCancellationNoopHandler();
+            var provider = new RazorpayPaymentProvider(
+                new HttpClient(handler),
+                Options.Create(TestOptions()));
+
+            var result = await provider.CancelSubscriptionAtCycleEndAsync(
+                "sub_123",
+                CancellationToken.None);
+
+            Assert.Equal("cancelled", result.Status);
+            Assert.NotNull(result.CurrentCycleEndsAt);
+            Assert.Equal(
+                ["POST:cycle_end", "GET:inspect", "POST:immediate"],
+                handler.Calls);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", null);
+            Environment.SetEnvironmentVariable("RAZORPAY_KEY_SECRET", null);
+        }
+    }
+
+    [Fact]
     public async Task Razorpay_cycle_end_cancellation_rejects_a_mismatched_provider_subscription()
     {
         Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", "rzp_test_public");
@@ -580,14 +609,27 @@ public sealed class SecurityAndUsageTests
     [Fact]
     public void Scheduled_subscription_cancellation_requires_cycle_end_provider_evidence()
     {
+        var now = DateTimeOffset.Parse("2026-08-13T00:00:00Z");
         var cycleEnd = DateTimeOffset.Parse("2026-09-13T00:00:00Z");
         var valid = new ProviderSubscriptionCancellation(
-            "sub_123", "active", true, "cycle_end", cycleEnd, DateTimeOffset.UtcNow);
-        Assert.Equal(cycleEnd, SubscriptionManagementService.ValidateScheduledCancellation(valid, cycleEnd));
+            "sub_123", "active", true, "cycle_end", cycleEnd, now);
+        Assert.Equal(cycleEnd, SubscriptionManagementService.ValidateScheduledCancellation(valid, cycleEnd, now));
+
+        var stoppedProviderMandate = valid with
+        {
+            Status = "cancelled",
+            HasScheduledChanges = false,
+            ScheduledChangeAt = null,
+        };
+        Assert.Equal(
+            cycleEnd,
+            SubscriptionManagementService.ValidateScheduledCancellation(stoppedProviderMandate, cycleEnd, now));
 
         var invalid = valid with { HasScheduledChanges = false, ScheduledChangeAt = "now" };
         Assert.Throws<InvalidOperationException>(() =>
-            SubscriptionManagementService.ValidateScheduledCancellation(invalid, cycleEnd));
+            SubscriptionManagementService.ValidateScheduledCancellation(invalid, cycleEnd, now));
+        Assert.Throws<InvalidOperationException>(() =>
+            SubscriptionManagementService.ValidateScheduledCancellation(stoppedProviderMandate, cycleEnd, cycleEnd));
     }
 
     [Fact]
@@ -892,6 +934,28 @@ public sealed class SecurityAndUsageTests
         Assert.Equal(
             expected,
             FirestoreAccountStore.PlanAfterSubscriptionStatus(currentPlan, productSku, status, fulfilled));
+
+    [Fact]
+    public void Cancelled_provider_subscription_retains_only_its_paid_unexpired_cycle()
+    {
+        var now = DateTimeOffset.Parse("2026-08-13T00:00:00Z");
+        var cycleEnd = now.AddMonths(1);
+
+        Assert.True(FirestoreAccountStore.ShouldRetainCancelledSubscriptionCycle(
+            "cancelled", true, cycleEnd, now));
+        Assert.False(FirestoreAccountStore.ShouldRetainCancelledSubscriptionCycle(
+            "active", true, cycleEnd, now));
+        Assert.False(FirestoreAccountStore.ShouldRetainCancelledSubscriptionCycle(
+            "cancelled", true, cycleEnd, cycleEnd));
+        Assert.False(FirestoreAccountStore.ShouldRetainCancelledSubscriptionCycle(
+            "cancelled", false, cycleEnd, now));
+        Assert.Equal(
+            "before-cycle-end",
+            PaymentReconciliationService.TerminalLifecyclePhase("cancelled", cycleEnd, now));
+        Assert.Equal(
+            "after-cycle-end",
+            PaymentReconciliationService.TerminalLifecyclePhase("cancelled", cycleEnd, cycleEnd));
+    }
 
     [Theory]
     [InlineData("", "sub_old", "cancelled", false, 0, 0, false)]
@@ -1989,6 +2053,83 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
+    [Trait("Category", "FirestoreIntegration")]
+    public async Task Firestore_provider_cancellation_keeps_the_paid_cycle_then_expires_it_when_enabled()
+    {
+        var accessToken = Environment.GetEnvironmentVariable("KEYBOARD_WTF_FIRESTORE_TEST_ACCESS_TOKEN");
+        if (string.IsNullOrWhiteSpace(accessToken))
+            return;
+
+        var db = new FirestoreDbBuilder
+        {
+            ProjectId = "keyboard-wtf-staging",
+            Credential = GoogleCredential.FromAccessToken(accessToken),
+        }.Build();
+        var suffix = Guid.NewGuid().ToString("N");
+        var caller = new CallerIdentity(
+            $"integration-cancel-cycle-{suffix}",
+            $"cancel-cycle-{suffix}@example.invalid",
+            "Integration Cancellation",
+            "test");
+        var account = db.Collection("accounts").Document(caller.UserId);
+        var subscriptionId = $"sub_{suffix}";
+        var purchaseId = $"pur_{suffix}";
+        var paymentId = $"pay_{suffix}";
+        var cycleEnd = DateTimeOffset.Parse("2026-09-01T00:00:00Z");
+        try
+        {
+            var beforeCycleStore = new FirestoreAccountStore(
+                db,
+                new FixedClock(DateTimeOffset.Parse("2026-08-15T00:00:00Z")),
+                Options.Create(TestOptions()));
+            await beforeCycleStore.EnsureAccountAsync(caller, CancellationToken.None);
+            Assert.True(await beforeCycleStore.BeginPurchaseAsync(
+                caller.UserId,
+                purchaseId,
+                new CatalogProduct("monthly_integration", "subscription", "Monthly", 9_900, "INR", 500_000_000, "plan_test", true),
+                $"idem_{suffix}",
+                CancellationToken.None));
+            await beforeCycleStore.AttachPurchaseProviderObjectAsync(
+                caller.UserId, purchaseId, subscriptionId, "subscription", CancellationToken.None);
+            await beforeCycleStore.ApplyPaymentWebhookAsync(
+                $"evt_charge_{suffix}", "subscription.charged", subscriptionId,
+                paymentId, null, subscriptionId, purchaseId, paymentId, 9_900, "active", CancellationToken.None,
+                cycleEnd, "INR", "monthly_integration");
+            await account.UpdateAsync(new Dictionary<string, object>
+            {
+                ["subscriptionCancellationStatus"] = "requesting",
+            });
+
+            await beforeCycleStore.ApplyPaymentWebhookAsync(
+                $"evt_cancel_before_{suffix}", "subscription.cancelled", subscriptionId,
+                null, null, subscriptionId, purchaseId, subscriptionId, null, "cancelled", CancellationToken.None,
+                cycleEnd, null, "monthly_integration");
+            var retained = await beforeCycleStore.GetAccountAsync(caller.UserId, CancellationToken.None);
+            Assert.Equal("monthly_integration", retained.PlanId);
+            Assert.Equal("active", retained.SubscriptionStatus);
+            Assert.Equal("scheduled", retained.SubscriptionCancellationStatus);
+            Assert.Equal(cycleEnd, retained.SubscriptionCancelsAt);
+
+            var afterCycleStore = new FirestoreAccountStore(
+                db,
+                new FixedClock(cycleEnd.AddMinutes(1)),
+                Options.Create(TestOptions()));
+            await afterCycleStore.ApplyPaymentWebhookAsync(
+                $"evt_cancel_after_{suffix}", "subscription.cancelled", subscriptionId,
+                null, null, subscriptionId, purchaseId, subscriptionId, null, "cancelled", CancellationToken.None,
+                cycleEnd, null, "monthly_integration");
+            var expired = await afterCycleStore.GetAccountAsync(caller.UserId, CancellationToken.None);
+            Assert.Equal("none", expired.PlanId);
+            Assert.Equal("cancelled", expired.SubscriptionStatus);
+            Assert.Equal("cancelled", expired.SubscriptionCancellationStatus);
+        }
+        finally
+        {
+            await DeleteIntegrationAccountAsync(db, caller.UserId);
+        }
+    }
+
+    [Fact]
     public async Task Definite_provider_rejection_releases_the_reservation_and_never_settles()
     {
         var store = new FakeStore { Available = 1_000_000_000 };
@@ -2588,6 +2729,11 @@ public sealed class SecurityAndUsageTests
         public DateTimeOffset UtcNow { get; } = DateTimeOffset.Parse("2026-08-03T00:00:00Z");
     }
 
+    private sealed class FixedClock(DateTimeOffset now) : IClock
+    {
+        public DateTimeOffset UtcNow { get; } = now;
+    }
+
     private sealed class FakeVertex : IVertexAiClient
     {
         private readonly VertexGenerateResult? _result;
@@ -2892,6 +3038,42 @@ public sealed class SecurityAndUsageTests
                     "application/json"),
             };
         }
+    }
+
+    private sealed class RazorpayCancellationNoopHandler : HttpMessageHandler
+    {
+        public List<string> Calls { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal("Basic", request.Headers.Authorization?.Scheme);
+            var path = request.RequestUri!.PathAndQuery.TrimStart('/');
+            if (path.StartsWith("v1/", StringComparison.Ordinal))
+                path = path[3..];
+            Assert.Equal("subscriptions/sub_123", path.Replace("/cancel", "", StringComparison.Ordinal));
+
+            if (request.Method == HttpMethod.Get)
+            {
+                Calls.Add("GET:inspect");
+                return Response("active");
+            }
+
+            var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            using var document = JsonDocument.Parse(body);
+            var atCycleEnd = document.RootElement.GetProperty("cancel_at_cycle_end").GetBoolean();
+            Calls.Add(atCycleEnd ? "POST:cycle_end" : "POST:immediate");
+            return Response(atCycleEnd ? "active" : "cancelled");
+        }
+
+        private static HttpResponseMessage Response(string status) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                $$"""{"id":"sub_123","status":"{{status}}","has_scheduled_changes":false,"current_end":1789257600}""",
+                Encoding.UTF8,
+                "application/json"),
+        };
     }
 
     private sealed class BlockingSubscriptionCancellationProvider(DateTimeOffset cycleEnd) : IPaymentProvider
