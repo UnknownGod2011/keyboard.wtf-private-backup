@@ -59,6 +59,7 @@ public sealed record GenerateResponse(
 
 public sealed record CreateCheckoutRequest(string ProductSku, string IdempotencyKey);
 public sealed record CancelCheckoutRequest(string PurchaseId);
+public sealed record CancelSubscriptionRequest(bool AtCycleEnd = true);
 public sealed record CheckoutConfirmationRequest(
     string PurchaseId,
     string ProviderPaymentId,

@@ -523,6 +523,74 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
+    public async Task Razorpay_cycle_end_cancellation_is_server_authenticated_and_subscription_bound()
+    {
+        Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", "rzp_test_public");
+        Environment.SetEnvironmentVariable("RAZORPAY_KEY_SECRET", "unit_test_secret");
+        try
+        {
+            var handler = new RazorpayCancellationHandler();
+            var provider = new RazorpayPaymentProvider(
+                new HttpClient(handler),
+                Options.Create(TestOptions()));
+
+            var result = await provider.CancelSubscriptionAtCycleEndAsync(
+                "sub_123",
+                CancellationToken.None);
+
+            Assert.Equal(HttpMethod.Post, handler.Method);
+            Assert.Equal("subscriptions/sub_123/cancel", handler.Path);
+            Assert.True(handler.CancelAtCycleEnd);
+            Assert.Equal("sub_123", result.Id);
+            Assert.True(result.HasScheduledChanges);
+            Assert.Equal("cycle_end", result.ScheduledChangeAt);
+            Assert.NotNull(result.CurrentCycleEndsAt);
+            Assert.DoesNotContain("unit_test_secret", handler.Body, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", null);
+            Environment.SetEnvironmentVariable("RAZORPAY_KEY_SECRET", null);
+        }
+    }
+
+    [Fact]
+    public async Task Razorpay_cycle_end_cancellation_rejects_a_mismatched_provider_subscription()
+    {
+        Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", "rzp_test_public");
+        Environment.SetEnvironmentVariable("RAZORPAY_KEY_SECRET", "unit_test_secret");
+        try
+        {
+            var provider = new RazorpayPaymentProvider(
+                new HttpClient(new RazorpayCancellationHandler("sub_other")),
+                Options.Create(TestOptions()));
+
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                provider.CancelSubscriptionAtCycleEndAsync("sub_123", CancellationToken.None));
+
+            Assert.Contains("another subscription", error.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", null);
+            Environment.SetEnvironmentVariable("RAZORPAY_KEY_SECRET", null);
+        }
+    }
+
+    [Fact]
+    public void Scheduled_subscription_cancellation_requires_cycle_end_provider_evidence()
+    {
+        var cycleEnd = DateTimeOffset.Parse("2026-09-13T00:00:00Z");
+        var valid = new ProviderSubscriptionCancellation(
+            "sub_123", "active", true, "cycle_end", cycleEnd, DateTimeOffset.UtcNow);
+        Assert.Equal(cycleEnd, SubscriptionManagementService.ValidateScheduledCancellation(valid, cycleEnd));
+
+        var invalid = valid with { HasScheduledChanges = false, ScheduledChangeAt = "now" };
+        Assert.Throws<InvalidOperationException>(() =>
+            SubscriptionManagementService.ValidateScheduledCancellation(invalid, cycleEnd));
+    }
+
+    [Fact]
     public async Task Razorpay_subscription_inspection_rejects_an_invoice_from_another_subscription()
     {
         Environment.SetEnvironmentVariable("RAZORPAY_KEY_ID", "rzp_test_public");
@@ -1409,6 +1477,71 @@ public sealed class SecurityAndUsageTests
             if (session is not null)
                 await db.Collection("desktopSessions").Document(session.SessionId).DeleteAsync();
             await DeleteIntegrationAccountAsync(db, caller.UserId);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "FirestoreIntegration")]
+    public async Task Firestore_subscription_cancellation_is_single_flight_and_idempotent_when_enabled()
+    {
+        var accessToken = Environment.GetEnvironmentVariable("KEYBOARD_WTF_FIRESTORE_TEST_ACCESS_TOKEN");
+        if (string.IsNullOrWhiteSpace(accessToken))
+            return;
+
+        var db = new FirestoreDbBuilder
+        {
+            ProjectId = "keyboard-wtf-staging",
+            Credential = GoogleCredential.FromAccessToken(accessToken),
+        }.Build();
+        var suffix = Guid.NewGuid().ToString("N");
+        var userId = $"integration-cancel-{suffix}";
+        var account = db.Collection("accounts").Document(userId);
+        var cycleEnd = DateTimeOffset.Parse("2026-09-03T00:00:00Z");
+        var provider = new BlockingSubscriptionCancellationProvider(cycleEnd);
+        var service = new SubscriptionManagementService(
+            db,
+            provider,
+            new FakeClock(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<SubscriptionManagementService>.Instance);
+        try
+        {
+            await account.SetAsync(new Dictionary<string, object>
+            {
+                ["email"] = $"cancel-{suffix}@example.invalid",
+                ["subscriptionStatus"] = "active",
+                ["subscriptionCancellationStatus"] = "none",
+                ["activeSubscriptionProviderObjectId"] = $"sub_{suffix}",
+                ["cycleEndsAt"] = Timestamp.FromDateTime(cycleEnd.UtcDateTime),
+                ["createdAt"] = Timestamp.FromDateTime(DateTime.UtcNow),
+                ["updatedAt"] = Timestamp.FromDateTime(DateTime.UtcNow),
+            });
+
+            var first = service.CancelAtCycleEndAsync(userId, CancellationToken.None);
+            await provider.Called.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var concurrent = await service.CancelAtCycleEndAsync(userId, CancellationToken.None);
+            Assert.Equal("processing", concurrent.Status);
+
+            provider.Release.TrySetResult();
+            var scheduled = await first.WaitAsync(TimeSpan.FromSeconds(10));
+            var repeated = await service.CancelAtCycleEndAsync(userId, CancellationToken.None);
+
+            Assert.Equal("scheduled", scheduled.Status);
+            Assert.Equal(cycleEnd, scheduled.CancelsAt);
+            Assert.Equal("scheduled", repeated.Status);
+            Assert.False(repeated.ProviderUpdated);
+            Assert.Equal(1, provider.CancelCalls);
+
+            var snapshot = await account.GetSnapshotAsync();
+            Assert.Equal("scheduled", snapshot.GetValue<string>("subscriptionCancellationStatus"));
+            Assert.Equal(cycleEnd, new DateTimeOffset(snapshot.GetValue<Timestamp>("subscriptionCancelsAt").ToDateTime()));
+            var actions = await account.Collection("subscriptionActions").GetSnapshotAsync();
+            Assert.Single(actions.Documents);
+            Assert.Equal("scheduled", actions.Documents[0].GetValue<string>("status"));
+        }
+        finally
+        {
+            provider.Release.TrySetResult();
+            await DeleteIntegrationAccountAsync(db, userId);
         }
     }
 
@@ -2328,7 +2461,7 @@ public sealed class SecurityAndUsageTests
         var account = db.Collection("accounts").Document(userId);
         var reconciliationResourceHashes = new HashSet<string>(StringComparer.Ordinal);
         var globalUsageAdjustments = new Dictionary<string, (long Reserved, long Settled, long ProviderCost, long ProviderSettlements)>(StringComparer.Ordinal);
-        foreach (var collectionName in new[] { "ledger", "reservations", "usage", "purchases", "devices", "sessions", "dailyUsage" })
+        foreach (var collectionName in new[] { "ledger", "reservations", "usage", "purchases", "devices", "sessions", "dailyUsage", "subscriptionActions" })
         {
             var documents = await account.Collection(collectionName).Limit(100).GetSnapshotAsync();
             if (documents.Count == 0)
@@ -2730,6 +2863,69 @@ public sealed class SecurityAndUsageTests
                 Content = new StringContent(body, Encoding.UTF8, "application/json"),
             });
         }
+    }
+
+    private sealed class RazorpayCancellationHandler(string returnedSubscriptionId = "sub_123") : HttpMessageHandler
+    {
+        public HttpMethod? Method { get; private set; }
+        public string Path { get; private set; } = "";
+        public string Body { get; private set; } = "";
+        public bool CancelAtCycleEnd { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal("Basic", request.Headers.Authorization?.Scheme);
+            Method = request.Method;
+            Path = request.RequestUri!.PathAndQuery.TrimStart('/');
+            if (Path.StartsWith("v1/", StringComparison.Ordinal))
+                Path = Path[3..];
+            Body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            using var document = JsonDocument.Parse(Body);
+            CancelAtCycleEnd = document.RootElement.GetProperty("cancel_at_cycle_end").GetBoolean();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    $$"""{"id":"{{returnedSubscriptionId}}","status":"active","has_scheduled_changes":true,"schedule_change_at":"cycle_end","current_end":1789257600,"change_scheduled_at":1788048000}""",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        }
+    }
+
+    private sealed class BlockingSubscriptionCancellationProvider(DateTimeOffset cycleEnd) : IPaymentProvider
+    {
+        public TaskCompletionSource Called { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int CancelCalls { get; private set; }
+        public string Name => "fake-razorpay";
+        public bool IsConfigured => true;
+
+        public async Task<ProviderSubscriptionCancellation> CancelSubscriptionAtCycleEndAsync(
+            string subscriptionId,
+            CancellationToken cancellationToken)
+        {
+            CancelCalls++;
+            Called.TrySetResult();
+            await Release.Task.WaitAsync(cancellationToken);
+            return new ProviderSubscriptionCancellation(
+                subscriptionId, "active", true, "cycle_end", cycleEnd, DateTimeOffset.UtcNow);
+        }
+
+        public Task<ProviderSubscriptionInspection> InspectSubscriptionAsync(
+            string subscriptionId,
+            CancellationToken cancellationToken) => Task.FromResult(new ProviderSubscriptionInspection(
+                subscriptionId, "active", null, null, null, cycleEnd, [], true, "cycle_end", DateTimeOffset.UtcNow));
+
+        public Task<PaymentOrder> CreateOrderAsync(string purchaseId, CatalogProduct product, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<PaymentSubscription> CreateSubscriptionAsync(string purchaseId, CatalogProduct product, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<ProviderOrderInspection> InspectOrderAsync(string orderId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyList<ProviderRefund>> InspectRefundsAsync(string paymentId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyList<ProviderDispute>> InspectDisputesAsync(string paymentId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public bool VerifyOrderCheckoutSignature(string orderId, string paymentId, string signature) => false;
+        public bool VerifySubscriptionCheckoutSignature(string subscriptionId, string paymentId, string signature) => false;
+        public bool VerifyWebhookSignature(string rawBody, string signature) => false;
     }
 
     private sealed class FakeAccessTokenProvider : IVertexAccessTokenProvider

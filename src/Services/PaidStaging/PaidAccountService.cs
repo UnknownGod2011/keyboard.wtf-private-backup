@@ -30,14 +30,21 @@ internal sealed record PaidAccountSnapshot(
     string AllowanceRulesVersion = "allowance-v1",
     long SubscriptionOriginalCreditMicros = 0,
     long SubscriptionReservedCreditMicros = 0,
-    long SubscriptionConsumedCreditMicros = 0);
+    long SubscriptionConsumedCreditMicros = 0,
+    string SubscriptionCancellationStatus = "none",
+    DateTimeOffset? SubscriptionCancelsAt = null,
+    string PlanDisplayName = "No active plan",
+    long PlanAmountMinor = 0,
+    string PlanCurrency = "INR");
 
 internal sealed record PaidDeviceSnapshot(
     string DeviceId,
     string Name,
     string Status,
     DateTimeOffset LastSeenAt,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    string Platform = "Windows",
+    bool IsCurrent = false);
 
 internal sealed record PaidUsageSnapshot(
     string RequestId,
@@ -46,7 +53,18 @@ internal sealed record PaidUsageSnapshot(
     long ChargedCreditMicros,
     long InputTokens,
     long OutputTokens,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    string ActivityType = "ai_request",
+    string PricingVersion = "",
+    long CachedInputTokens = 0,
+    long ReasoningTokens = 0,
+    long InputAudioTokens = 0,
+    long OutputAudioTokens = 0,
+    long InputImageTokens = 0,
+    long OutputImageTokens = 0,
+    bool UsageEstimated = false,
+    string ProviderModelVersion = "",
+    string AccountingStatus = "settled");
 
 internal sealed record PaidPurchaseSnapshot(
     string PurchaseId,
@@ -55,7 +73,9 @@ internal sealed record PaidPurchaseSnapshot(
     string Status,
     long AmountMinor,
     string Currency,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    bool Fulfilled = false,
+    string DisplayName = "Subscription");
 
 internal sealed record PaidGenerateResponse(
     string RequestId,
@@ -252,7 +272,8 @@ internal sealed class PaidAccountService : IDisposable
             var nonce = RandomToken(32);
             var verifier = RandomToken(48);
             var challenge = Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
-            var deviceInstallationId = _tokens?.DeviceInstallationId ?? $"win_{RandomToken(24)}";
+            var deviceInstallationId = _tokens?.DeviceInstallationId
+                ?? _sessionStore.LoadOrCreateDeviceInstallationId();
             var port = ReserveLoopbackPort();
             var callback = $"http://127.0.0.1:{port}/keyboard-wtf/callback";
             var start = await SendAsync<LoginStartResponse>(

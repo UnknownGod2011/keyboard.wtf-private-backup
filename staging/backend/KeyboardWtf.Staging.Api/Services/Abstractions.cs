@@ -30,6 +30,12 @@ public interface IAccountStore
         int limit,
         string? cursor,
         CancellationToken cancellationToken);
+    Task<PurchasePageSnapshot> GetPurchasePageAsync(
+        string userId,
+        int limit,
+        string? cursor,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
     Task<ReservationResult> ReserveAsync(
         CallerIdentity caller,
         string requestId,
@@ -238,6 +244,10 @@ public interface IPaymentProvider
         string purchaseId,
         CatalogProduct product,
         CancellationToken cancellationToken);
+    Task<ProviderSubscriptionCancellation> CancelSubscriptionAtCycleEndAsync(
+        string subscriptionId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
     Task<ProviderOrderInspection> InspectOrderAsync(
         string orderId,
         CancellationToken cancellationToken);

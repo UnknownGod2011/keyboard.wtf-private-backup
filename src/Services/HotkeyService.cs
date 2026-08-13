@@ -58,8 +58,6 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
             return false;
         }
 
-        var previous = _handlers.Values.ToArray();
-        UnregisterAll();
         if (!_filterAdded)
         {
             Application.AddMessageFilter(this);
@@ -74,23 +72,41 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
             ("OpenSettings", settings.OpenSettings, commands.OpenSettings),
         };
 
+        var oldByName = _handlers.ToDictionary(
+            pair => pair.Value.Name,
+            pair => (Id: pair.Key, pair.Value.Hotkey, pair.Value.Handler),
+            StringComparer.OrdinalIgnoreCase);
+        var stagedIds = new List<int>();
         foreach (var binding in requested)
         {
-            if (TryRegister(binding.Name, binding.Hotkey, binding.Handler, out var reason))
+            if (oldByName.TryGetValue(binding.Name, out var current)
+                && string.Equals(
+                    Normalize(current.Hotkey),
+                    Normalize(binding.Hotkey),
+                    StringComparison.OrdinalIgnoreCase))
                 continue;
-
-            UnregisterAll();
-            var rollbackFailures = new List<string>();
-            foreach (var old in previous)
+            if (TryRegister(binding.Name, binding.Hotkey, binding.Handler, out var reason, out var stagedId))
             {
-                if (!TryRegister(old.Name, old.Hotkey, old.Handler, out var rollbackReason))
-                    rollbackFailures.Add($"{old.Name}: {rollbackReason}");
+                stagedIds.Add(stagedId);
+                continue;
             }
-            error = rollbackFailures.Count == 0
-                ? reason
-                : $"{reason} Previous hotkeys could not be fully restored: {string.Join("; ", rollbackFailures)}";
+
+            foreach (var staged in stagedIds)
+                Unregister(staged);
+            error = reason;
             AppLog.Warning($"Hotkey replacement rolled back: {error}");
             return false;
+        }
+
+        foreach (var binding in requested)
+        {
+            if (!oldByName.TryGetValue(binding.Name, out var current)
+                || string.Equals(
+                    Normalize(current.Hotkey),
+                    Normalize(binding.Hotkey),
+                    StringComparison.OrdinalIgnoreCase))
+                continue;
+            Unregister(current.Id);
         }
 
         AppLog.Info("Hotkey replacement committed atomically");
@@ -142,9 +158,18 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
         string name,
         string hotkey,
         Action handler,
-        out string failureReason)
+        out string failureReason) =>
+        TryRegister(name, hotkey, handler, out failureReason, out _);
+
+    private bool TryRegister(
+        string name,
+        string hotkey,
+        Action handler,
+        out string failureReason,
+        out int registeredId)
     {
         failureReason = "";
+        registeredId = 0;
         if (!TryParse(hotkey, out var modifiers, out var key))
         {
             failureReason = $"Invalid hotkey: {hotkey}";
@@ -159,6 +184,7 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
         }
 
         _handlers[id] = (name, hotkey, handler);
+        registeredId = id;
         AppLog.Info($"Registered hotkey {name}: {hotkey}");
         return true;
     }
@@ -184,6 +210,12 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
         foreach (var id in _handlers.Keys.ToArray())
             UnregisterHotKey(IntPtr.Zero, id);
         _handlers.Clear();
+    }
+
+    private void Unregister(int id)
+    {
+        UnregisterHotKey(IntPtr.Zero, id);
+        _handlers.Remove(id);
     }
 
     public void Dispose()

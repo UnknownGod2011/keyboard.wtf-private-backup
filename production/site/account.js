@@ -3,8 +3,10 @@ import {
   listenForAuth,
   googleSignIn,
   googleSignOut,
+  chooseAnotherGoogleAccount,
   loadAccount,
   loadUsagePage,
+  loadPurchasePage,
   loadCatalog,
   revokeDevice,
   revokeAllDesktopSessions,
@@ -13,6 +15,7 @@ import {
   waitForAuthoritativePurchase,
   getPendingPurchaseIds,
   trackServerPendingPurchases,
+  cancelSubscriptionAtCycleEnd,
   formatCredits,
   formatMoney,
 } from "./app.js";
@@ -24,6 +27,8 @@ let lastPassiveRefreshAt = 0;
 let resumedPendingEpoch = -1;
 let usageCursor = null;
 let usageRows = [];
+let purchaseCursor = null;
+let purchaseRows = [];
 const setStatus = (text, kind = "") => {
   byId("status").textContent = text;
   byId("status").className = `status ${kind}`;
@@ -48,6 +53,31 @@ const activityLabels = {
   live_audio: "Jarvis Live",
   ai_request: "Jarvis AI",
 };
+
+const friendlyStatus = (value) => ({
+  completed: "Completed",
+  provider_completed: "Completed",
+  cancelled: "Cancelled",
+  failed: "Failed",
+  active: "Active",
+  captured: "Paid",
+  paid: "Paid",
+  charged: "Paid",
+  refunded: "Refunded",
+  none: "None",
+}[String(value || "").toLowerCase()] || String(value || "Recorded").replaceAll("_", " "));
+
+function friendlyPlan(account) {
+  return account.planDisplayName
+    || (account.planId === "none" ? "No active plan" : "Jarvis Monthly");
+}
+
+function renderPurchaseRows() {
+  byId("purchaseList").innerHTML = purchaseRows.length
+    ? purchaseRows.map((row) => `<li><span>${escape(row.displayName || "Jarvis Monthly")}<br><span class="small">${escape(friendlyStatus(row.status))} · ${new Date(row.createdAt).toLocaleDateString()}</span></span><strong>${formatMoney(row.amountMinor, row.currency)}</strong></li>`).join("")
+    : "<li>No payments yet.</li>";
+  byId("loadMorePurchases").classList.toggle("hidden", !purchaseCursor);
+}
 
 function formatMonthlyPrice(minor, currency) {
   const amount = Number(minor || 0) / 100;
@@ -77,18 +107,25 @@ function renderUsageRows() {
 
 function clearAccountUi() {
   byId("identity").textContent = "—";
+  byId("identityEmail").textContent = "—";
+  byId("identityAvatar").textContent = "K";
   byId("plan").textContent = "No paid plan";
-  byId("balance").textContent = "0";
+  byId("balance").textContent = "0%";
   byId("balanceBar").style.width = "0";
   byId("usage").textContent = "0 used this cycle";
   byId("allowanceBreakdown").textContent = "Plan allowance 0";
   byId("subscription").textContent = "None";
+  byId("planPrice").textContent = "";
   byId("renewal").textContent = "No renewal scheduled.";
   byId("usageList").replaceChildren();
   byId("loadMoreUsage").classList.add("hidden");
   usageCursor = null;
   usageRows = [];
+  purchaseCursor = null;
+  purchaseRows = [];
   byId("purchaseList").replaceChildren();
+  byId("loadMorePurchases").classList.add("hidden");
+  byId("cancelRenewal").classList.add("hidden");
   byId("deviceList").replaceChildren();
   byId("products").replaceChildren();
 }
@@ -101,8 +138,11 @@ async function render(expectedUser, epoch, quiet = false) {
     if (epoch !== authEpoch || auth.currentUser?.uid !== expectedUser.uid)
       return;
     trackServerPendingPurchases(account);
-    byId("identity").textContent = `${account.displayName || "Google user"} · ${account.email}`;
-    byId("plan").textContent = account.planId === "none" ? "No paid plan" : account.planId;
+    const displayName = account.displayName || "Google user";
+    byId("identity").textContent = displayName;
+    byId("identityEmail").textContent = account.email;
+    byId("identityAvatar").textContent = displayName.trim().charAt(0).toUpperCase() || "K";
+    byId("plan").textContent = friendlyPlan(account);
     const subscriptionOriginal = Number(account.subscriptionOriginalCreditMicros || 0);
     const subscriptionRemaining = Number(account.subscriptionAllowanceCreditMicros || 0)
       + Number(account.subscriptionReservedCreditMicros || 0);
@@ -116,23 +156,34 @@ async function render(expectedUser, epoch, quiet = false) {
       : Number(account.cycleUsageCreditMicros || 0);
     const total = subscriptionOriginal > 0 ? subscriptionOriginal : Math.max(1, remaining + used);
     const percentage = Math.max(0, Math.min(100, remaining / total * 100));
-    byId("balance").textContent = formatCredits(totalUsable);
+    byId("balance").textContent = `${percentage.toFixed(1)}%`;
     byId("balanceBar").style.width = `${percentage}%`;
     byId("usage").textContent = `${formatCredits(used)} of ${formatCredits(total)} credits used this cycle · ${percentage.toFixed(1)}% remaining`;
     const otherCredits = Number(account.topUpCreditMicros || 0) + Number(account.otherAllowanceCreditMicros || 0);
     byId("allowanceBreakdown").textContent = `Plan allowance ${formatCredits(subscriptionRemaining)}${otherCredits > 0 ? ` · Account adjustments ${formatCredits(otherCredits)}` : ""}`;
-    byId("subscription").textContent = account.subscriptionStatus || "none";
-    byId("renewal").textContent = account.cycleEndsAt
-      ? `Current cycle ends ${new Date(account.cycleEndsAt).toLocaleDateString()}.`
+    byId("subscription").textContent = friendlyStatus(account.subscriptionStatus || "none");
+    byId("planPrice").textContent = account.planAmountMinor > 0
+      ? `${formatMonthlyPrice(account.planAmountMinor, account.planCurrency || "INR")}/month`
+      : "";
+    const cancellationScheduled = account.subscriptionCancellationStatus === "scheduled";
+    const endDate = account.subscriptionCancelsAt || account.cycleEndsAt;
+    byId("renewal").textContent = cancellationScheduled && endDate
+      ? `Cancels on ${new Date(endDate).toLocaleDateString()}. You will not be charged again.`
+      : account.cycleEndsAt
+      ? `Next renewal ${new Date(account.cycleEndsAt).toLocaleDateString()}.`
       : "No renewal scheduled.";
+    byId("cancelRenewal").classList.toggle(
+      "hidden",
+      cancellationScheduled || !["active", "pending", "paused", "halted", "authenticated"]
+        .includes(String(account.subscriptionStatus || "").toLowerCase()));
     usageRows = account.recentUsage || [];
-    usageCursor = usageRows.length === 20 ? usageRows.at(-1).requestId : null;
+    usageCursor = usageRows.length === 10 ? usageRows.at(-1).requestId : null;
     renderUsageRows();
-    byId("purchaseList").innerHTML = account.recentPurchases?.length
-      ? account.recentPurchases.map((row) => `<li><span>${escape(row.productSku)}<br><span class="small">${escape(row.status)}</span></span><strong>${formatMoney(row.amountMinor, row.currency)}</strong></li>`).join("")
-      : "<li>No purchases yet.</li>";
+    purchaseRows = account.recentPurchases || [];
+    purchaseCursor = purchaseRows.length === 5 ? purchaseRows.at(-1).purchaseId : null;
+    renderPurchaseRows();
     byId("deviceList").innerHTML = account.devices?.length
-      ? account.devices.map((row) => `<li><span>${escape(row.name)}<br><span class="small">${escape(row.status)} · last seen ${new Date(row.lastSeenAt).toLocaleString()}</span></span><button class="secondary revoke" data-device="${escape(row.deviceId)}">Remove</button></li>`).join("")
+      ? account.devices.map((row) => `<li><span>${escape(row.name)}${row.isCurrent ? " · This device" : ""}<br><span class="small">${escape(row.platform || "Windows")} · ${escape(friendlyStatus(row.status))} · last seen ${new Date(row.lastSeenAt).toLocaleString()}</span></span><button class="secondary revoke" data-device="${escape(row.deviceId)}" ${row.isCurrent ? "disabled title=\"Sign out to remove this device\"" : ""}>${row.isCurrent ? "Current" : "Remove"}</button></li>`).join("")
       : "<li>No desktop devices registered.</li>";
     document.querySelectorAll(".revoke").forEach((button) => button.addEventListener("click", async () => {
       button.disabled = true;
@@ -152,7 +203,7 @@ async function render(expectedUser, epoch, quiet = false) {
       const currentPlan = subscriptionRequiresManagement && account.planId === product.sku;
       const disabled = checkoutClosed || currentPlan;
       const buttonText = currentPlan
-        ? "Current plan — Active"
+        ? cancellationScheduled ? "Active until cycle end" : "Current plan — Active"
         : checkoutClosed
           ? "Coming soon"
           : `Subscribe — ${formatMonthlyPrice(product.amountMinor, product.currency)}/month`;
@@ -254,6 +305,39 @@ byId("signIn").addEventListener("click", async () => {
   }
 });
 byId("signOut").addEventListener("click", () => googleSignOut().catch((error) => setStatus(error.message, "error")));
+byId("switchAccount").addEventListener("click", async () => {
+  const button = byId("switchAccount");
+  button.disabled = true;
+  setStatus("Choose the Google account you want to use…");
+  try {
+    await chooseAnotherGoogleAccount();
+  } catch (error) {
+    const cancelled = ["auth/popup-closed-by-user", "auth/cancelled-popup-request"].includes(error.code);
+    setStatus(cancelled ? "Account switching was cancelled." : error.message, cancelled ? "" : "error");
+  } finally {
+    button.disabled = false;
+  }
+});
+byId("cancelRenewal").addEventListener("click", async () => {
+  if (!window.confirm("Cancel renewal at the end of your current paid billing cycle? You will keep access until then."))
+    return;
+  const button = byId("cancelRenewal");
+  button.disabled = true;
+  setStatus("Scheduling cancellation with Razorpay…");
+  try {
+    const result = await cancelSubscriptionAtCycleEnd();
+    if (result.status === "processing")
+      setStatus("Cancellation is already being processed. This page will reflect Razorpay's confirmed state shortly.");
+    else
+      setStatus(`Renewal cancelled. Access continues until ${new Date(result.cancelsAt).toLocaleDateString()}.`, "success");
+    if (auth.currentUser)
+      await refreshSignedIn(auth.currentUser, authEpoch, true);
+  } catch (error) {
+    setStatus(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+});
 byId("deleteAccount").addEventListener("click", async () => {
   const confirmation = window.prompt("This permanently closes your keyboard.wtf account and revokes every device. Type DELETE to continue.");
   if (confirmation !== "DELETE") {
@@ -312,6 +396,22 @@ byId("loadMoreUsage").addEventListener("click", async () => {
     button.disabled = false;
   }
 });
+byId("loadMorePurchases").addEventListener("click", async () => {
+  if (!purchaseCursor) return;
+  const button = byId("loadMorePurchases");
+  button.disabled = true;
+  try {
+    const page = await loadPurchasePage(purchaseCursor);
+    const known = new Set(purchaseRows.map((row) => row.purchaseId));
+    purchaseRows.push(...(page.items || []).filter((row) => !known.has(row.purchaseId)));
+    purchaseCursor = page.nextCursor || null;
+    renderPurchaseRows();
+  } catch (error) {
+    setStatus(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+});
 window.addEventListener("focus", refreshAfterReturningToPage);
 document.addEventListener("visibilitychange", refreshAfterReturningToPage);
 listenForAuth((user) => {
@@ -320,6 +420,7 @@ listenForAuth((user) => {
   byId("signedOut").classList.toggle("hidden", !!user);
   byId("signedIn").classList.toggle("hidden", !user);
   byId("signOut").classList.toggle("hidden", !user);
+  byId("switchAccount").classList.toggle("hidden", !user);
   byId("refreshAccount").classList.toggle("hidden", !user);
   if (user) {
     void refreshSignedIn(user, epoch).then(() => resumePendingPurchaseVerification());
@@ -331,6 +432,7 @@ listenForAuth((user) => {
   byId("signedOut").classList.remove("hidden");
   byId("signedIn").classList.add("hidden");
   byId("signOut").classList.add("hidden");
+  byId("switchAccount").classList.add("hidden");
   byId("refreshAccount").classList.add("hidden");
   setStatus(`Google sign-in could not initialize: ${error.message}`, "error");
 });

@@ -65,6 +65,10 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .account-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; flex-wrap: wrap; margin-bottom: 26px; }
 .account-head h1 { margin-top: 8px; font-size: clamp(42px, 6vw, 68px); }
 .account-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.identity-card { display: flex; align-items: flex-start; gap: 16px; }
+.account-avatar { width: 48px; height: 48px; flex: 0 0 48px; display: grid; place-items: center; border-radius: 50%; background: var(--ink); color: var(--white); font-size: 20px; font-weight: 760; }
+.identity-email { margin-top: 2px !important; overflow-wrap: anywhere; }
+.plan-price { font-weight: 700; color: var(--ink) !important; }
 .status { margin: 16px 0 24px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 6px; background: rgba(255,255,255,.62); color: var(--muted); }
 .status::before { content: ""; width: 7px; height: 7px; display: inline-block; margin-right: 9px; border-radius: 50%; background: var(--amber); }
 .status.success { border-color: #a8c8b2; background: var(--green-soft); color: #235d3c; }
@@ -95,6 +99,8 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 @media (max-width: 700px) {
   .section-inline { display: block; }
   .section-inline button { margin-top: 14px; }
+  .account-actions { width: 100%; }
+  .account-actions button { flex: 1 1 auto; }
 }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; margin-top: 18px; }
 .form-grid label { display: grid; gap: 7px; color: var(--muted); font-size: 13px; font-weight: 700; }

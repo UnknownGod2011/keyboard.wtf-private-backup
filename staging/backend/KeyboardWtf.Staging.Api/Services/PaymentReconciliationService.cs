@@ -16,6 +16,7 @@ public sealed class PaymentReconciliationService
     private readonly FirestoreMaintenanceLease _leases;
     private readonly MaintenanceScanCursor _cursor;
     private readonly ILogger<PaymentReconciliationService> _logger;
+    private readonly SubscriptionManagementService _subscriptions;
 
     public PaymentReconciliationService(
         FirestoreDb db,
@@ -23,7 +24,8 @@ public sealed class PaymentReconciliationService
         IPaymentProvider provider,
         IClock clock,
         IOptions<PaidSystemOptions> options,
-        ILogger<PaymentReconciliationService> logger)
+        ILogger<PaymentReconciliationService> logger,
+        SubscriptionManagementService subscriptions)
     {
         _db = db;
         _store = store;
@@ -33,6 +35,7 @@ public sealed class PaymentReconciliationService
         _leases = new FirestoreMaintenanceLease(db, clock);
         _cursor = new MaintenanceScanCursor(db);
         _logger = logger;
+        _subscriptions = subscriptions;
     }
 
     public async Task<ReconciliationRunResult> RunAsync(CancellationToken cancellationToken)
@@ -211,6 +214,12 @@ public sealed class PaymentReconciliationService
                     await QuarantineAsync(purchase, "subscription_identity_mismatch", runId, subscription.Status, cancellationToken);
                     return PurchaseReconciliationResult.Quarantined;
                 }
+
+                await _subscriptions.RecordProviderInspectionAsync(
+                    userId,
+                    objectId,
+                    subscription,
+                    cancellationToken);
 
                 stage = "apply_subscription_lifecycle";
                 var lifecycleEvent = SubscriptionLifecycleEvent(subscription.Status);

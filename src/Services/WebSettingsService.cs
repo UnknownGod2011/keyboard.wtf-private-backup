@@ -1438,7 +1438,12 @@ public sealed class WebSettingsService : IDisposable
             displayName = account?.DisplayName ?? "",
             status = account?.Status ?? "signed_out",
             planId = account?.PlanId ?? "none",
+            planDisplayName = account?.PlanDisplayName ?? "No active plan",
+            planAmountMinor = account?.PlanAmountMinor ?? 0,
+            planCurrency = account?.PlanCurrency ?? "INR",
             subscriptionStatus = account?.SubscriptionStatus ?? "none",
+            subscriptionCancellationStatus = account?.SubscriptionCancellationStatus ?? "none",
+            subscriptionCancelsAt = account?.SubscriptionCancelsAt,
             availableCreditMicros = account?.AvailableCreditMicros ?? 0,
             reservedCreditMicros = account?.ReservedCreditMicros ?? 0,
             cycleUsageCreditMicros = account?.CycleUsageCreditMicros ?? 0,
@@ -1448,8 +1453,10 @@ public sealed class WebSettingsService : IDisposable
             subscriptionConsumedCreditMicros = account?.SubscriptionConsumedCreditMicros ?? 0,
             topUpCreditMicros = account?.TopUpCreditMicros ?? 0,
             cycleEndsAt = account?.CycleEndsAt,
-            deviceId = account?.Devices?.FirstOrDefault(device =>
-                string.Equals(device.Status, "active", StringComparison.OrdinalIgnoreCase))?.DeviceId ?? "",
+            deviceId = account?.Devices?.FirstOrDefault(device => device.IsCurrent)?.DeviceId
+                ?? account?.Devices?.FirstOrDefault(device =>
+                    string.Equals(device.Status, "active", StringComparison.OrdinalIgnoreCase))?.DeviceId
+                ?? "",
             devices = account?.Devices ?? Array.Empty<PaidDeviceSnapshot>(),
             recentUsage = account?.RecentUsage ?? Array.Empty<PaidUsageSnapshot>(),
             recentPurchases = account?.RecentPurchases ?? Array.Empty<PaidPurchaseSnapshot>(),

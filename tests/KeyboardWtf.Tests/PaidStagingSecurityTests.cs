@@ -128,6 +128,7 @@ public sealed class PaidStagingSecurityTests
         try
         {
             var store = new PaidSessionStore(path);
+            var deviceInstallationId = store.LoadOrCreateDeviceInstallationId();
             var tokens = new PaidSessionTokens(
                 "access_token_secret_marker",
                 DateTimeOffset.UtcNow.AddMinutes(10),
@@ -142,8 +143,12 @@ public sealed class PaidStagingSecurityTests
             Assert.DoesNotContain("access_token_secret_marker", raw, StringComparison.Ordinal);
             Assert.DoesNotContain("refresh_token_secret_marker", raw, StringComparison.Ordinal);
             Assert.Equal(tokens, store.Load());
+            var deviceBytes = File.ReadAllBytes(path + ".device");
+            Assert.DoesNotContain(deviceInstallationId, Encoding.UTF8.GetString(deviceBytes), StringComparison.Ordinal);
             store.Clear();
             Assert.False(File.Exists(path));
+            Assert.True(File.Exists(path + ".device"));
+            Assert.Equal(deviceInstallationId, new PaidSessionStore(path).LoadOrCreateDeviceInstallationId());
         }
         finally
         {
@@ -396,6 +401,40 @@ public sealed class PaidStagingSecurityTests
     }
 
     [Fact]
+    public async Task Desktop_account_contract_preserves_friendly_billing_usage_and_device_fields()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var (store, directory) = CreateSessionStore();
+        try
+        {
+            SaveValidSession(store);
+            using var account = CreateAccount(store, new RichAccountHandler());
+
+            await account.InitializeAsync();
+
+            var snapshot = Assert.IsType<PaidAccountSnapshot>(account.Account);
+            Assert.Equal("Jarvis Monthly", snapshot.PlanDisplayName);
+            Assert.Equal(99_900, snapshot.PlanAmountMinor);
+            Assert.Equal("scheduled", snapshot.SubscriptionCancellationStatus);
+            Assert.NotNull(snapshot.SubscriptionCancelsAt);
+            var usage = Assert.Single(snapshot.RecentUsage);
+            Assert.Equal("browser_planner", usage.ActivityType);
+            Assert.Equal("pricing-production-v1", usage.PricingVersion);
+            Assert.Equal("settled", usage.AccountingStatus);
+            Assert.Equal("Jarvis Monthly", Assert.Single(snapshot.RecentPurchases).DisplayName);
+            var device = Assert.Single(snapshot.Devices);
+            Assert.Equal("Windows", device.Platform);
+            Assert.True(device.IsCurrent);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task Restored_session_reports_loading_until_authoritative_account_arrives()
     {
         if (!OperatingSystem.IsWindows())
@@ -601,6 +640,52 @@ public sealed class PaidStagingSecurityTests
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),
             };
+        }
+    }
+
+    private sealed class RichAccountHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal("/v1/account", request.RequestUri!.AbsolutePath);
+            Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
+            var now = DateTimeOffset.Parse("2026-08-14T10:00:00Z");
+            var payload = JsonSerializer.Serialize(new
+            {
+                userId = "uid-1",
+                email = "person@example.test",
+                displayName = "Test Person",
+                status = "active",
+                planId = "monthly_standard_inr_999_v1",
+                planDisplayName = "Jarvis Monthly",
+                planAmountMinor = 99_900,
+                planCurrency = "INR",
+                availableCreditMicros = 499_000_000,
+                reservedCreditMicros = 0,
+                cycleUsageCreditMicros = 1_000_000,
+                cycleEndsAt = now.AddDays(30),
+                subscriptionStatus = "active",
+                subscriptionCancellationStatus = "scheduled",
+                subscriptionCancelsAt = now.AddDays(30),
+                devices = new[]
+                {
+                    new { deviceId = "device-id", name = "My PC", status = "active", lastSeenAt = now, createdAt = now.AddDays(-1), platform = "Windows", isCurrent = true },
+                },
+                recentUsage = new[]
+                {
+                    new { requestId = "req-1", model = "gemini-test", outcome = "completed", chargedCreditMicros = 1_000_000, inputTokens = 10, outputTokens = 4, createdAt = now, activityType = "browser_planner", pricingVersion = "pricing-production-v1", accountingStatus = "settled" },
+                },
+                recentPurchases = new[]
+                {
+                    new { purchaseId = "purchase-1", productSku = "monthly_standard_inr_999_v1", provider = "razorpay", status = "paid", amountMinor = 99_900, currency = "INR", createdAt = now.AddDays(-1), fulfilled = true, displayName = "Jarvis Monthly" },
+                },
+            });
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            });
         }
     }
 

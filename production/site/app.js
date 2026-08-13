@@ -166,6 +166,12 @@ export async function switchGoogleAccount() {
   await signInWithRedirect(auth, provider);
 }
 
+export async function chooseAnotherGoogleAccount() {
+  await signOut(auth);
+  state.account = null;
+  return googleSignIn();
+}
+
 export async function completeGoogleRedirect() {
   return getRedirectResult(auth);
 }
@@ -248,6 +254,20 @@ export async function loadUsagePage(cursor = null, limit = 20) {
   const query = new URLSearchParams({ limit: String(limit) });
   if (cursor) query.set("cursor", cursor);
   return api(`/v1/usage?${query}`, { authenticated: true });
+}
+
+export async function loadPurchasePage(cursor = null, limit = 10) {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (cursor) query.set("cursor", cursor);
+  return api(`/v1/purchases?${query}`, { authenticated: true });
+}
+
+export async function cancelSubscriptionAtCycleEnd() {
+  return api("/v1/billing/subscription/cancel", {
+    authenticated: true,
+    method: "POST",
+    body: JSON.stringify({ atCycleEnd: true }),
+  });
 }
 
 export async function revokeDevice(deviceId) {

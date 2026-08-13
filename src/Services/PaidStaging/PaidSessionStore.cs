@@ -16,8 +16,10 @@ internal sealed record PaidSessionTokens(
 internal sealed class PaidSessionStore
 {
     private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("keyboard.wtf/paid-session/v1");
+    private static readonly byte[] DeviceEntropy = Encoding.UTF8.GetBytes("keyboard.wtf/device-installation/v1");
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _path;
+    private string DevicePath => _path + ".device";
 
     public PaidSessionStore(string path = null) =>
         _path = string.IsNullOrWhiteSpace(path)
@@ -58,6 +60,39 @@ internal sealed class PaidSessionStore
             Clear();
             return null;
         }
+    }
+
+    public string LoadOrCreateDeviceInstallationId()
+    {
+        if (!OperatingSystem.IsWindows())
+            throw new PlatformNotSupportedException("Paid desktop identity requires Windows DPAPI.");
+        try
+        {
+            if (File.Exists(DevicePath))
+            {
+                var value = Encoding.UTF8.GetString(ProtectedData.Unprotect(
+                    File.ReadAllBytes(DevicePath),
+                    DeviceEntropy,
+                    DataProtectionScope.CurrentUser));
+                if (value.StartsWith("win_", StringComparison.Ordinal) && value.Length is >= 24 and <= 100)
+                    return value;
+            }
+        }
+        catch (Exception exception) when (exception is CryptographicException or IOException)
+        {
+            AppLog.Warning(exception, "Paid device identity could not be restored; replacing it");
+        }
+
+        var created = $"win_{Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant()}";
+        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        var protectedBytes = ProtectedData.Protect(
+            Encoding.UTF8.GetBytes(created),
+            DeviceEntropy,
+            DataProtectionScope.CurrentUser);
+        var temporary = DevicePath + ".tmp";
+        File.WriteAllBytes(temporary, protectedBytes);
+        File.Move(temporary, DevicePath, true);
+        return created;
     }
 
     public void Clear()

@@ -110,6 +110,7 @@ builder.Services.AddSingleton<IModelRoutingService, ModelRoutingService>();
 builder.Services.AddSingleton<IIdentityService, FirebaseIdentityService>();
 builder.Services.AddSingleton<DesktopLoginService>();
 builder.Services.AddSingleton<AccountDeletionService>();
+builder.Services.AddSingleton<SubscriptionManagementService>();
 builder.Services.AddSingleton<AiUsageService>();
 builder.Services.AddHttpClient<IVertexAiClient, VertexAiClient>();
 builder.Services.AddHttpClient<IPaymentProvider, RazorpayPaymentProvider>();

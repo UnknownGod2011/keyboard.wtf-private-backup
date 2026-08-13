@@ -44,14 +44,18 @@ public sealed record AccountSnapshot(
     string AllowanceRulesVersion = "allowance-v1",
     long SubscriptionOriginalCreditMicros = 0,
     long SubscriptionReservedCreditMicros = 0,
-    long SubscriptionConsumedCreditMicros = 0);
+    long SubscriptionConsumedCreditMicros = 0,
+    string SubscriptionCancellationStatus = "none",
+    DateTimeOffset? SubscriptionCancelsAt = null);
 
 public sealed record DeviceSnapshot(
     string DeviceId,
     string Name,
     string Status,
     DateTimeOffset LastSeenAt,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    string Platform = "Windows",
+    bool IsCurrent = false);
 
 public sealed record UsageSnapshot(
     string RequestId,
@@ -77,6 +81,10 @@ public sealed record UsagePageSnapshot(
     IReadOnlyList<UsageSnapshot> Items,
     string? NextCursor);
 
+public sealed record PurchasePageSnapshot(
+    IReadOnlyList<PurchaseSnapshot> Items,
+    string? NextCursor);
+
 public sealed record PurchaseSnapshot(
     string PurchaseId,
     string ProductSku,
@@ -85,7 +93,8 @@ public sealed record PurchaseSnapshot(
     long AmountMinor,
     string Currency,
     DateTimeOffset CreatedAt,
-    bool Fulfilled = false);
+    bool Fulfilled = false,
+    string DisplayName = "Subscription");
 
 public sealed record LedgerEntry(
     string EventId,
@@ -277,7 +286,18 @@ public sealed record ProviderSubscriptionInspection(
     string? ProductSku,
     DateTimeOffset? CurrentCycleStartsAt,
     DateTimeOffset? CurrentCycleEndsAt,
-    IReadOnlyList<ProviderPayment> Charges);
+    IReadOnlyList<ProviderPayment> Charges,
+    bool HasScheduledChanges = false,
+    string? ScheduledChangeAt = null,
+    DateTimeOffset? ChangeScheduledAt = null);
+
+public sealed record ProviderSubscriptionCancellation(
+    string Id,
+    string Status,
+    bool HasScheduledChanges,
+    string? ScheduledChangeAt,
+    DateTimeOffset? CurrentCycleEndsAt,
+    DateTimeOffset? ChangeScheduledAt);
 
 public sealed record ReconciliationRunResult(
     string Job,

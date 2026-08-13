@@ -100,6 +100,12 @@ public static class ApiEndpoints
             await store.EnsureAccountAsync(caller, token);
             var account = await store.GetAccountAsync(caller.UserId, token);
             var catalogSnapshot = await catalog.GetAsync(token);
+            var planProduct = catalogSnapshot.Products.FirstOrDefault(product =>
+                string.Equals(product.Sku, account.PlanId, StringComparison.Ordinal));
+            string PurchaseDisplayName(string sku) =>
+                catalogSnapshot.Products.FirstOrDefault(product =>
+                    string.Equals(product.Sku, sku, StringComparison.Ordinal))?.DisplayName
+                ?? "Subscription";
             var paymentCanary = CatalogService.IsPaymentCanary(options.Value, caller.Email);
             return TypedResults.Ok(new
             {
@@ -112,10 +118,19 @@ public static class ApiEndpoints
                 account.ReservedCreditMicros,
                 account.CycleUsageCreditMicros,
                 account.CycleEndsAt,
-                account.Devices,
+                Devices = account.Devices.Select(device => device with
+                {
+                    IsCurrent = !string.IsNullOrWhiteSpace(caller.DeviceId)
+                        && string.Equals(device.DeviceId, caller.DeviceId, StringComparison.Ordinal),
+                }),
                 account.RecentUsage,
-                account.RecentPurchases,
+                RecentPurchases = account.RecentPurchases.Select(purchase => purchase with
+                {
+                    DisplayName = PurchaseDisplayName(purchase.ProductSku),
+                }),
                 account.SubscriptionStatus,
+                account.SubscriptionCancellationStatus,
+                account.SubscriptionCancelsAt,
                 account.SubscriptionAllowanceCreditMicros,
                 account.TopUpCreditMicros,
                 account.OtherAllowanceCreditMicros,
@@ -123,6 +138,10 @@ public static class ApiEndpoints
                 account.SubscriptionOriginalCreditMicros,
                 account.SubscriptionReservedCreditMicros,
                 account.SubscriptionConsumedCreditMicros,
+                PlanDisplayName = planProduct?.DisplayName
+                    ?? (account.PlanId == "none" ? "No active plan" : "Subscription"),
+                PlanAmountMinor = planProduct?.AmountMinor ?? 0,
+                PlanCurrency = planProduct?.Currency ?? "INR",
                 IsAdmin = options.Value.AdminEmails.Contains(
                     caller.Email,
                     StringComparer.OrdinalIgnoreCase),
@@ -146,6 +165,34 @@ public static class ApiEndpoints
                 cursor,
                 token);
             return TypedResults.Ok(page);
+        });
+
+        api.MapGet("/purchases", async (
+            int? limit,
+            string? cursor,
+            HttpContext context,
+            IIdentityService identities,
+            IAccountStore store,
+            ICatalogService catalog,
+            CancellationToken token) =>
+        {
+            var caller = await RequireCallerAsync(context, identities, token);
+            var page = await store.GetPurchasePageAsync(
+                caller.UserId,
+                Math.Clamp(limit ?? 10, 1, 50),
+                cursor,
+                token);
+            var snapshot = await catalog.GetAsync(token);
+            return TypedResults.Ok(new
+            {
+                Items = page.Items.Select(purchase => purchase with
+                {
+                    DisplayName = snapshot.Products.FirstOrDefault(product =>
+                        string.Equals(product.Sku, purchase.ProductSku, StringComparison.Ordinal))?.DisplayName
+                        ?? "Subscription",
+                }),
+                page.NextCursor,
+            });
         });
 
         api.MapPost("/sessions/logout", async (
@@ -210,6 +257,7 @@ public static class ApiEndpoints
 
         api.MapPost("/billing/checkout", CreateCheckoutAsync);
         api.MapPost("/billing/cancel", CancelCheckoutAsync);
+        api.MapPost("/billing/subscription/cancel", CancelSubscriptionAsync);
         api.MapPost("/billing/confirm", ConfirmCheckoutAsync);
         api.MapPost("/billing/razorpay/webhook", HandleWebhookAsync);
         api.MapPost("/admin/grants", GrantCreditsAsync);
@@ -317,6 +365,22 @@ public static class ApiEndpoints
             throw new ArgumentException("A valid checkout purchase ID is required.");
         await store.CancelPendingPurchaseAsync(caller.UserId, request.PurchaseId, token);
         return TypedResults.NoContent();
+    }
+
+    private static async Task<IResult> CancelSubscriptionAsync(
+        CancelSubscriptionRequest request,
+        HttpContext context,
+        IIdentityService identities,
+        SubscriptionManagementService subscriptions,
+        CancellationToken token)
+    {
+        var caller = await RequireCallerAsync(context, identities, token);
+        if (!request.AtCycleEnd)
+            throw new ArgumentException("Subscriptions can only be cancelled at the end of the paid billing cycle.");
+        var result = await subscriptions.CancelAtCycleEndAsync(caller.UserId, token);
+        return result.Status == "processing"
+            ? TypedResults.Accepted("/v1/account", result)
+            : TypedResults.Ok(result);
     }
 
     private static async Task<IResult> HandleWebhookAsync(

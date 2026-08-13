@@ -9,6 +9,9 @@ namespace KeyboardWtf.Staging.Api.Services;
 
 public sealed class FirestoreAccountStore : IAccountStore
 {
+    private const int RecentDeviceLimit = 10;
+    private const int RecentUsageLimit = 10;
+    private const int RecentPurchaseLimit = 5;
     private readonly FirestoreDb _db;
     private readonly IClock _clock;
     private readonly PaidSystemOptions _options;
@@ -70,11 +73,11 @@ public sealed class FirestoreAccountStore : IAccountStore
             throw new KeyNotFoundException("Account not found.");
 
         var devicesTask = Account(userId).Collection("devices")
-            .OrderByDescending("lastSeenAt").Limit(20).GetSnapshotAsync(cancellationToken);
+            .OrderByDescending("lastSeenAt").Limit(RecentDeviceLimit).GetSnapshotAsync(cancellationToken);
         var usageTask = Account(userId).Collection("usage")
-            .OrderByDescending("createdAt").Limit(20).GetSnapshotAsync(cancellationToken);
+            .OrderByDescending("createdAt").Limit(RecentUsageLimit).GetSnapshotAsync(cancellationToken);
         var purchasesTask = Account(userId).Collection("purchases")
-            .OrderByDescending("createdAt").Limit(20).GetSnapshotAsync(cancellationToken);
+            .OrderByDescending("createdAt").Limit(RecentPurchaseLimit).GetSnapshotAsync(cancellationToken);
         await Task.WhenAll(devicesTask, usageTask, purchasesTask);
 
         var account = accountSnapshot.ToDictionary();
@@ -86,7 +89,8 @@ public sealed class FirestoreAccountStore : IAccountStore
                 String(data, "name", "Windows device"),
                 String(data, "status", "active"),
                 Date(data, "lastSeenAt"),
-                Date(data, "createdAt"));
+                Date(data, "createdAt"),
+                String(data, "platform", "Windows"));
         }).ToArray();
         var usage = usageTask.Result.Documents.Select(UsageFrom).ToArray();
         var stalePurchaseUpdates = new List<Task>();
@@ -150,6 +154,32 @@ public sealed class FirestoreAccountStore : IAccountStore
         var items = visibleDocuments.Select(UsageFrom).ToArray();
         var nextCursor = hasMore ? visibleDocuments[^1].Id : null;
         return new UsagePageSnapshot(items, nextCursor);
+    }
+
+    public async Task<PurchasePageSnapshot> GetPurchasePageAsync(
+        string userId,
+        int limit,
+        string? cursor,
+        CancellationToken cancellationToken)
+    {
+        if (limit is < 1 or > 50)
+            throw new ArgumentOutOfRangeException(nameof(limit));
+        var collection = Account(userId).Collection("purchases");
+        Query query = collection.OrderByDescending("createdAt");
+        if (!string.IsNullOrWhiteSpace(cursor))
+        {
+            var cursorSnapshot = await collection.Document(SafeId(cursor))
+                .GetSnapshotAsync(cancellationToken);
+            if (!cursorSnapshot.Exists)
+                throw new ArgumentException("The purchase cursor is no longer valid.", nameof(cursor));
+            query = query.StartAfter(cursorSnapshot);
+        }
+        var page = await query.Limit(limit + 1).GetSnapshotAsync(cancellationToken);
+        var hasMore = page.Count > limit;
+        var visibleDocuments = page.Documents.Take(limit).ToArray();
+        var items = visibleDocuments.Select(PurchaseFrom).ToArray();
+        var nextCursor = hasMore ? visibleDocuments[^1].Id : null;
+        return new PurchasePageSnapshot(items, nextCursor);
     }
 
     private Task NormalizeAllowanceWalletAsync(string userId, CancellationToken cancellationToken)
@@ -1160,6 +1190,7 @@ public sealed class FirestoreAccountStore : IAccountStore
             transaction.Set(deviceRef, new Dictionary<string, object>
             {
                 ["name"] = CleanDeviceName(deviceName),
+                ["platform"] = "Windows",
                 ["status"] = "active",
                 ["createdAt"] = Ts(now),
                 ["lastSeenAt"] = Ts(now),
@@ -1240,6 +1271,19 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ["refreshExpiresAt"] = Ts(refreshExpires),
                 ["lastSeenAt"] = Ts(now),
             });
+            var deviceId = String(data, "deviceId", "");
+            if (!string.IsNullOrWhiteSpace(deviceId))
+            {
+                transaction.Set(
+                    Account(String(data, "userId", "")).Collection("devices").Document(SafeId(deviceId)),
+                    new Dictionary<string, object>
+                    {
+                        ["status"] = "active",
+                        ["platform"] = "Windows",
+                        ["lastSeenAt"] = Ts(now),
+                    },
+                    SetOptions.MergeAll);
+            }
             return new DesktopSessionTokens(
                 newAccess,
                 accessExpires,
@@ -1261,7 +1305,25 @@ public sealed class FirestoreAccountStore : IAccountStore
             var sessionRef = _db.Collection("desktopSessions").Document(SafeId(sessionId));
             var snapshot = await sessionRef.GetSnapshotAsync(cancellationToken);
             if (snapshot.Exists && string.Equals(snapshot.GetValue<string>("userId"), userId, StringComparison.Ordinal))
-                await sessionRef.UpdateAsync("status", "revoked", cancellationToken: cancellationToken);
+            {
+                var data = snapshot.ToDictionary();
+                var logoutBatch = _db.StartBatch();
+                logoutBatch.Update(sessionRef, new Dictionary<string, object>
+                {
+                    ["status"] = "revoked",
+                    ["updatedAt"] = Ts(_clock.UtcNow),
+                });
+                var deviceId = String(data, "deviceId", "");
+                if (!string.IsNullOrWhiteSpace(deviceId))
+                    logoutBatch.Set(Account(userId).Collection("devices").Document(SafeId(deviceId)),
+                        new Dictionary<string, object>
+                        {
+                            ["status"] = "revoked",
+                            ["updatedAt"] = Ts(_clock.UtcNow),
+                        },
+                        SetOptions.MergeAll);
+                await logoutBatch.CommitAsync(cancellationToken);
+            }
             return;
         }
 
@@ -1271,7 +1333,19 @@ public sealed class FirestoreAccountStore : IAccountStore
             .GetSnapshotAsync(cancellationToken);
         var batch = _db.StartBatch();
         foreach (var session in sessions.Documents)
+        {
             batch.Update(session.Reference, "status", "revoked");
+            var data = session.ToDictionary();
+            var deviceId = String(data, "deviceId", "");
+            if (!string.IsNullOrWhiteSpace(deviceId))
+                batch.Set(Account(userId).Collection("devices").Document(SafeId(deviceId)),
+                    new Dictionary<string, object>
+                    {
+                        ["status"] = "revoked",
+                        ["updatedAt"] = Ts(_clock.UtcNow),
+                    },
+                    SetOptions.MergeAll);
+        }
         await batch.CommitAsync(cancellationToken);
     }
 
@@ -1778,9 +1852,12 @@ public sealed class FirestoreAccountStore : IAccountStore
             var incomingSubscriptionId = string.Equals(purchaseKind, "subscription", StringComparison.Ordinal)
                 ? providerSubscriptionId ?? providerObjectId
                 : "";
+            var existingSubscriptionId = String(accountData, "activeSubscriptionProviderObjectId", "");
+            var isNewSubscriptionIdentity = !string.IsNullOrWhiteSpace(incomingSubscriptionId)
+                && !string.Equals(existingSubscriptionId, incomingSubscriptionId, StringComparison.Ordinal);
             var shouldApplySubscriptionState = string.Equals(purchaseKind, "subscription", StringComparison.Ordinal)
                 && ShouldApplySubscriptionAccountState(
-                    String(accountData, "activeSubscriptionProviderObjectId", ""),
+                    existingSubscriptionId,
                     incomingSubscriptionId,
                     status,
                     purchaseCredited || shouldCredit,
@@ -1969,6 +2046,13 @@ public sealed class FirestoreAccountStore : IAccountStore
                     {
                         accountUpdates["activeSubscriptionProviderObjectId"] = incomingSubscriptionId;
                         accountUpdates["activeSubscriptionPurchaseId"] = purchase.Id;
+                        if (isNewSubscriptionIdentity)
+                        {
+                            accountUpdates["subscriptionCancellationStatus"] = "none";
+                            accountUpdates["subscriptionCancelsAt"] = FieldValue.Delete;
+                            accountUpdates["subscriptionCancellationRequestId"] = FieldValue.Delete;
+                            accountUpdates["subscriptionCancellationRequestedAt"] = FieldValue.Delete;
+                        }
                         if (subscriptionCycleEndsAt is DateTimeOffset activeCycleEnd)
                             accountUpdates["cycleEndsAt"] = Ts(activeCycleEnd);
                     }
@@ -1977,6 +2061,12 @@ public sealed class FirestoreAccountStore : IAccountStore
                         accountUpdates["activeSubscriptionProviderObjectId"] = FieldValue.Delete;
                         accountUpdates["activeSubscriptionPurchaseId"] = FieldValue.Delete;
                         accountUpdates["cycleEndsAt"] = FieldValue.Delete;
+                        accountUpdates["subscriptionCancellationStatus"] =
+                            string.Equals(status, "cancelled", StringComparison.OrdinalIgnoreCase)
+                                ? "cancelled"
+                                : status;
+                        if (subscriptionCycleEndsAt is DateTimeOffset terminalDate)
+                            accountUpdates["subscriptionCancelsAt"] = Ts(terminalDate);
                     }
                 }
                 transaction.Update(accountRef, accountUpdates);
@@ -2383,7 +2473,30 @@ public sealed class FirestoreAccountStore : IAccountStore
             AllowanceWallet.CurrentRulesVersion,
             subscriptionOriginal,
             subscriptionReserved,
-            subscriptionConsumed);
+            subscriptionConsumed,
+            String(data, "subscriptionCancellationStatus", "none"),
+            Date(data, "subscriptionCancelsAt") is var cancellationDate
+                && cancellationDate != DateTimeOffset.UnixEpoch
+                    ? cancellationDate
+                    : null);
+    }
+
+    private PurchaseSnapshot PurchaseFrom(DocumentSnapshot document)
+    {
+        var data = document.ToDictionary();
+        return new PurchaseSnapshot(
+            document.Id,
+            String(data, "productSku", ""),
+            String(data, "provider", "razorpay"),
+            StatusAfterAbandonment(
+                String(data, "status", "pending"),
+                Bool(data, "credited", false),
+                Date(data, "createdAt"),
+                _clock.UtcNow),
+            Long(data, "amountMinor"),
+            String(data, "currency", "INR"),
+            Date(data, "createdAt"),
+            Bool(data, "credited", false));
     }
 
     private static UsageSnapshot UsageFrom(DocumentSnapshot document)

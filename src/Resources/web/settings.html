@@ -587,6 +587,13 @@
       <h2>Account &amp; Billing</h2>
       <p class="section-hint">Your plan, usage, purchases, and devices are synchronized securely with your keyboard.wtf account.</p>
 
+      <div class="field" id="paidIdentityCard" style="display:none">
+        <div style="display:flex;align-items:center;gap:12px">
+          <div id="paidAvatar" style="width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:#111;color:#fff;font-weight:700">K</div>
+          <div><strong id="paidDisplayName">Google user</strong><div class="hint" id="paidEmail"></div></div>
+        </div>
+      </div>
+
       <div class="status-row">
         <span class="dot" id="paidAccountDot"></span>
         <span class="name">Account</span>
@@ -630,10 +637,12 @@
       <div class="field" style="margin-top:20px">
         <label>Recent usage</label>
         <div id="paidRecentUsage" class="hint">No recent usage.</div>
+        <button class="button-link" style="margin-top:8px" onclick="paidAccountAction('manage')">View all usage</button>
       </div>
       <div class="field">
         <label>Payment history</label>
         <div id="paidRecentPurchases" class="hint">No payments yet.</div>
+        <button class="button-link" style="margin-top:8px" onclick="paidAccountAction('manage')">View all payments</button>
       </div>
       <div class="field">
         <label>Devices &amp; sessions</label>
@@ -648,30 +657,30 @@
 
       <div class="field">
         <label for="hotkeyPushToTalk">Smart writing</label>
-        <input id="hotkeyPushToTalk" type="text" onchange="hotkeysChanged()" placeholder="Ctrl+Alt+K">
+        <div class="btn-row"><input id="hotkeyPushToTalk" type="text" readonly aria-label="Smart writing shortcut"><button class="ghost" onclick="recordHotkey('PushToTalk')">Change shortcut</button><button class="ghost" onclick="resetOneHotkey('PushToTalk')">Reset to default</button></div>
         <div class="hint">Flow-like mode: transcribes quickly, removes filler and false starts, then types polished text.</div>
       </div>
 
       <div class="field">
         <label for="hotkeyDictation">Dictation toggle</label>
-        <input id="hotkeyDictation" type="text" onchange="hotkeysChanged()" placeholder="Ctrl+Alt+D">
+        <div class="btn-row"><input id="hotkeyDictation" type="text" readonly aria-label="Dictation shortcut"><button class="ghost" onclick="recordHotkey('Dictation')">Change shortcut</button><button class="ghost" onclick="resetOneHotkey('Dictation')">Reset to default</button></div>
       </div>
 
       <div class="field">
         <label for="hotkeyJarvis">Jarvis mode</label>
-        <input id="hotkeyJarvis" type="text" onchange="hotkeysChanged()" placeholder="Ctrl+Alt+Q">
+        <div class="btn-row"><input id="hotkeyJarvis" type="text" readonly aria-label="Jarvis shortcut"><button class="ghost" onclick="recordHotkey('Jarvis')">Change shortcut</button><button class="ghost" onclick="resetOneHotkey('Jarvis')">Reset to default</button></div>
         <div class="hint">Chat, open allowed apps, prepare Gmail drafts, prepare WhatsApp messages, and use safe actions.</div>
       </div>
 
       <div class="field">
         <label for="hotkeyCancel">Cancel anything</label>
-        <input id="hotkeyCancel" type="text" onchange="hotkeysChanged()" placeholder="Ctrl+Alt+X">
+        <div class="btn-row"><input id="hotkeyCancel" type="text" readonly aria-label="Cancel shortcut"><button class="ghost" onclick="recordHotkey('Cancel')">Change shortcut</button><button class="ghost" onclick="resetOneHotkey('Cancel')">Reset to default</button></div>
         <div class="hint">Immediately cancels listening, transcription, AI planning, or conversation.</div>
       </div>
 
       <div class="field">
         <label for="hotkeyOpenSettings">Open settings</label>
-        <input id="hotkeyOpenSettings" type="text" onchange="hotkeysChanged()" placeholder="Ctrl+Alt+,">
+        <div class="btn-row"><input id="hotkeyOpenSettings" type="text" readonly aria-label="Open Settings shortcut"><button class="ghost" onclick="recordHotkey('OpenSettings')">Change shortcut</button><button class="ghost" onclick="resetOneHotkey('OpenSettings')">Reset to default</button></div>
       </div>
 
       <div class="field">
@@ -699,7 +708,8 @@
         </select>
       </div>
 
-      <button class="ghost" onclick="resetHotkeys()">Reset hotkeys</button>
+      <button class="ghost" onclick="resetHotkeys()">Reset all to defaults</button>
+      <div class="hint" id="hotkeyRecorderStatus">Choose Change shortcut, then press the new key combination.</div>
       <div class="hint" id="activeHotkeyStatus">Active shortcuts are checked when keyboard.wtf starts.</div>
     </section>
 
@@ -1364,11 +1374,16 @@ let paidLastSignInState = 'idle';
 (function () {
   const mainEl  = document.getElementById('main-scroll');
   const navLinks = Array.from(document.querySelectorAll('#sidebar-nav a'));
-  const sections = Array.from(document.querySelectorAll('.main section[id]'));
+  const sectionById = new Map(Array.from(document.querySelectorAll('.main section[id]')).map(section => [section.id, section]));
   let scrollFrame;
+  let clickTarget;
+  let clickReleaseTimer;
 
   function visibleSections() {
-    return sections.filter(section => section.offsetParent !== null);
+    return navLinks
+      .filter(link => link.offsetParent !== null)
+      .map(link => sectionById.get(link.getAttribute('href').slice(1)))
+      .filter(section => section && section.offsetParent !== null);
   }
 
   function setActive(id) {
@@ -1382,6 +1397,12 @@ let paidLastSignInState = 'idle';
       const id = a.getAttribute('href').slice(1);
       const target = document.getElementById(id);
       if (!target || target.offsetParent === null) return;
+      clickTarget = id;
+      clearTimeout(clickReleaseTimer);
+      clickReleaseTimer = setTimeout(() => {
+        clickTarget = undefined;
+        scheduleScrollSpy();
+      }, 900);
       setActive(id);
       const mainTop    = mainEl.getBoundingClientRect().top;
       const targetTop  = target.getBoundingClientRect().top;
@@ -1399,13 +1420,21 @@ let paidLastSignInState = 'idle';
     }
     const atBottom = mainEl.scrollTop + mainEl.clientHeight >= mainEl.scrollHeight - 4;
     if (atBottom) {
+      clickTarget = undefined;
       setActive(candidates[candidates.length - 1].id);
       return;
     }
+    if (clickTarget) {
+      setActive(clickTarget);
+      return;
+    }
     const mainTop = mainEl.getBoundingClientRect().top;
-    let activeId  = candidates[0].id;
+    const marker = mainEl.scrollTop + 84;
+    let activeId = candidates[0].id;
     for (const s of candidates) {
-      if (s.getBoundingClientRect().top - mainTop <= 80) activeId = s.id;
+      const start = mainEl.scrollTop + s.getBoundingClientRect().top - mainTop;
+      if (start <= marker) activeId = s.id;
+      else break;
     }
     setActive(activeId);
   }
@@ -1419,6 +1448,11 @@ let paidLastSignInState = 'idle';
   }
 
   mainEl.addEventListener('scroll', scheduleScrollSpy, { passive: true });
+  mainEl.addEventListener('wheel', () => { clickTarget = undefined; }, { passive: true });
+  mainEl.addEventListener('touchstart', () => { clickTarget = undefined; }, { passive: true });
+  if ('onscrollend' in mainEl)
+    mainEl.addEventListener('scrollend', () => { clickTarget = undefined; scheduleScrollSpy(); });
+  new ResizeObserver(scheduleScrollSpy).observe(mainEl);
   window.refreshSettingsScrollSpy = scheduleScrollSpy;
   onScroll();
 })();
@@ -2422,14 +2456,20 @@ function renderPaidAccount(account) {
   document.getElementById('paidDeviceDot').className = account.deviceId ? 'dot ok' : 'dot';
   document.getElementById('paidCycleDot').className = account.cycleEndsAt ? 'dot ok' : 'dot';
   document.getElementById('paidAccountIdentity').textContent = signedIn
-    ? (accountLoading ? 'Checking account...' : (account.displayName ? `${account.displayName} (${account.email})` : account.email))
+    ? (accountLoading ? 'Checking account...' : (account.displayName || account.email))
     : 'Signed out';
+  document.getElementById('paidIdentityCard').style.display = signedIn && !accountLoading ? '' : 'none';
+  document.getElementById('paidDisplayName').textContent = account.displayName || 'Google user';
+  document.getElementById('paidEmail').textContent = account.email || '';
+  document.getElementById('paidAvatar').textContent = (account.displayName || account.email || 'K').trim().charAt(0).toUpperCase();
   document.getElementById('paidPlan').textContent = accountLoading
     ? 'Loading authoritative plan...'
-    : `${formatPaidPlan(account.planId)} - ${account.subscriptionStatus || 'none'}`;
+    : `${account.planDisplayName || formatPaidPlan(account.planId)} - ${formatPaidStatus(account.subscriptionStatus || 'none')}`;
   document.getElementById('paidDevice').textContent = accountLoading ? 'Checking session...' : (account.deviceId || 'Not connected');
   document.getElementById('paidCycle').textContent = accountLoading
     ? 'Checking billing cycle...'
+    : account.subscriptionCancellationStatus === 'scheduled' && account.subscriptionCancelsAt
+    ? `Cancels ${new Date(account.subscriptionCancelsAt).toLocaleDateString()} - no further charge`
     : account.cycleEndsAt
     ? `Renews ${new Date(account.cycleEndsAt).toLocaleDateString()}`
     : 'No active cycle';
@@ -2471,11 +2511,11 @@ function renderPaidAccount(account) {
   document.getElementById('paidSignOut').style.display = signedIn ? '' : 'none';
   document.getElementById('paidSignOutAll').style.display = signedIn ? '' : 'none';
   renderPaidRows('paidRecentUsage', account.recentUsage, 'No recent usage.', row =>
-    `${row.model || 'AI request'} - ${formatPaidCredits(row.chargedCreditMicros)} credits - ${row.outcome || 'unknown'} - ${formatPaidDate(row.createdAt)}`);
+    `${formatPaidActivity(row.activityType)} - ${formatPaidCredits(row.chargedCreditMicros)} credits - ${formatPaidStatus(row.accountingStatus !== 'settled' ? row.accountingStatus : row.outcome)} - ${formatPaidDate(row.createdAt)}`);
   renderPaidRows('paidRecentPurchases', account.recentPurchases, 'No payments yet.', row =>
-    `${row.productSku || 'Subscription'} - ${row.status || 'unknown'} - ${formatPaidMoney(row.amountMinor, row.currency)} - ${formatPaidDate(row.createdAt)}`);
+    `${row.displayName || 'Jarvis Monthly'} - ${formatPaidStatus(row.status)} - ${formatPaidMoney(row.amountMinor, row.currency)} - ${formatPaidDate(row.createdAt)}`);
   renderPaidRows('paidDevices', account.devices, 'No connected devices.', row =>
-    `${row.name || 'Jarvis device'} - ${row.status || 'unknown'} - last seen ${formatPaidDate(row.lastSeenAt)}`);
+    `${row.name || 'Windows device'}${row.isCurrent ? ' (this device)' : ''} - ${row.platform || 'Windows'} - ${formatPaidStatus(row.status)} - last seen ${formatPaidDate(row.lastSeenAt)}`);
   schedulePaidSignInRefresh(signInPending);
 }
 
@@ -2512,13 +2552,34 @@ function renderPaidRows(containerId, rows, emptyText, formatter) {
 
 function formatPaidPlan(planId) {
   if (!planId || planId === 'none') return 'No active plan';
-  return planId.includes('monthly') ? 'Monthly' : planId.replaceAll('_', ' ');
+  return planId.includes('monthly') ? 'Jarvis Monthly' : 'Subscription';
+}
+
+function formatPaidActivity(activityType) {
+  return ({
+    fast_text: 'Jarvis command',
+    agent_planner: 'Jarvis command',
+    selected_text: 'Selected text',
+    browser_planner: 'Browser task',
+    screen_reasoning: 'Screen reasoning',
+    live_audio: 'Jarvis Live',
+    ai_request: 'Jarvis AI'
+  })[String(activityType || '').toLowerCase()] || 'Jarvis AI';
+}
+
+function formatPaidStatus(value) {
+  const status = String(value || '').trim().toLowerCase();
+  return ({
+    none: 'None', active: 'Active', completed: 'Completed', provider_completed: 'Completed',
+    settled: 'Completed', cancelled: 'Cancelled', failed: 'Failed', captured: 'Paid',
+    paid: 'Paid', charged: 'Paid', refunded: 'Refunded', reconciliation_pending: 'Finalizing usage...'
+  })[status] || (status ? status.replaceAll('_', ' ') : 'Recorded');
 }
 
 function formatPaidDate(value) {
-  if (!value) return 'unknown';
+  if (!value) return 'Date unavailable';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? 'unknown' : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? 'Date unavailable' : date.toLocaleString();
 }
 
 function formatPaidMoney(amountMinor, currency) {
@@ -2627,14 +2688,87 @@ async function paidAccountAction(action) {
   }
 }
 
+const hotkeyInputs = {
+  PushToTalk: 'hotkeyPushToTalk', Dictation: 'hotkeyDictation', Jarvis: 'hotkeyJarvis',
+  Cancel: 'hotkeyCancel', OpenSettings: 'hotkeyOpenSettings'
+};
+const hotkeyDefaults = {
+  PushToTalk: 'Ctrl+Alt+K', Dictation: 'Ctrl+Alt+D', Jarvis: 'Ctrl+Alt+Q',
+  Cancel: 'Ctrl+Alt+X', OpenSettings: 'Ctrl+Alt+,'
+};
+let recordingHotkeyAction;
+
+function hotkeyValues() {
+  return Object.fromEntries(Object.entries(hotkeyInputs).map(([action, id]) =>
+    [action, document.getElementById(id).value]));
+}
+
+function recordedKeyName(event) {
+  if (event.key === ',') return ',';
+  if (event.key === ' ') return 'Space';
+  if (/^F(?:[1-9]|1\d|2[0-4])$/i.test(event.key)) return event.key.toUpperCase();
+  if (/^[a-z0-9]$/i.test(event.key)) return event.key.toUpperCase();
+  return ({ Escape: 'Escape', Backspace: 'Backspace', Delete: 'Delete', Insert: 'Insert',
+    Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
+    ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right' })[event.key];
+}
+
+function stopHotkeyRecording(message) {
+  recordingHotkeyAction = undefined;
+  document.getElementById('hotkeyRecorderStatus').textContent = message || 'Choose Change shortcut, then press the new key combination.';
+}
+
+function recordHotkey(action) {
+  if (!(action in hotkeyInputs)) return;
+  recordingHotkeyAction = action;
+  const input = document.getElementById(hotkeyInputs[action]);
+  input.focus();
+  document.getElementById('hotkeyRecorderStatus').textContent = `Recording ${action.replace(/([A-Z])/g, ' $1').trim()} - press Ctrl, Alt, or Windows plus a key. Press Escape alone to cancel.`;
+}
+
+document.addEventListener('keydown', async event => {
+  if (!recordingHotkeyAction) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.key === 'Escape' && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
+    stopHotkeyRecording('Shortcut change cancelled.');
+    return;
+  }
+  if (['Control', 'Alt', 'Shift', 'Meta'].includes(event.key)) return;
+  if (!event.ctrlKey && !event.altKey && !event.metaKey) {
+    document.getElementById('hotkeyRecorderStatus').textContent = 'Include Ctrl, Alt, or the Windows key so normal typing is never captured.';
+    return;
+  }
+  const key = recordedKeyName(event);
+  if (!key) {
+    document.getElementById('hotkeyRecorderStatus').textContent = 'That key is not supported. Try a letter, number, function key, comma, navigation key, or Escape.';
+    return;
+  }
+  const parts = [];
+  if (event.ctrlKey) parts.push('Ctrl');
+  if (event.altKey) parts.push('Alt');
+  if (event.shiftKey) parts.push('Shift');
+  if (event.metaKey) parts.push('Win');
+  parts.push(key);
+  const action = recordingHotkeyAction;
+  const values = hotkeyValues();
+  values[action] = parts.join('+');
+  stopHotkeyRecording('Checking the shortcut with Windows...');
+  await saveHotkeyValues(values);
+}, true);
+
 async function hotkeysChanged() {
+  await saveHotkeyValues(hotkeyValues());
+}
+
+async function saveHotkeyValues(values) {
   const data = {
     hotkeys: {
-      pushToTalk: document.getElementById('hotkeyPushToTalk').value,
-      dictation: document.getElementById('hotkeyDictation').value,
-      jarvis: document.getElementById('hotkeyJarvis').value,
-      cancel: document.getElementById('hotkeyCancel').value,
-      openSettings: document.getElementById('hotkeyOpenSettings').value
+      pushToTalk: values.PushToTalk,
+      dictation: values.Dictation,
+      jarvis: values.Jarvis,
+      cancel: values.Cancel,
+      openSettings: values.OpenSettings
     }
   };
 
@@ -2647,22 +2781,39 @@ async function hotkeysChanged() {
     if (!resp.ok) {
       const error = await resp.json();
       showToast(error.error || 'Hotkey conflict');
+      stopHotkeyRecording(error.error || 'The old shortcut is still active.');
+      await loadSettings();
       return;
     }
     showToast('Hotkeys saved');
-    loadSettings();
+    stopHotkeyRecording('Shortcut changed. Only the new shortcut is active.');
+    await loadSettings();
   } catch (e) {
     showToast('Failed to save hotkeys');
+    stopHotkeyRecording('The shortcut could not be changed. The old shortcut is still active.');
+    await loadSettings();
   }
+}
+
+async function resetOneHotkey(action) {
+  if (!(action in hotkeyDefaults)) return;
+  const values = hotkeyValues();
+  values[action] = hotkeyDefaults[action];
+  await saveHotkeyValues(values);
 }
 
 async function resetHotkeys() {
   try {
-    await fetch('/api/hotkeys/reset', { method: 'POST' });
+    const response = await fetch('/api/hotkeys/reset', { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || 'Defaults conflict with another application.');
     showToast('Hotkeys reset');
-    loadSettings();
+    stopHotkeyRecording('Default shortcuts restored.');
+    await loadSettings();
   } catch (e) {
-    showToast('Reset failed');
+    showToast(e.message || 'Reset failed');
+    stopHotkeyRecording('Defaults could not be registered. Existing shortcuts are unchanged.');
+    await loadSettings();
   }
 }
 

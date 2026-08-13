@@ -103,6 +103,29 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
             root.TryGetProperty("status", out var status) ? status.GetString() ?? "created" : "created");
     }
 
+    public async Task<ProviderSubscriptionCancellation> CancelSubscriptionAtCycleEndAsync(
+        string subscriptionId,
+        CancellationToken cancellationToken)
+    {
+        EnsureProviderId(subscriptionId, "sub_");
+        using var document = await SendAsync(
+            HttpMethod.Post,
+            $"subscriptions/{subscriptionId}/cancel",
+            new { cancel_at_cycle_end = true },
+            cancellationToken);
+        var root = document.RootElement;
+        var returnedId = Text(root, "id");
+        if (!string.Equals(returnedId, subscriptionId, StringComparison.Ordinal))
+            throw new InvalidOperationException("Razorpay returned another subscription during cancellation.");
+        return new ProviderSubscriptionCancellation(
+            returnedId,
+            Text(root, "status"),
+            Boolean(root, "has_scheduled_changes"),
+            TextOrNull(root, "schedule_change_at"),
+            UnixTime(root, "current_end"),
+            UnixTime(root, "change_scheduled_at"));
+    }
+
     public async Task<ProviderOrderInspection> InspectOrderAsync(
         string orderId,
         CancellationToken cancellationToken)
@@ -190,7 +213,10 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
             Note(root, "product_sku"),
             UnixTime(root, "current_start"),
             UnixTime(root, "current_end"),
-            charges.OrderBy(charge => charge.CreatedAt).ToArray());
+            charges.OrderBy(charge => charge.CreatedAt).ToArray(),
+            Boolean(root, "has_scheduled_changes"),
+            TextOrNull(root, "schedule_change_at"),
+            UnixTime(root, "change_scheduled_at"));
     }
 
     public async Task<IReadOnlyList<ProviderRefund>> InspectRefundsAsync(
@@ -408,6 +434,12 @@ public sealed class RazorpayPaymentProvider : IPaymentProvider
         && value.TryGetInt64(out var number)
             ? number
             : 0;
+
+    private static bool Boolean(JsonElement element, string name) =>
+        element.ValueKind == JsonValueKind.Object
+        && element.TryGetProperty(name, out var value)
+        && value.ValueKind is JsonValueKind.True or JsonValueKind.False
+        && value.GetBoolean();
 
     private static DateTimeOffset? UnixTime(JsonElement element, string name) =>
         Number(element, name) is var value && value > 0
