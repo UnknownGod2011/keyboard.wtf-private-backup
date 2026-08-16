@@ -26,7 +26,7 @@ dotnet run --project tools/KeyboardWtf.ReleaseSigner -c Release -- `
   --release-notes docs/releases/1.4.0.md `
   --channel stable `
   --version 1.4.0 `
-  --minimum-version 1.3.0
+  --minimum-version 1.2.0
 ```
 
 The signer derives the public key and verifies the completed manifest before

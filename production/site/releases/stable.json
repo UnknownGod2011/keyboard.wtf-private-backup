@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "channel": "stable",
   "version": "1.4.0",
-  "minimumVersion": "1.3.0",
-  "publishedAt": "2026-08-16T06:55:20.1201838+00:00",
+  "minimumVersion": "1.2.0",
+  "publishedAt": "2026-08-16T06:58:19.2041993+00:00",
   "packageUrl": "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.0/keyboard-wtf-setup.exe",
   "sha256": "a1a0acdd3ee8f54928d64e4502b184239607df052efdbe5d60ced1ae5d5d69cc",
   "sizeBytes": 84195842,
   "releaseNotes": "# keyboard.wtf 1.4.0\n\nkeyboard.wtf 1.4.0 introduces the production account and subscription experience\nwhile preserving the fast Windows assistant, voice, selected-text, and existing-\nChrome automation workflows from the previous release.\n\n- Sign in with Google once and use the same keyboard.wtf account on the website\n  and Windows app.\n- Jarvis Monthly is available for INR 999 per month with server-authoritative,\n  provider-backed usage accounting and clear remaining-usage visibility.\n- Account \u0026 Billing now shows the current plan, billing cycle, recent usage,\n  payment history, devices, account switching, and renewal cancellation.\n- Paid AI requests are authenticated, bounded, metered, and settled by the\n  keyboard.wtf backend; provider credentials are never sent to the desktop.\n- Browser automation continues to use the user\u0027s existing logged-in Chrome\n  session through the keyboard.wtf Chrome Helper, with cancellation and manual\n  intervention for sensitive steps.\n- Human-friendly global shortcuts can be recorded, validated, reset, and safely\n  changed without losing the previous working registration.\n- Startup, Restart, uninstall, session persistence, signed update metadata, and\n  package-hash verification have been hardened for normal Windows use.\n\nThe installer is not yet Authenticode-signed, so Windows may show an\nunknown-publisher warning. Download it only from https://keyboardwtf.com or the\nofficial keyboard.wtf GitHub Release.\n",
   "keyId": "kwt-release-2026-01",
-  "signature": "Vhetrf0qG2T2nqEcFQOpO7V94edwgQnL8TK0r71jupisDKmdmW2VDyjLeIH2AUBjT615kp2hKxWTU4Lq/Qs12g=="
+  "signature": "rmDSoOVczvl5RV1qjUuGJCqZ5SXRT1SdcRJIxo4fpaJi9mL1ycnPxjKa3UcPQ06J1Nnt7X7aeS4PKW/o0FF8Jg=="
 }
