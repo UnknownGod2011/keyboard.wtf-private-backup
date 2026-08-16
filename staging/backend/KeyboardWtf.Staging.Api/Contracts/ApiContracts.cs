@@ -71,3 +71,5 @@ public sealed record AdminGrantRequest(
     long CreditMicros,
     string Reason,
     string IdempotencyKey);
+
+public sealed record UpsertReviewRequest(int Rating, string Text);

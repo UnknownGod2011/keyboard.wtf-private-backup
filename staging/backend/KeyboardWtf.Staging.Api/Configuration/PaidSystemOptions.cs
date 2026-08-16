@@ -31,6 +31,7 @@ public sealed class PaidSystemOptions
 
     public string[] AllowedOrigins { get; init; } = [];
     public string[] AdminEmails { get; init; } = [];
+    public string[] ReviewAdminUserIds { get; init; } = [];
     public string[] PaymentCanaryEmails { get; init; } = [];
     public string[] AiCanaryEmails { get; init; } = [];
     public int AccessTokenMinutes { get; init; } = 15;

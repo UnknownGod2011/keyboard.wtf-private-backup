@@ -56,7 +56,9 @@ jobs:
           node --check staging/site/account.js
           node --check production/site/app.js
           node --check production/site/account.js
+          node --check production/site/downloads.js
           node --check production/site/pricing.js
+          node --check production/site/reviews.js
           node --check production/site/desktop-login.js
           Get-ChildItem extensions/keyboard-wtf-browser-helper-v2 -Filter *.js -Recurse | ForEach-Object { node --check $_.FullName }
 

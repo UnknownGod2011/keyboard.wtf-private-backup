@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Read keyboard.wtf reviews or share one review from your verified keyboard.wtf account.">
+  <meta name="theme-color" content="#f4f5f2">
+  <meta name="referrer" content="no-referrer">
+  <link rel="canonical" href="https://keyboardwtf.com/reviews.html">
+  <link rel="icon" href="./favicon.svg">
+  <link rel="stylesheet" href="./styles.css">
+  <title>Reviews · keyboard.wtf</title>
+</head>
+<body>
+  <nav class="site-nav"><div class="shell nav-inner"><a class="brand" href="./">keyboard.wtf</a><div class="nav-links"><a class="nav-link mobile-optional" href="./#download">Download</a><a class="nav-link" href="./pricing.html">Pricing</a><a class="nav-link" href="./reviews.html" aria-current="page">Reviews</a><a class="nav-link" href="./account.html">Account</a></div></div></nav>
+  <main>
+    <header class="page-head"><div class="shell"><p class="eyebrow">From keyboard.wtf users</p><h1>Reviews</h1><p>Read current reviews or share one from your verified keyboard.wtf account.</p></div></header>
+    <section class="content-section"><div class="shell">
+      <div class="reviews-summary"><span id="averageRating" class="reviews-average">—</span><span><span id="averageStars" class="review-stars" aria-hidden="true"></span><br><span id="reviewCount" class="small">Loading reviews…</span></span></div>
+      <div id="reviewsStatus" class="status" role="status" aria-live="polite">Loading reviews…</div>
+      <div id="reviewList" class="review-list"></div>
+      <div class="actions"><button id="showMore" class="secondary hidden" type="button">Show more</button></div>
+    </div></section>
+    <section class="content-section"><div class="shell"><div class="section-head"><div><p class="eyebrow">Your experience</p><h2>Add a review</h2></div><div>
+      <div id="reviewAuthStatus" class="status" role="status" aria-live="polite">Checking Google sign-in…</div>
+      <div id="reviewSignedOut" class="hidden"><p>Sign in with your keyboard.wtf Google account to post one current review.</p><button id="reviewSignIn" type="button">Sign in with Google</button></div>
+      <form id="reviewForm" class="review-form hidden">
+        <label>Rating<select id="reviewRating" required><option value="5">5 — Excellent</option><option value="4">4 — Good</option><option value="3">3 — Okay</option><option value="2">2 — Needs work</option><option value="1">1 — Poor</option></select></label>
+        <label>Review<textarea id="reviewText" minlength="5" maxlength="1000" required placeholder="What has your experience with keyboard.wtf been like?"></textarea></label>
+        <div class="actions"><button id="saveReview" type="submit">Publish review</button><button id="deleteOwnReview" class="secondary hidden" type="button">Delete my review</button></div>
+      </form>
+    </div></div></div></section>
+  </main>
+  <footer class="site-footer"><div class="shell footer-inner"><span>keyboard.wtf for Windows + Mac</span><div class="footer-links"><a href="./privacy.html">Privacy</a><a href="./terms.html">Terms</a><a href="./refunds.html">Refunds</a><a href="./support.html">Support</a><a href="./changelog.html">Changelog</a></div></div></footer>
+  <script type="module" src="./reviews.js"></script>
+</body>
+</html>

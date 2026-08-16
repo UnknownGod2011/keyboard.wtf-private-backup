@@ -96,6 +96,20 @@ public sealed record PurchaseSnapshot(
     bool Fulfilled = false,
     string DisplayName = "Subscription");
 
+public sealed record ReviewSnapshot(
+    string ReviewId,
+    int Rating,
+    string Text,
+    string ReviewerDisplayName,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
+
+public sealed record ReviewPageSnapshot(
+    IReadOnlyList<ReviewSnapshot> Items,
+    string? NextCursor,
+    long ReviewCount,
+    double AverageRating);
+
 public sealed record LedgerEntry(
     string EventId,
     string Type,

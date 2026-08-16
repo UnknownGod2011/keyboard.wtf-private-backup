@@ -12,8 +12,15 @@ if (windows.available && windows.url) {
 
 const macos = runtimeConfig.downloads.macos;
 const macButton = document.getElementById("macDownload");
+const macRelease = document.getElementById("macRelease");
 if (macos.available && macos.url) {
-  macButton.disabled = false;
   macButton.textContent = "Download for macOS";
+  macButton.removeAttribute("aria-disabled");
   macButton.addEventListener("click", () => window.location.assign(macos.url));
+} else {
+  macButton.removeAttribute("aria-disabled");
+  macButton.addEventListener("click", () => {
+    macRelease.textContent = macos.comingSoonMessage;
+    macRelease.classList.add("coming-soon-note");
+  });
 }

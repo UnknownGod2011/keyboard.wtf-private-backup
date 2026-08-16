@@ -14,7 +14,20 @@ export const runtimeConfig = Object.freeze({
       version: "",
       url: "",
       sha256: "",
+      comingSoonMessage: "keyboard.wtf for macOS is coming soon. The Windows download is not compatible with macOS.",
     }),
+  }),
+  pricingDisplay: Object.freeze({
+    asOf: "2026-08-16",
+    baseAmountMinor: 99900,
+    baseCurrency: "INR",
+    approximateEquivalents: Object.freeze([
+      "$10.50 USD",
+      "€9.10 EUR",
+      "£7.80 GBP",
+      "CHF 8.50",
+      "AED 38.50",
+    ]),
   }),
   firebase: {
     apiKey: "AIzaSyATGk-af6CHF32qMdcWYcyOWCzFwsxYqW4",

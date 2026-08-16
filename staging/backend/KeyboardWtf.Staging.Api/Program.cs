@@ -51,6 +51,9 @@ builder.Services.AddOptions<PaidSystemOptions>()
     .Validate(options => options.BillingReconciliationLagDays is >= 1 and <= 30, "Billing reconciliation lag is unsafe.")
     .Validate(options => options.ProviderCostVarianceBasisPoints is >= 1 and <= 10_000, "Provider cost variance threshold is unsafe.")
     .Validate(options => options.ProviderCostVarianceAbsoluteUsdMicros > 0, "Provider cost absolute variance threshold is unsafe.")
+    .Validate(options => options.ReviewAdminUserIds.All(userId =>
+        !string.IsNullOrWhiteSpace(userId) && userId.Length <= 128),
+        "Review moderator user IDs are invalid.")
     .Validate(options => options.BillingReconciliationMaximumBytesBilled is >= 10_000_000 and <= 1_000_000_000_000,
         "Billing reconciliation bytes-billed limit is unsafe.")
     .Validate(options => !options.ProviderCostReconciliationEnabled
@@ -75,7 +78,7 @@ builder.Services.AddCors(options =>
     options.AddDefaultPolicy(policy =>
     {
         policy.WithOrigins(paidOptions.AllowedOrigins)
-            .WithMethods("GET", "POST", "OPTIONS")
+            .WithMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
             .WithHeaders("Authorization", "Content-Type", "X-Request-Id", ClientCompatibility.DesktopVersionHeader)
             .SetPreflightMaxAge(TimeSpan.FromHours(1));
     });
@@ -101,10 +104,20 @@ builder.Services.AddRateLimiter(options =>
             QueueLimit = 0,
             AutoReplenishment = true,
         }));
+    options.AddPolicy("review-write", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 12,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true,
+        }));
 });
 builder.Services.AddSingleton(_ => FirestoreDb.Create(paidOptions.ProjectId));
 builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddSingleton<IAccountStore, FirestoreAccountStore>();
+builder.Services.AddSingleton<IReviewService, FirestoreReviewService>();
 builder.Services.AddSingleton<ICatalogService, CatalogService>();
 builder.Services.AddSingleton<IModelRoutingService, ModelRoutingService>();
 builder.Services.AddSingleton<IIdentityService, FirebaseIdentityService>();

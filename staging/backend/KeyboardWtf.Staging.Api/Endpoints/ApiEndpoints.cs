@@ -43,6 +43,70 @@ public static class ApiEndpoints
             });
         });
 
+        api.MapGet("/reviews", async (
+            int? limit,
+            string? cursor,
+            IReviewService reviews,
+            CancellationToken token) =>
+            TypedResults.Ok(await reviews.GetPageAsync(
+                Math.Clamp(limit ?? 10, 1, 20),
+                cursor,
+                token)));
+
+        api.MapGet("/reviews/me", async (
+            HttpContext context,
+            IIdentityService identities,
+            IReviewService reviews,
+            CancellationToken token) =>
+        {
+            var caller = await RequireCallerAsync(context, identities, token);
+            return TypedResults.Ok(new
+            {
+                Review = await reviews.GetOwnAsync(caller.UserId, token),
+                CanModerate = reviews.IsModerator(caller),
+            });
+        });
+
+        api.MapPut("/reviews/me", async (
+            UpsertReviewRequest request,
+            HttpContext context,
+            IIdentityService identities,
+            IReviewService reviews,
+            CancellationToken token) =>
+        {
+            var caller = await RequireCallerAsync(context, identities, token);
+            return TypedResults.Ok(await reviews.UpsertAsync(
+                caller,
+                request.Rating,
+                request.Text,
+                token));
+        }).RequireRateLimiting("review-write");
+
+        api.MapDelete("/reviews/me", async Task<IResult> (
+            HttpContext context,
+            IIdentityService identities,
+            IReviewService reviews,
+            CancellationToken token) =>
+        {
+            var caller = await RequireCallerAsync(context, identities, token);
+            if (await reviews.DeleteOwnAsync(caller.UserId, token))
+                return TypedResults.NoContent();
+            return TypedResults.NotFound();
+        }).RequireRateLimiting("review-write");
+
+        api.MapDelete("/reviews/{reviewId}", async Task<IResult> (
+            string reviewId,
+            HttpContext context,
+            IIdentityService identities,
+            IReviewService reviews,
+            CancellationToken token) =>
+        {
+            var caller = await RequireCallerAsync(context, identities, token);
+            if (await reviews.DeleteAsModeratorAsync(caller, reviewId, token))
+                return TypedResults.NoContent();
+            return TypedResults.NotFound();
+        }).RequireRateLimiting("review-write");
+
         api.MapPost("/desktop-login/start", async (
             DesktopLoginStartRequest request,
             DesktopLoginService login,

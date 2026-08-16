@@ -9,6 +9,26 @@ public interface IClock
     DateTimeOffset UtcNow { get; }
 }
 
+public interface IReviewService
+{
+    Task<ReviewPageSnapshot> GetPageAsync(
+        int limit,
+        string? cursor,
+        CancellationToken cancellationToken);
+    Task<ReviewSnapshot?> GetOwnAsync(string userId, CancellationToken cancellationToken);
+    Task<ReviewSnapshot> UpsertAsync(
+        CallerIdentity caller,
+        int rating,
+        string text,
+        CancellationToken cancellationToken);
+    Task<bool> DeleteOwnAsync(string userId, CancellationToken cancellationToken);
+    Task<bool> DeleteAsModeratorAsync(
+        CallerIdentity caller,
+        string reviewId,
+        CancellationToken cancellationToken);
+    bool IsModerator(CallerIdentity caller);
+}
+
 public sealed class SystemClock : IClock
 {
     public DateTimeOffset UtcNow => DateTimeOffset.UtcNow;
