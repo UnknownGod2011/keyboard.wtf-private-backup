@@ -123,7 +123,10 @@ $installerName = if ($PaidProductionCandidate) {
 $installer = Join-Path $installerDir $installerName
 $hash = Get-FileHash -LiteralPath $installer -Algorithm SHA256
 $sizeMb = [Math]::Round((Get-Item -LiteralPath $installer).Length / 1MB, 1)
-if (-not $SkipSiteHashUpdate -and -not $isSideBySide) {
+# The legacy BYOK website still consumes this inline hash. Paid production
+# releases use production/site/config.js plus the signed release manifest and
+# must never rewrite the legacy surface as a packaging side effect.
+if (-not $SkipSiteHashUpdate -and -not $isSideBySide -and -not $PaidProductionRelease) {
     $siteHtml = Get-Content -LiteralPath $siteIndex -Raw
     $updatedSiteHtml = $siteHtml -replace 'SHA256 [A-Fa-f0-9]{64}', "SHA256 $($hash.Hash)"
     if ($updatedSiteHtml -eq $siteHtml -and $siteHtml -notmatch "SHA256 $($hash.Hash)") {

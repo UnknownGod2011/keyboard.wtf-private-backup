@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "channel": "stable",
-  "version": "1.3.0",
-  "minimumVersion": "1.2.0",
-  "publishedAt": "2026-08-13T12:59:55.3333491+00:00",
-  "packageUrl": "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.3.0/keyboard-wtf-setup.exe",
-  "sha256": "25da8eafd572066d5118537ac1c05cac18e04936e39ebf33d99f8a4c6c454686",
-  "sizeBytes": 84133895,
-  "releaseNotes": "# keyboard.wtf 1.3.0\n\nkeyboard.wtf 1.3.0 adds stable, opt-in browser automation for the user\u0027s\nexisting Chrome session while preserving the fast direct-open and search path\nfor simple commands.\n\n- Chrome Helper 2.1.21 with exact Store and unpacked-fallback identities.\n- Current-tab and same-window task execution with bounded recovery and concrete\n  verification.\n- Pause and cancel support, timer lifecycle updates, and Ctrl\u002BAlt\u002BX\n  cancellation.\n- First-task privacy disclosure and consent.\n- Store-recommended extension setup plus a clearly labelled unpacked fallback.\n- Safe single-instance Restart and registered Windows uninstall.\n- Public privacy and support documentation.\n\nThe installer is not Authenticode-signed. Download it only from the official\nkeyboard.wtf GitHub Release or keyboard-wtf.vercel.app.\n",
+  "version": "1.4.0",
+  "minimumVersion": "1.3.0",
+  "publishedAt": "2026-08-16T06:51:01.9831833+00:00",
+  "packageUrl": "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.0/keyboard-wtf-setup.exe",
+  "sha256": "99791ff5beeee767cdaba3fc244bdd3314a451dda222979ecd9d627b821cd458",
+  "sizeBytes": 84195842,
+  "releaseNotes": "# keyboard.wtf 1.4.0\n\nkeyboard.wtf 1.4.0 introduces the production account and subscription experience\nwhile preserving the fast Windows assistant, voice, selected-text, and existing-\nChrome automation workflows from the previous release.\n\n- Sign in with Google once and use the same keyboard.wtf account on the website\n  and Windows app.\n- Jarvis Monthly is available for INR 999 per month with server-authoritative,\n  provider-backed usage accounting and clear remaining-usage visibility.\n- Account \u0026 Billing now shows the current plan, billing cycle, recent usage,\n  payment history, devices, account switching, and renewal cancellation.\n- Paid AI requests are authenticated, bounded, metered, and settled by the\n  keyboard.wtf backend; provider credentials are never sent to the desktop.\n- Browser automation continues to use the user\u0027s existing logged-in Chrome\n  session through the keyboard.wtf Chrome Helper, with cancellation and manual\n  intervention for sensitive steps.\n- Human-friendly global shortcuts can be recorded, validated, reset, and safely\n  changed without losing the previous working registration.\n- Startup, Restart, uninstall, session persistence, signed update metadata, and\n  package-hash verification have been hardened for normal Windows use.\n\nThe installer is not yet Authenticode-signed, so Windows may show an\nunknown-publisher warning. Download it only from https://keyboardwtf.com or the\nofficial keyboard.wtf GitHub Release.\n",
   "keyId": "kwt-release-2026-01",
-  "signature": "PFsjho2gaEuYVR5a9rORz5/HkD0AsOvGvy8wpUmxiguTFk\u002Bw3qaWV84rWJEV9QV4Vz/FWnZgevSL11Jovjo2qA=="
+  "signature": "rOCdYdjXLMpO723IhuliBYgb8ptjrfK3fXxo6\u002BIU5qY\u002BjHqsCRdIY289/N/fBlQxenL1tGVh5hwH6pVmbPapkw=="
 }

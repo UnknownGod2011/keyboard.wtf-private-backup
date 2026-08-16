@@ -4,10 +4,10 @@ export const runtimeConfig = Object.freeze({
   backendBaseUrl: "https://keyboard-wtf-paid-api-mhrc6c7goa-el.a.run.app",
   downloads: Object.freeze({
     windows: Object.freeze({
-      available: false,
+      available: true,
       version: "1.4.0",
-      url: "",
-      sha256: "",
+      url: "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.0/keyboard-wtf-setup.exe",
+      sha256: "99791ff5beeee767cdaba3fc244bdd3314a451dda222979ecd9d627b821cd458",
     }),
     macos: Object.freeze({
       available: false,
