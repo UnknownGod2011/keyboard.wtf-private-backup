@@ -41,7 +41,7 @@ public sealed class SecureUpdateService : IDisposable
         var normalized = string.Equals(channel, "beta", StringComparison.OrdinalIgnoreCase)
             ? "beta"
             : "stable";
-        var manifestUri = new Uri($"https://keyboard-wtf.vercel.app/releases/{normalized}.json");
+        var manifestUri = new Uri($"https://keyboardwtf.com/releases/{normalized}.json");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(_manifestTimeout);
         using var response = await _http.GetAsync(

@@ -112,7 +112,7 @@ public sealed class PaidStagingSecurityTests
         Assert.True(configuration.IsProduction);
         Assert.False(configuration.EmergencyByokEnabled);
         Assert.Equal("keyboard-wtf-paid-api-mhrc6c7goa-el.a.run.app", configuration.BackendBaseUri.Host);
-        Assert.Equal("keyboard-wtf.vercel.app", configuration.WebBaseUri.Host);
+        Assert.Equal("keyboardwtf.com", configuration.WebBaseUri.Host);
         Assert.Equal(Uri.UriSchemeHttps, configuration.BackendBaseUri.Scheme);
         Assert.Equal(Uri.UriSchemeHttps, configuration.WebBaseUri.Scheme);
         Assert.False(configuration.PreserveExistingRegistrations);

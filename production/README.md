@@ -8,7 +8,8 @@ Current production contract:
 
 - Firebase project: `keyboard-wtf-prod`
 - Cloud Run region: `asia-south1`
-- Final website: `https://keyboard-wtf.vercel.app`
+- Canonical website: `https://keyboardwtf.com`
+- Permanent compatibility website: `https://keyboard-wtf.vercel.app`
 - Isolated verification site: `https://keyboard-wtf-production-candidate.vercel.app`
 - Plan: ₹999 monthly
 - Monthly provider-backed allowance: 500 credits

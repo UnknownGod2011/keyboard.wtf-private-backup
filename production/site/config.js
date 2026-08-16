@@ -1,5 +1,21 @@
 export const runtimeConfig = Object.freeze({
+  canonicalWebsite: "https://keyboardwtf.com",
+  legacyWebsite: "https://keyboard-wtf.vercel.app",
   backendBaseUrl: "https://keyboard-wtf-paid-api-mhrc6c7goa-el.a.run.app",
+  downloads: Object.freeze({
+    windows: Object.freeze({
+      available: false,
+      version: "1.4.0",
+      url: "",
+      sha256: "",
+    }),
+    macos: Object.freeze({
+      available: false,
+      version: "",
+      url: "",
+      sha256: "",
+    }),
+  }),
   firebase: {
     apiKey: "AIzaSyATGk-af6CHF32qMdcWYcyOWCzFwsxYqW4",
     authDomain: "keyboard-wtf-prod.firebaseapp.com",

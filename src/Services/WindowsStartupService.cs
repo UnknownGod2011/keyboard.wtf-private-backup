@@ -4,7 +4,11 @@ using Microsoft.Win32;
 
 public static class WindowsStartupService
 {
+#if KEYBOARD_WTF_PAID_PRODUCTION_CANDIDATE
+    public const string AppName = "keyboard.wtf Paid Production Candidate";
+#else
     public const string AppName = "keyboard.wtf";
+#endif
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
 
     public static void Sync(bool enabled, string executablePath)

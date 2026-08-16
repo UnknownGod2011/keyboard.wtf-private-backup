@@ -2,7 +2,8 @@
 
 ## Production
 
-- Public URL: `https://keyboard-wtf.vercel.app`
+- Canonical public URL: `https://keyboardwtf.com`
+- Permanent compatibility URL: `https://keyboard-wtf.vercel.app`
 - Vercel project: `site`
 - Production deployment: `site-5fyb3tgdm-tanush-shahs-projects-5e868e6e.vercel.app`
 - Site directory: `site`
@@ -16,7 +17,7 @@ Vercel does not allow this account to claim `keyboard.wtf.vercel.app`. That host
 - Build script: `scripts/build-windows-release.ps1`
 - Inno Setup definition: `installer/keyboard-wtf.iss`
 - Website download: `site/downloads/keyboard-wtf-setup.exe`
-- Public download: `https://keyboard-wtf.vercel.app/downloads/keyboard-wtf-setup.exe`
+- Public download: `https://keyboardwtf.com/downloads/keyboard-wtf-setup.exe`
 - Size: 56,714,119 bytes
 - SHA-256: `090A81F71788BBBFFCE1BD475EA34E7C1C071F1089CDEB27157F88A5D58FAF74`
 

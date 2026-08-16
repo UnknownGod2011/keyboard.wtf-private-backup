@@ -101,7 +101,7 @@ Read Back is separate: it uses local Piper voices and falls back to Windows SAPI
 
 For normal users:
 
-1. Download the Windows installer from `https://keyboard-wtf.vercel.app`.
+1. Download the Windows installer from `https://keyboardwtf.com`.
 2. Run `keyboard-wtf-setup.exe`.
 3. Launch `keyboard.wtf` if the installer did not start it automatically.
 4. Open settings from the tray icon or press `Ctrl+Alt+,`.
@@ -174,7 +174,8 @@ If typing into the active app fails, use Clipboard mode as the reliable fallback
 
 Current Windows release:
 
-- Landing page: `https://keyboard-wtf.vercel.app`
+- Canonical landing page: `https://keyboardwtf.com`
+- Legacy/fallback landing page: `https://keyboard-wtf.vercel.app`
 - Installer: `site/downloads/keyboard-wtf-setup.exe`
 - Installed location: `%LOCALAPPDATA%\Programs\keyboard.wtf`
 

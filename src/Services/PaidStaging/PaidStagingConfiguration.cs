@@ -11,7 +11,7 @@ internal sealed record PaidStagingConfiguration(
     private static readonly Uri ProductionBackendBaseUri =
         new("https://keyboard-wtf-paid-api-mhrc6c7goa-el.a.run.app/");
     private static readonly Uri ProductionWebBaseUri =
-        new("https://keyboard-wtf.vercel.app/");
+        new("https://keyboardwtf.com/");
 
     public bool IsProduction =>
         string.Equals(DeploymentEnvironment, "production", StringComparison.Ordinal);

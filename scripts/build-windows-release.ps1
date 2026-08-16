@@ -2,14 +2,15 @@ param(
     [string]$Configuration = "Release",
     [switch]$SkipSiteHashUpdate,
     [switch]$SideBySideStaging,
-    [switch]$PaidProductionCandidate
+    [switch]$PaidProductionCandidate,
+    [switch]$PaidProductionRelease
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $root "src\KeyboardWtf.csproj"
-if ($SideBySideStaging -and $PaidProductionCandidate) {
-    throw "Choose either SideBySideStaging or PaidProductionCandidate, not both."
+if (@($SideBySideStaging, $PaidProductionCandidate, $PaidProductionRelease).Where({ $_ }).Count -gt 1) {
+    throw "Choose only one paid staging, paid candidate, or paid production release mode."
 }
 $isSideBySide = $SideBySideStaging -or $PaidProductionCandidate
 $publishName = if ($PaidProductionCandidate) {
@@ -70,6 +71,8 @@ $publishArguments = @(
 )
 if ($PaidProductionCandidate) {
     $publishArguments += "-p:KeyboardWtfPaidProductionCandidate=true"
+} elseif ($PaidProductionRelease) {
+    $publishArguments += "-p:KeyboardWtfPaidProduction=true"
 }
 & dotnet @publishArguments
 
@@ -102,8 +105,7 @@ if ($PaidProductionCandidate) {
         '/DMyRunValueName=keyboard.wtf Paid Production Candidate',
         '/DMyDefaultGroupName=keyboard.wtf Paid Production Candidate',
         '/DMyShortcutName=keyboard.wtf Paid Production Candidate',
-        '/DMyUserDataDir=keyboard.wtf-paid-production-candidate',
-        '/DMySkipStartup'
+        '/DMyUserDataDir=keyboard.wtf-paid-production-candidate'
     )
 }
 & $iscc @isccArguments $installerScript
