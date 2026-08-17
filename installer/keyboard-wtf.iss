@@ -184,7 +184,8 @@ end;
 
 function EscapePowerShellSingleQuoted(const Value: String): String;
 begin
-  Result := StringChangeEx(Value, '''', '''''', True);
+  Result := Value;
+  StringChangeEx(Result, '''', '''''', True);
 end;
 
 procedure StopOwnedProcessesForUninstall();
