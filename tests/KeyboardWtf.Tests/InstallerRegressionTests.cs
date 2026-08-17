@@ -59,6 +59,19 @@ public sealed class InstallerRegressionTests
         Assert.Contains("'/DMySkipStartup'", buildScript[candidateBlockStart..compilerStart], StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Uninstall_removes_known_empty_runtime_directories_without_recursive_app_deletion()
+    {
+        var root = FindRepositoryRoot();
+        var installer = File.ReadAllText(Path.Combine(root, "installer", "keyboard-wtf.iss"));
+
+        Assert.Contains("[UninstallDelete]", installer, StringComparison.Ordinal);
+        Assert.Contains("Type: dirifempty; Name: \"{app}\\runtimes\\win-x64\"", installer, StringComparison.Ordinal);
+        Assert.Contains("Type: dirifempty; Name: \"{app}\\runtimes\"", installer, StringComparison.Ordinal);
+        Assert.Contains("Type: dirifempty; Name: \"{app}\"", installer, StringComparison.Ordinal);
+        Assert.DoesNotContain("Type: filesandordirs; Name: \"{app}\"", installer, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

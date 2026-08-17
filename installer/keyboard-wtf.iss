@@ -79,6 +79,11 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch keyboard.wtf and finish setup"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
 
+[UninstallDelete]
+Type: dirifempty; Name: "{app}\runtimes\win-x64"
+Type: dirifempty; Name: "{app}\runtimes"
+Type: dirifempty; Name: "{app}"
+
 [Code]
 const
   NativeHostRegistryPath = 'Software\Google\Chrome\NativeMessagingHosts\wtf.keyboard.browser';
