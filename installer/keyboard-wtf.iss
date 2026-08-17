@@ -80,6 +80,67 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch keyboard.wtf and finish setup"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+const
+  NativeHostRegistryPath = 'Software\Google\Chrome\NativeMessagingHosts\wtf.keyboard.browser';
+
+var
+  PreviousNativeHostManifest: String;
+  NativeHostRegistrationPaused: Boolean;
+  NativeHostRegistrationRestored: Boolean;
+
+function RestoreNativeHostRegistration(): Boolean;
+begin
+  Result := True;
+  if not NativeHostRegistrationPaused or NativeHostRegistrationRestored then
+    Exit;
+
+  Result := RegWriteStringValue(
+    HKCU,
+    NativeHostRegistryPath,
+    '',
+    PreviousNativeHostManifest);
+  if Result then
+  begin
+    NativeHostRegistrationRestored := True;
+    Log('Restored the existing Chrome native-messaging host registration.');
+  end
+  else
+    Log('Could not restore the existing Chrome native-messaging host registration.');
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  NativeHostRegistrationPaused := RegQueryStringValue(
+    HKCU,
+    NativeHostRegistryPath,
+    '',
+    PreviousNativeHostManifest);
+  if not NativeHostRegistrationPaused then
+    Exit;
+
+  if not RegDeleteValue(HKCU, NativeHostRegistryPath, '') then
+  begin
+    NativeHostRegistrationPaused := False;
+    Result := 'Chrome Helper could not be paused for this update. Close Chrome and keyboard.wtf, then try again.';
+    Exit;
+  end;
+
+  Log('Temporarily paused the existing Chrome native-messaging host registration for safe file replacement.');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    if not RestoreNativeHostRegistration() then
+      RaiseException('Chrome Helper registration could not be restored after the update.');
+end;
+
+procedure DeinitializeSetup();
+begin
+  RestoreNativeHostRegistration();
+end;
+
 function HasCommandLineParameter(const Name: String): Boolean;
 var
   Index: Integer;
