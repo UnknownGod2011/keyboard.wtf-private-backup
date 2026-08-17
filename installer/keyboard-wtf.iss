@@ -182,10 +182,46 @@ begin
     Log('Could not remove this installation''s Chrome native-messaging host registration.');
 end;
 
+function EscapePowerShellSingleQuoted(const Value: String): String;
+begin
+  Result := StringChangeEx(Value, '''', '''''', True);
+end;
+
+procedure StopOwnedProcessesForUninstall();
+var
+  ResultCode: Integer;
+  TargetExecutable: String;
+  Script: String;
+  Arguments: String;
+begin
+  TargetExecutable := ExpandConstant('{app}\{#MyAppExeName}');
+  Script :=
+    '$target=[IO.Path]::GetFullPath(''' +
+    EscapePowerShellSingleQuoted(TargetExecutable) +
+    '''); Get-Process -Name ''keyboard.wtf'' -ErrorAction SilentlyContinue | ' +
+    'Where-Object { try { [IO.Path]::GetFullPath($_.Path) -eq $target } catch { $false } } | ' +
+    'Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 600';
+  Arguments := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' + Script + '"';
+
+  if Exec(
+       ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+       Arguments,
+       '',
+       SW_HIDE,
+       ewWaitUntilTerminated,
+       ResultCode) then
+    Log(Format('Stopped processes owned by this installation (exit code %d).', [ResultCode]))
+  else
+    Log('Could not invoke the installation-scoped process cleanup.');
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
+  begin
+    StopOwnedProcessesForUninstall();
     UnregisterOwnedNativeHost();
+  end;
 
   if (CurUninstallStep = usPostUninstall) and
      HasCommandLineParameter('/REMOVEUSERDATA') then

@@ -30,6 +30,19 @@ public sealed class InstallerRegressionTests
         Assert.Contains("if CurUninstallStep = usUninstall then", installer, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Uninstall_stops_only_processes_running_from_that_installation()
+    {
+        var root = FindRepositoryRoot();
+        var installer = File.ReadAllText(Path.Combine(root, "installer", "keyboard-wtf.iss"));
+
+        Assert.Contains("procedure StopOwnedProcessesForUninstall", installer, StringComparison.Ordinal);
+        Assert.Contains("TargetExecutable := ExpandConstant('{app}\\{#MyAppExeName}')", installer, StringComparison.Ordinal);
+        Assert.Contains("[IO.Path]::GetFullPath($_.Path) -eq $target", installer, StringComparison.Ordinal);
+        Assert.Contains("StopOwnedProcessesForUninstall();", installer, StringComparison.Ordinal);
+        Assert.DoesNotContain("taskkill", installer, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
