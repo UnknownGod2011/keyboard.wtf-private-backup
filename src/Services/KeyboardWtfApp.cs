@@ -156,14 +156,30 @@ public sealed class KeyboardWtfApp : IDisposable
 
     public bool TryUpdateHotkeys(HotkeySettings requested, out string error)
     {
-        if (!_hotkeys.TryReplaceAll(requested, _commands, out error))
+        if (!_hotkeys.TryReplaceAll(
+                requested,
+                _settings.Current.Hotkeys,
+                _commands,
+                requireAllRequested: false,
+                out error))
             return false;
         _settings.SaveHotkeys(requested);
         return true;
     }
 
-    public bool TryResetHotkeys(out string error) =>
-        TryUpdateHotkeys(HotkeySettings.Defaults(), out error);
+    public bool TryResetHotkeys(out string error)
+    {
+        var defaults = HotkeySettings.Defaults();
+        if (!_hotkeys.TryReplaceAll(
+                defaults,
+                _settings.Current.Hotkeys,
+                _commands,
+                requireAllRequested: true,
+                out error))
+            return false;
+        _settings.SaveHotkeys(defaults);
+        return true;
+    }
 
     private void ScheduleStartupHotkeyRetry()
     {

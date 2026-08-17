@@ -1,4 +1,5 @@
 const VERSION = "2.1.21";
+const PACKAGE_VERSION = chrome.runtime.getManifest().version;
 const HOST = "wtf.keyboard.browser";
 const BRIDGE_ALARM = "keyboard-wtf-native-bridge";
 const NATIVE_RESPONSE_TIMEOUT_MS = 5000;
@@ -12,6 +13,12 @@ let sessionId = crypto.randomUUID();
 let lastError = "";
 let pollBusy = false;
 let lastNativeResponseAt = 0;
+let nativeHandshakeReady = false;
+const PUBLIC_SITE_ORIGINS = new Set([
+  "https://keyboardwtf.com",
+  "https://www.keyboardwtf.com",
+  "https://keyboard-wtf.vercel.app"
+]);
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.action.setBadgeText({ text: "" });
@@ -47,8 +54,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "helper_popup_status") {
     sendResponse({
       ok: true,
-      version: VERSION,
-      connected: Boolean(nativePort),
+      version: PACKAGE_VERSION,
+      connected: Boolean(nativePort && nativeHandshakeReady),
       activeTasks: taskTabs.size,
       lastError
     });
@@ -58,18 +65,45 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
+chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "keyboard_wtf_public_helper_status" || !isAllowedPublicSender(sender))
+    return false;
+
+  wakeBridge();
+  Promise.resolve(collectHelperState())
+    .then(helper => sendResponse({
+      ok: true,
+      installed: true,
+      version: PACKAGE_VERSION,
+      connected: Boolean(nativePort && nativeHandshakeReady),
+      ready: Boolean(nativePort && nativeHandshakeReady && helper.commandChannelReady),
+      extensionId: chrome.runtime.id
+    }))
+    .catch(() => sendResponse({
+      ok: true,
+      installed: true,
+      version: PACKAGE_VERSION,
+      connected: false,
+      ready: false,
+      extensionId: chrome.runtime.id
+    }));
+  return true;
+});
+
 function connectNative() {
   if (nativePort) return;
   clearTimeout(reconnectTimer);
   try {
     const port = chrome.runtime.connectNative(HOST);
     nativePort = port;
+    nativeHandshakeReady = false;
     lastNativeResponseAt = Date.now();
     lastError = "";
     port.onMessage.addListener(handleNativeResponse);
     port.onDisconnect.addListener(() => {
       if (nativePort !== port) return;
       nativePort = null;
+      nativeHandshakeReady = false;
       const message = chrome.runtime.lastError?.message;
       lastError = message || "Keyboard.wtf native bridge disconnected.";
       while (pendingNative.length) {
@@ -105,6 +139,7 @@ function wakeBridge() {
 function resetNativePort(reason) {
   const stalePort = nativePort;
   nativePort = null;
+  nativeHandshakeReady = false;
   lastError = reason || "Keyboard.wtf native bridge disconnected.";
   while (pendingNative.length) {
     const pending = pendingNative.shift();
@@ -192,7 +227,16 @@ function handleNativeResponse(message) {
   if (pending) {
     clearTimeout(pending.timer);
     lastNativeResponseAt = Date.now();
+    nativeHandshakeReady = true;
     pending.resolve(message);
+  }
+}
+
+function isAllowedPublicSender(sender) {
+  try {
+    return PUBLIC_SITE_ORIGINS.has(new URL(sender?.url || sender?.tab?.url || "").origin);
+  } catch {
+    return false;
   }
 }
 

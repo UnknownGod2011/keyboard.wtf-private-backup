@@ -10,7 +10,7 @@ Install and launch keyboard.wtf 1.3.0 for Windows from:
 
 `https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.3.0/keyboard-wtf-setup.exe`
 
-The build must match Chrome Helper version 2.1.21.
+The Store package is Chrome Helper 2.1.22 and uses the backward-compatible 2.1.21 native/content protocol shown in Jarvis Settings.
 
 No account or test credentials are required for the safe review flow.
 
@@ -25,7 +25,7 @@ No account or test credentials are required for the safe review flow.
 7. Confirm:
    - Installation: Chrome Web Store
    - Connection: Connected and ready
-   - Helper version: 2.1.21 / 2.1.21
+   - Helper protocol: 2.1.21 / 2.1.21
    - Current tab: Available
 
 ## Safe functional test

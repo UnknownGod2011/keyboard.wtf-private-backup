@@ -192,6 +192,12 @@
     margin-top: 6px;
   }
   .hint.muted { color: var(--text-faint); }
+  .hotkey-live { min-height: 18px; }
+  .hotkey-live.ok { color: var(--success); }
+  .hotkey-live.warn { color: var(--warning); }
+  input.hotkey-unavailable { color: var(--error); border-color: #fecaca; }
+  input.hotkey-recording { border-color: var(--warning); background: #fffbeb; box-shadow: 0 0 0 2px rgba(217,119,6,.12); }
+  #paidRecentUsage, #paidRecentPurchases { max-height: 280px; overflow-y: auto; overscroll-behavior: contain; padding-right: 6px; }
 
   button {
     height: 36px;
@@ -659,29 +665,34 @@
       <div class="field">
         <label for="hotkeyPushToTalk">Smart writing</label>
         <div class="btn-row"><input id="hotkeyPushToTalk" type="text" readonly aria-label="Smart writing shortcut"><button class="ghost" onclick="recordHotkey('PushToTalk')">Change shortcut</button><button class="ghost" onclick="resetOneHotkey('PushToTalk')">Reset to default</button></div>
+        <div class="hint hotkey-live" id="hotkeyPushToTalkStatus" aria-live="polite"></div>
         <div class="hint">Flow-like mode: transcribes quickly, removes filler and false starts, then types polished text.</div>
       </div>
 
       <div class="field">
         <label for="hotkeyDictation">Dictation toggle</label>
         <div class="btn-row"><input id="hotkeyDictation" type="text" readonly aria-label="Dictation shortcut"><button class="ghost" onclick="recordHotkey('Dictation')">Change shortcut</button><button class="ghost" onclick="resetOneHotkey('Dictation')">Reset to default</button></div>
+        <div class="hint hotkey-live" id="hotkeyDictationStatus" aria-live="polite"></div>
       </div>
 
       <div class="field">
         <label for="hotkeyJarvis">Jarvis mode</label>
         <div class="btn-row"><input id="hotkeyJarvis" type="text" readonly aria-label="Jarvis shortcut"><button class="ghost" onclick="recordHotkey('Jarvis')">Change shortcut</button><button class="ghost" onclick="resetOneHotkey('Jarvis')">Reset to default</button></div>
+        <div class="hint hotkey-live" id="hotkeyJarvisStatus" aria-live="polite"></div>
         <div class="hint">Chat, open allowed apps, prepare Gmail drafts, prepare WhatsApp messages, and use safe actions.</div>
       </div>
 
       <div class="field">
         <label for="hotkeyCancel">Cancel anything</label>
         <div class="btn-row"><input id="hotkeyCancel" type="text" readonly aria-label="Cancel shortcut"><button class="ghost" onclick="recordHotkey('Cancel')">Change shortcut</button><button class="ghost" onclick="resetOneHotkey('Cancel')">Reset to default</button></div>
+        <div class="hint hotkey-live" id="hotkeyCancelStatus" aria-live="polite"></div>
         <div class="hint">Immediately cancels listening, transcription, AI planning, or conversation.</div>
       </div>
 
       <div class="field">
         <label for="hotkeyOpenSettings">Open settings</label>
         <div class="btn-row"><input id="hotkeyOpenSettings" type="text" readonly aria-label="Open Settings shortcut"><button class="ghost" onclick="recordHotkey('OpenSettings')">Change shortcut</button><button class="ghost" onclick="resetOneHotkey('OpenSettings')">Reset to default</button></div>
+        <div class="hint hotkey-live" id="hotkeyOpenSettingsStatus" aria-live="polite"></div>
       </div>
 
       <div class="field">
@@ -1367,6 +1378,7 @@
 
 <script>
 let currentSettings = {};
+let configuredHotkeys = {};
 let paidSignInPollTimer;
 let paidSignInRequestPending = false;
 let paidLastSignInState = 'idle';
@@ -1472,12 +1484,14 @@ async function loadSettings() {
 
     selectEngineUI(settings.speechEngine);
     const hotkeys = settings.hotkeys || {};
-    renderActiveHotkeys(hotkeys, settings.activeHotkeys || {});
-    document.getElementById('hotkeyPushToTalk').value = hotkeys.PushToTalk || hotkeys.pushToTalk || 'Ctrl+Alt+K';
-    document.getElementById('hotkeyDictation').value = hotkeys.Dictation || hotkeys.dictation || 'Ctrl+Alt+D';
-    document.getElementById('hotkeyJarvis').value = hotkeys.Jarvis || hotkeys.jarvis || hotkeys.QuickSend || hotkeys.quickSend || 'Ctrl+Alt+Q';
-    document.getElementById('hotkeyCancel').value = hotkeys.Cancel || hotkeys.cancel || 'Ctrl+Alt+X';
-    document.getElementById('hotkeyOpenSettings').value = hotkeys.OpenSettings || hotkeys.openSettings || 'Ctrl+Alt+,';
+    configuredHotkeys = {
+      PushToTalk: hotkeys.PushToTalk || hotkeys.pushToTalk || 'Ctrl+Alt+K',
+      Dictation: hotkeys.Dictation || hotkeys.dictation || 'Ctrl+Alt+D',
+      Jarvis: hotkeys.Jarvis || hotkeys.jarvis || hotkeys.QuickSend || hotkeys.quickSend || 'Ctrl+Alt+Q',
+      Cancel: hotkeys.Cancel || hotkeys.cancel || 'Ctrl+Alt+X',
+      OpenSettings: hotkeys.OpenSettings || hotkeys.openSettings || 'Ctrl+Alt+,'
+    };
+    renderActiveHotkeys(configuredHotkeys, settings.activeHotkeys || {});
     document.getElementById('defaultDestination').value = settings.defaultDestination || 'Clipboard';
     document.getElementById('textDeliveryMode').value = settings.textDeliveryMode || 'TypeIntoActiveApp';
     document.getElementById('assistantName').value = settings.assistantName || 'Jarvis';
@@ -1744,16 +1758,35 @@ function renderFeatureStatus(status) {
 }
 
 function renderActiveHotkeys(configured, active) {
-  const labels = [
-    ['Jarvis', configured.Jarvis || configured.jarvis, active.Jarvis || active.jarvis],
-    ['Cancel', configured.Cancel || configured.cancel, active.Cancel || active.cancel]
+  const bindings = [
+    ['PushToTalk', 'Smart writing', 'hotkeyPushToTalk', 'hotkeyPushToTalkStatus', active.SmartWriting || active.smartWriting],
+    ['Dictation', 'Dictation', 'hotkeyDictation', 'hotkeyDictationStatus', active.Dictation || active.dictation],
+    ['Jarvis', 'Jarvis', 'hotkeyJarvis', 'hotkeyJarvisStatus', active.Jarvis || active.jarvis],
+    ['Cancel', 'Cancel', 'hotkeyCancel', 'hotkeyCancelStatus', active.Cancel || active.cancel],
+    ['OpenSettings', 'Open Settings', 'hotkeyOpenSettings', 'hotkeyOpenSettingsStatus', active.OpenSettings || active.openSettings]
   ];
-  const fallbacks = labels
-    .filter(item => item[1] && item[2] && item[1].toLowerCase() !== item[2].toLowerCase())
-    .map(item => `${item[0]} uses ${item[2]} because ${item[1]} is occupied`);
-  document.getElementById('activeHotkeyStatus').textContent = fallbacks.length
-    ? fallbacks.join('. ') + '.'
-    : 'Configured shortcuts are active.';
+  const issues = [];
+  for (const [action, label, inputId, statusId, activeValue] of bindings) {
+    const configuredValue = configured[action] || hotkeyDefaults[action];
+    const input = document.getElementById(inputId);
+    const status = document.getElementById(statusId);
+    input.value = activeValue || 'Unavailable - choose another';
+    input.dataset.configured = configuredValue;
+    input.classList.toggle('hotkey-unavailable', !activeValue);
+    status.className = `hint hotkey-live ${activeValue ? 'ok' : 'warn'}`;
+    if (!activeValue) {
+      status.textContent = `${configuredValue} could not be registered. Choose another shortcut.`;
+      issues.push(`${label} is unavailable`);
+    } else if (activeValue.toLowerCase() !== configuredValue.toLowerCase()) {
+      status.textContent = `Active in Windows: ${activeValue}. ${configuredValue} is occupied.`;
+      issues.push(`${label} uses ${activeValue}`);
+    } else {
+      status.textContent = `Active in Windows: ${activeValue}`;
+    }
+  }
+  document.getElementById('activeHotkeyStatus').textContent = issues.length
+    ? `${issues.join('. ')}.`
+    : 'All configured shortcuts are active in Windows.';
 }
 
 function renderGeminiVoices(voices, selectedVoice) {
@@ -2433,6 +2466,19 @@ function renderPaidAccount(account) {
   }
 
   const signedIn = account.signedIn === true;
+  if (!signedIn) {
+    account = {
+      ...account,
+      email: '', displayName: '', status: 'signed_out', planId: 'none',
+      planDisplayName: 'No active plan', planAmountMinor: 0,
+      subscriptionStatus: 'none', subscriptionCancellationStatus: 'none',
+      subscriptionCancelsAt: null, availableCreditMicros: 0, reservedCreditMicros: 0,
+      cycleUsageCreditMicros: 0, subscriptionAllowanceCreditMicros: 0,
+      subscriptionOriginalCreditMicros: 0, subscriptionReservedCreditMicros: 0,
+      subscriptionConsumedCreditMicros: 0, topUpCreditMicros: 0, cycleEndsAt: null,
+      deviceId: '', deviceName: '', devices: [], recentUsage: [], recentPurchases: []
+    };
+  }
   const accountLoading = account.accountLoading === true;
   const signInPending = account.signInPending === true;
   const signInState = String(account.signInState || 'idle');
@@ -2744,14 +2790,14 @@ const hotkeyDefaults = {
 let recordingHotkeyAction;
 
 function hotkeyValues() {
-  return Object.fromEntries(Object.entries(hotkeyInputs).map(([action, id]) =>
-    [action, document.getElementById(id).value]));
+  return Object.fromEntries(Object.keys(hotkeyInputs).map(action =>
+    [action, configuredHotkeys[action] || hotkeyDefaults[action]]));
 }
 
 function recordedKeyName(event) {
   if (event.key === ',') return ',';
   if (event.key === ' ') return 'Space';
-  if (/^F(?:[1-9]|1\d|2[0-4])$/i.test(event.key)) return event.key.toUpperCase();
+  if (/^F(?:[1-9]|1[0-2])$/i.test(event.key)) return event.key.toUpperCase();
   if (/^[a-z0-9]$/i.test(event.key)) return event.key.toUpperCase();
   return ({ Escape: 'Escape', Backspace: 'Backspace', Delete: 'Delete', Insert: 'Insert',
     Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
@@ -2760,6 +2806,7 @@ function recordedKeyName(event) {
 
 function stopHotkeyRecording(message) {
   recordingHotkeyAction = undefined;
+  Object.values(hotkeyInputs).forEach(id => document.getElementById(id).classList.remove('hotkey-recording'));
   document.getElementById('hotkeyRecorderStatus').textContent = message || 'Choose Change shortcut, then press the new key combination.';
 }
 
@@ -2768,6 +2815,8 @@ function recordHotkey(action) {
   recordingHotkeyAction = action;
   const input = document.getElementById(hotkeyInputs[action]);
   input.focus();
+  input.classList.add('hotkey-recording');
+  document.getElementById(`${hotkeyInputs[action]}Status`).textContent = 'Recording - press the new shortcut now. Escape cancels.';
   document.getElementById('hotkeyRecorderStatus').textContent = `Recording ${action.replace(/([A-Z])/g, ' $1').trim()} - press Ctrl, Alt, or Windows plus a key. Press Escape alone to cancel.`;
 }
 
@@ -2786,7 +2835,7 @@ document.addEventListener('keydown', async event => {
   }
   const key = recordedKeyName(event);
   if (!key) {
-    document.getElementById('hotkeyRecorderStatus').textContent = 'That key is not supported. Try a letter, number, function key, comma, navigation key, or Escape.';
+    document.getElementById('hotkeyRecorderStatus').textContent = 'That key is not supported. Try a letter, number, F1-F12, comma, navigation key, or Escape.';
     return;
   }
   const parts = [];

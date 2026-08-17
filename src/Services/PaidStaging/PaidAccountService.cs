@@ -448,6 +448,7 @@ internal sealed class PaidAccountService : IDisposable
             _tokens = null;
             _account = null;
             _sessionStore.Clear();
+            _lastError = "";
             lock (_signInSync)
             {
                 _signInState = "idle";
@@ -578,7 +579,15 @@ internal sealed class PaidAccountService : IDisposable
         catch (PaidApiException exception) when (exception.StatusCode == HttpStatusCode.Unauthorized)
         {
             accessToken = await RefreshTokensAsync(cancellationToken);
-            return await SendAsync<T>(method, path, body, true, cancellationToken, accessToken);
+            try
+            {
+                return await SendAsync<T>(method, path, body, true, cancellationToken, accessToken);
+            }
+            catch (PaidApiException retryException) when (retryException.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                InvalidateLocalSession("This desktop session was signed out or revoked. Sign in again to use Jarvis AI.");
+                throw new InvalidOperationException(_lastError, retryException);
+            }
         }
     }
 
@@ -611,14 +620,25 @@ internal sealed class PaidAccountService : IDisposable
         }
         catch
         {
-            _tokens = null;
-            _account = null;
-            _sessionStore.Clear();
+            InvalidateLocalSession("The desktop session expired. Sign in again to use Jarvis AI.");
             throw;
         }
         finally
         {
             _authGate.Release();
+        }
+    }
+
+    private void InvalidateLocalSession(string message)
+    {
+        _tokens = null;
+        _account = null;
+        _sessionStore.Clear();
+        _lastError = message ?? "The desktop session is no longer valid. Sign in again.";
+        lock (_signInSync)
+        {
+            _signInState = "idle";
+            _signInExpiresAt = null;
         }
     }
 

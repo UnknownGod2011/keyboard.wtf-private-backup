@@ -48,7 +48,7 @@ The extension does not call cookie or browser-storage APIs. A website can place
 a token in its URL or render sensitive data as ordinary visible page content.
 The local app receives the full controlled-tab URL; common token/key/code/
 signature/password/session parameter values are redacted before that URL is
-sent to Gemini.
+sent to the authenticated keyboard.wtf backend and Google Vertex AI.
 
 ## Data flow and storage
 
@@ -56,16 +56,21 @@ sent to Gemini.
    app through Chrome Native Messaging.
 2. The extension contains no API keys and does not contact a keyboard.wtf
    analytics or advertising server.
-3. The current browser planner sends a bounded task snapshot to the
-   user-configured Google Gemini API when AI page understanding is needed. This
+3. The current paid browser planner sends a bounded task snapshot through the
+   authenticated keyboard.wtf backend to Google Vertex AI when AI page
+   understanding is needed. This
    includes the original request, up to 8,500 characters of visible page text,
    relevant ranked control metadata, recent task evidence and a redacted URL.
    A current-viewport screenshot is sent only for visual recovery.
-4. Local diagnostics retain compact task status, bounded target labels and
+4. The documented keyboard.wtf website origins can request a status-only
+   handshake. The response includes helper version/identity and current native
+   connection readiness, but no URL, title, page content, screenshot, account
+   identity or browsing history.
+5. Local diagnostics retain compact task status, bounded target labels and
    errors until the user deletes the log/local data. There is currently no
    automatic log expiry. They do not intentionally contain raw cookies,
    credentials, full page dumps, typed values or screenshots.
-5. Browser workflow memory is disabled in this release.
+6. Browser workflow memory is disabled in this release.
 
 ## Required dashboard attestations
 

@@ -37,6 +37,8 @@ The helper:
 - Stops for passwords, one-time codes, CAPTCHAs, payment, checkout, banking,
   and account-security steps.
 - Contains no advertising, analytics SDK, or tracking service.
+- Lets the official keyboard.wtf website show Connected only after a live,
+  status-only handshake with the local Jarvis app.
 
 The keyboard.wtf Windows app must be installed and running for this extension
 to connect and operate.
@@ -54,12 +56,12 @@ actions in the user’s existing Chrome session.
 
 ## Homepage
 
-https://keyboard-wtf.vercel.app/
+https://keyboardwtf.com/
 
 ## Support URL
 
-https://keyboard-wtf.vercel.app/support
+https://keyboardwtf.com/support.html
 
 ## Privacy policy URL
 
-https://keyboard-wtf.vercel.app/privacy
+https://keyboardwtf.com/privacy.html

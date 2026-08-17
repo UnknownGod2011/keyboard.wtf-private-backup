@@ -243,6 +243,12 @@ async function render(expectedUser, epoch, quiet = false) {
     if (epoch !== authEpoch || auth.currentUser?.uid !== expectedUser.uid)
       return;
     if (error.code === "backend-auth-rejected") {
+      clearAccountUi();
+      byId("signedIn").classList.add("hidden");
+      byId("signedOut").classList.remove("hidden");
+      byId("signOut").classList.remove("hidden");
+      byId("switchAccount").classList.remove("hidden");
+      byId("refreshAccount").classList.add("hidden");
       setStatus("Google sign-in succeeded, but the backend rejected this session. Sign out, then sign in again.", "error");
       return;
     }

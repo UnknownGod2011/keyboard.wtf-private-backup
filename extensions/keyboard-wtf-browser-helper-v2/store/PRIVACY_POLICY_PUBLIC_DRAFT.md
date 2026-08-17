@@ -56,11 +56,19 @@ The extension transfers task-scoped data to the keyboard.wtf desktop app on the
 same Windows account through Chrome Native Messaging. It contains no API key
 and does not contact a keyboard.wtf advertising or analytics server.
 
-The current browser planner uses the user-configured Google Gemini API. When AI
-understanding is needed, the app sends the original request, a bounded page
-snapshot, relevant ranked controls, recent task evidence, and a redacted URL.
-A current-viewport image is included only for visual recovery. Google's terms
-and retention policy apply to data sent to Gemini.
+For normal paid users, the browser planner sends the original request, a
+bounded page snapshot, relevant ranked controls, recent task evidence, and a
+redacted URL through the authenticated keyboard.wtf backend to the configured
+Google Vertex AI model when AI understanding is needed. A current-viewport
+image is included only for visual recovery. Google Cloud's terms and retention
+policy apply to data sent to Vertex AI.
+
+On keyboardwtf.com and its documented Vercel fallback, the website may ask the
+helper for a connection-status handshake. The response contains only helper
+installation/version, the fixed extension identity, and whether a current live
+native connection to Jarvis and the active page exists. It does not include the
+page URL, title, text, controls, screenshot, account identity, or browsing
+history.
 
 ## Storage and retention
 

@@ -65,6 +65,9 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .platform-card h3 { font-size: 24px; }
 .platform-card .actions { margin-top: 22px; }
 .coming-soon-note { color: var(--green); }
+.helper-connection { display: grid; gap: 12px; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.helper-connection > div:first-child { display: grid; gap: 3px; }
+.helper-connection .actions { margin-top: 2px; }
 .price-reference { color: var(--ink) !important; font-weight: 700; }
 .price-note { max-width: 620px; }
 
@@ -88,6 +91,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .small { color: var(--muted); font-size: 13px; }
 .list { display: grid; gap: 0; padding: 0; margin: 14px 0 0; list-style: none; border-top: 1px solid var(--line); }
 .list li { min-height: 58px; display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.account-history-list { max-height: 430px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding-right: 8px; }
 .usage-row details { width: 100%; }
 .usage-row summary { cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 14px; list-style: none; }
 .usage-row summary::-webkit-details-marker { display: none; }

@@ -226,9 +226,32 @@ public sealed class SettingsService
         if (string.IsNullOrWhiteSpace(Current.Hotkeys.Cancel))
             Current.Hotkeys.Cancel = HotkeySettings.Defaults().Cancel;
 
+        // A side-by-side production candidate briefly used F13-F17 to avoid
+        // colliding with an already-running legacy build. Most customer
+        // keyboards cannot produce F13-F24, so those implementation-only
+        // values must never survive into normal user settings.
+        var defaults = HotkeySettings.Defaults();
+        if (IsInaccessibleFunctionKey(Current.Hotkeys.PushToTalk))
+            Current.Hotkeys.PushToTalk = defaults.PushToTalk;
+        if (IsInaccessibleFunctionKey(Current.Hotkeys.Dictation))
+            Current.Hotkeys.Dictation = defaults.Dictation;
+        if (IsInaccessibleFunctionKey(Current.Hotkeys.Jarvis))
+            Current.Hotkeys.Jarvis = defaults.Jarvis;
+        if (IsInaccessibleFunctionKey(Current.Hotkeys.Cancel))
+            Current.Hotkeys.Cancel = defaults.Cancel;
+        if (IsInaccessibleFunctionKey(Current.Hotkeys.OpenSettings))
+            Current.Hotkeys.OpenSettings = defaults.OpenSettings;
+
         Current.Hotkeys.CommandMode = "";
         Current.Hotkeys.QuickSend = "";
     }
+
+    internal static bool IsInaccessibleFunctionKey(string hotkey) =>
+        (hotkey ?? string.Empty)
+            .Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(part => part.StartsWith("F", StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(part.AsSpan(1), out var number)
+                && number is >= 13 and <= 24);
 
     public void Save()
     {

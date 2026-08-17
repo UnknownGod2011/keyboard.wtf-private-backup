@@ -123,7 +123,7 @@ public sealed class BrowserNativeHostInstaller
         if (!ExtensionVersionMatches(source))
         {
             throw new InvalidDataException(
-                $"The packaged Chrome Helper is missing or does not match {BrowserHelperProtocol.Version}.");
+                $"The packaged Chrome Helper is missing or does not match package {BrowserHelperProtocol.PackageVersion} / protocol {BrowserHelperProtocol.Version}.");
         }
 
         Directory.CreateDirectory(destination);
@@ -146,7 +146,7 @@ public sealed class BrowserNativeHostInstaller
         if (!ExtensionVersionMatches(destination))
         {
             throw new InvalidDataException(
-                $"The installed Chrome Helper does not match {BrowserHelperProtocol.Version}.");
+                $"The installed Chrome Helper does not match package {BrowserHelperProtocol.PackageVersion} / protocol {BrowserHelperProtocol.Version}.");
         }
     }
 
@@ -159,7 +159,7 @@ public sealed class BrowserNativeHostInstaller
             var version = manifest.RootElement.GetProperty("version").GetString();
             return string.Equals(
                     version,
-                    BrowserHelperProtocol.Version,
+                    BrowserHelperProtocol.PackageVersion,
                     StringComparison.Ordinal)
                 && File.ReadAllText(Path.Combine(directory, "service-worker.js"))
                     .Contains(

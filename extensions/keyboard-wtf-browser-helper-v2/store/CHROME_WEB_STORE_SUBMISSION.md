@@ -18,7 +18,7 @@ key so the unpacked fallback keeps its stable development identity.
 ## Local deliverables
 
 - Store ZIP:
-  `dist/chrome-web-store/keyboard-wtf-chrome-helper-2.1.21.zip`
+  `dist/chrome-web-store/keyboard-wtf-chrome-helper-2.1.22.zip`
 - Store listing: `store/STORE_LISTING.md`
 - Dashboard fields: `store/STORE_DASHBOARD_FIELDS.md`
 - Privacy disclosures: `store/PRIVACY_DISCLOSURES.md`

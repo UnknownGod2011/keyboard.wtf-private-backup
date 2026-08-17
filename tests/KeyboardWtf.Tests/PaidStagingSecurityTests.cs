@@ -525,6 +525,39 @@ public sealed class PaidStagingSecurityTests
     }
 
     [Fact]
+    public async Task Terminal_unauthorized_response_clears_stale_account_and_blocks_paid_AI()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var (store, directory) = CreateSessionStore();
+        try
+        {
+            SaveValidSession(store);
+            var handler = new RevokedSessionHandler();
+            using var account = CreateAccount(store, handler);
+            await account.InitializeAsync();
+            Assert.NotNull(account.Account);
+            Assert.True(account.IsSignedIn);
+
+            handler.Revoked = true;
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => account.RefreshAccountAsync());
+
+            Assert.Contains("revoked", error.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.False(account.IsSignedIn);
+            Assert.Null(account.Account);
+            Assert.Null(store.Load());
+            await Assert.ThrowsAsync<InvalidOperationException>(() => account.GenerateAsync(
+                "must not reach AI", null, 32, null, null, "unit-test", CancellationToken.None));
+            Assert.Equal(0, handler.GenerateCalls);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task Switching_accounts_revokes_the_current_session_and_forces_one_account_chooser()
     {
         if (!OperatingSystem.IsWindows())
@@ -700,6 +733,46 @@ public sealed class PaidStagingSecurityTests
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),
             };
+        }
+    }
+
+    private sealed class RevokedSessionHandler : HttpMessageHandler
+    {
+        public bool Revoked { get; set; }
+        public int GenerateCalls { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.AbsolutePath == "/v1/ai/generate")
+                GenerateCalls++;
+            if (Revoked)
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                {
+                    Content = new StringContent("{\"title\":\"Session revoked\"}", Encoding.UTF8, "application/json"),
+                });
+
+            var payload = JsonSerializer.Serialize(new
+            {
+                userId = "uid-1",
+                email = "person@example.test",
+                displayName = "Test Person",
+                status = "active",
+                planId = "monthly_standard_inr_999_v1",
+                availableCreditMicros = 500_000_000,
+                reservedCreditMicros = 0,
+                cycleUsageCreditMicros = 0,
+                cycleEndsAt = DateTimeOffset.UtcNow.AddDays(30),
+                devices = Array.Empty<object>(),
+                recentUsage = Array.Empty<object>(),
+                recentPurchases = Array.Empty<object>(),
+                subscriptionStatus = "active",
+            });
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            });
         }
     }
 

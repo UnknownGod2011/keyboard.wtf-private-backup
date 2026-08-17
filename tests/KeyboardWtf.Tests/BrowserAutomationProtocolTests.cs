@@ -29,7 +29,7 @@ public sealed class BrowserAutomationProtocolTests
             File.ReadAllText(Path.Combine(extension, "manifest.json")));
         var expected = BrowserHelperProtocol.Version;
 
-        Assert.Equal(expected, manifest.RootElement.GetProperty("version").GetString());
+        Assert.Equal(BrowserHelperProtocol.PackageVersion, manifest.RootElement.GetProperty("version").GetString());
         Assert.Contains(
             $"const VERSION = \"{expected}\"",
             File.ReadAllText(Path.Combine(extension, "service-worker.js")));
@@ -58,6 +58,40 @@ public sealed class BrowserAutomationProtocolTests
             .GetProperty("content_scripts")[0]
             .GetProperty("match_origin_as_fallback")
             .GetBoolean());
+
+        var externalMatches = manifest.RootElement
+            .GetProperty("externally_connectable")
+            .GetProperty("matches")
+            .EnumerateArray()
+            .Select(item => item.GetString())
+            .ToArray();
+        Assert.Equal(new[]
+        {
+            "https://keyboardwtf.com/*",
+            "https://www.keyboardwtf.com/*",
+            "https://keyboard-wtf.vercel.app/*",
+        }, externalMatches);
+        Assert.DoesNotContain(externalMatches, match => match?.Contains('*') == true && match.StartsWith("*", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Public_website_status_requires_a_live_native_handshake_and_exposes_no_page_data()
+    {
+        var root = FindRepositoryRoot();
+        var worker = File.ReadAllText(Path.Combine(
+            root,
+            "extensions",
+            "keyboard-wtf-browser-helper-v2",
+            "service-worker.js"));
+        var website = File.ReadAllText(Path.Combine(root, "production", "site", "chrome-helper-status.js"));
+
+        Assert.Contains("chrome.runtime.onMessageExternal.addListener", worker, StringComparison.Ordinal);
+        Assert.Contains("nativePort && nativeHandshakeReady && helper.commandChannelReady", worker, StringComparison.Ordinal);
+        Assert.Contains("PUBLIC_SITE_ORIGINS", worker, StringComparison.Ordinal);
+        Assert.Contains("keyboard_wtf_public_helper_status", website, StringComparison.Ordinal);
+        Assert.Contains("result?.connected === true && result?.ready === true", website, StringComparison.Ordinal);
+        Assert.DoesNotContain("activeUrl:", worker[worker.IndexOf("chrome.runtime.onMessageExternal", StringComparison.Ordinal)..worker.IndexOf("function connectNative", StringComparison.Ordinal)], StringComparison.Ordinal);
+        Assert.DoesNotContain("activeTitle:", worker[worker.IndexOf("chrome.runtime.onMessageExternal", StringComparison.Ordinal)..worker.IndexOf("function connectNative", StringComparison.Ordinal)], StringComparison.Ordinal);
     }
 
     [Fact]
@@ -474,8 +508,14 @@ public sealed class BrowserAutomationProtocolTests
             using var manifest = JsonDocument.Parse(
                 File.ReadAllText(Path.Combine(destination, "manifest.json")));
             Assert.Equal(
-                BrowserHelperProtocol.Version,
+                BrowserHelperProtocol.PackageVersion,
                 manifest.RootElement.GetProperty("version").GetString());
+            Assert.Contains(
+                $"const VERSION = \"{BrowserHelperProtocol.Version}\"",
+                File.ReadAllText(Path.Combine(destination, "service-worker.js")));
+            Assert.Contains(
+                $"const VERSION = \"{BrowserHelperProtocol.Version}\"",
+                File.ReadAllText(Path.Combine(destination, "content-script.js")));
             Assert.True(File.Exists(Path.Combine(destination, "popup.html")));
             Assert.True(File.Exists(Path.Combine(destination, "popup.css")));
             Assert.True(File.Exists(Path.Combine(destination, "popup.js")));

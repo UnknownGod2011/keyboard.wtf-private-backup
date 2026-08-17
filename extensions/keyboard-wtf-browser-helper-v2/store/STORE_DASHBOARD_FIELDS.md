@@ -5,9 +5,9 @@ Enter these values field by field. Do not submit at the end of this checklist.
 ## Package
 
 - Item ID: `gojdebdikepkpapmnggeljneamjdigbh`
-- ZIP: `dist/chrome-web-store/keyboard-wtf-chrome-helper-2.1.21.zip`
+- ZIP: `dist/chrome-web-store/keyboard-wtf-chrome-helper-2.1.22.zip`
 - Manifest version: 3
-- Extension version: 2.1.21
+- Extension version: 2.1.22
 
 ## Store listing
 

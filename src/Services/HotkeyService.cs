@@ -10,12 +10,29 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
     public const string CancelFallback = "Ctrl+Alt+Escape";
 
     private readonly Dictionary<int, (string Name, string Hotkey, Action Handler)> _handlers = new();
+    private readonly Func<int, uint, uint, bool> _registerHotKey;
+    private readonly Func<int, bool> _unregisterHotKey;
     private int _nextId = 100;
     private bool _disposed;
     private bool _filterAdded;
 
     public event Action<string, string> RegistrationFailed;
     public event Action<string, string, string> RegistrationFallbackUsed;
+
+    public HotkeyService()
+        : this(
+            (id, modifiers, key) => RegisterHotKey(IntPtr.Zero, id, modifiers, key),
+            id => UnregisterHotKey(IntPtr.Zero, id))
+    {
+    }
+
+    internal HotkeyService(
+        Func<int, uint, uint, bool> registerHotKey,
+        Func<int, bool> unregisterHotKey)
+    {
+        _registerHotKey = registerHotKey ?? throw new ArgumentNullException(nameof(registerHotKey));
+        _unregisterHotKey = unregisterHotKey ?? throw new ArgumentNullException(nameof(unregisterHotKey));
+    }
 
     public IReadOnlyDictionary<string, string> ActiveRegistrations =>
         _handlers.Values.ToDictionary(entry => entry.Name, entry => entry.Hotkey, StringComparer.OrdinalIgnoreCase);
@@ -43,7 +60,9 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
 
     public bool TryReplaceAll(
         HotkeySettings settings,
+        HotkeySettings previousSettings,
         CommandRegistry commands,
+        bool requireAllRequested,
         out string error)
     {
         error = "";
@@ -71,6 +90,44 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
             ("Cancel", settings.Cancel, commands.CancelCurrent),
             ("OpenSettings", settings.OpenSettings, commands.OpenSettings),
         };
+
+        var previous = (previousSettings ?? HotkeySettings.Defaults()).ToDictionary();
+        var changed = requireAllRequested
+            ? requested
+            : requested.Where(binding =>
+            {
+                var settingName = binding.Name == "SmartWriting" ? "PushToTalk" : binding.Name;
+                return !previous.TryGetValue(settingName, out var oldValue)
+                    || !string.Equals(
+                        Normalize(oldValue),
+                        Normalize(binding.Hotkey),
+                        StringComparison.OrdinalIgnoreCase);
+            }).ToArray();
+
+        return TryReplaceBindings(changed, out error);
+    }
+
+    internal bool TryReplaceForTests(
+        IReadOnlyDictionary<string, string> requested,
+        IReadOnlyDictionary<string, string> previous,
+        bool requireAllRequested,
+        out string error) =>
+        TryReplaceBindings(
+            requested.Where(pair => requireAllRequested
+                    || previous is null
+                    || !previous.TryGetValue(pair.Key, out var previousValue)
+                    || !string.Equals(Normalize(previousValue), Normalize(pair.Value), StringComparison.OrdinalIgnoreCase))
+                .Select(pair => (
+                pair.Key.Equals("PushToTalk", StringComparison.OrdinalIgnoreCase) ? "SmartWriting" : pair.Key,
+                pair.Value,
+                (Action)(() => { }))).ToArray(),
+            out error);
+
+    private bool TryReplaceBindings(
+        IReadOnlyList<(string Name, string Hotkey, Action Handler)> requested,
+        out string error)
+    {
+        error = "";
 
         var oldByName = _handlers.ToDictionary(
             pair => pair.Value.Name,
@@ -177,7 +234,7 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
         }
 
         var id = _nextId++;
-        if (!RegisterHotKey(IntPtr.Zero, id, modifiers, (uint)key))
+        if (!_registerHotKey(id, modifiers, (uint)key))
         {
             failureReason = $"{hotkey} is already in use by Windows or another app.";
             return false;
@@ -208,13 +265,13 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
     private void UnregisterAll()
     {
         foreach (var id in _handlers.Keys.ToArray())
-            UnregisterHotKey(IntPtr.Zero, id);
+            _unregisterHotKey(id);
         _handlers.Clear();
     }
 
     private void Unregister(int id)
     {
-        UnregisterHotKey(IntPtr.Zero, id);
+        _unregisterHotKey(id);
         _handlers.Remove(id);
     }
 
@@ -263,6 +320,8 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
             }
             else if (Enum.TryParse<Keys>(raw, true, out var parsed))
             {
+                if (parsed is >= Keys.F13 and <= Keys.F24)
+                    return false;
                 key = parsed;
                 keyCount++;
             }
