@@ -43,6 +43,22 @@ public sealed class InstallerRegressionTests
         Assert.DoesNotContain("taskkill", installer, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void Paid_production_candidate_does_not_register_for_startup()
+    {
+        var root = FindRepositoryRoot();
+        var buildScript = File.ReadAllText(Path.Combine(root, "scripts", "build-windows-release.ps1"));
+        var compilerArgumentsStart = buildScript.IndexOf("$isccArguments = @()", StringComparison.Ordinal);
+        var candidateBlockStart = buildScript.IndexOf(
+            "if ($PaidProductionCandidate)",
+            compilerArgumentsStart,
+            StringComparison.Ordinal);
+        var compilerStart = buildScript.IndexOf("& $iscc", candidateBlockStart, StringComparison.Ordinal);
+
+        Assert.True(candidateBlockStart >= 0 && compilerStart > candidateBlockStart);
+        Assert.Contains("'/DMySkipStartup'", buildScript[candidateBlockStart..compilerStart], StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

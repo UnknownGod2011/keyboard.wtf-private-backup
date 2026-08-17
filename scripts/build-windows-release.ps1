@@ -105,7 +105,8 @@ if ($PaidProductionCandidate) {
         '/DMyRunValueName=keyboard.wtf Paid Production Candidate',
         '/DMyDefaultGroupName=keyboard.wtf Paid Production Candidate',
         '/DMyShortcutName=keyboard.wtf Paid Production Candidate',
-        '/DMyUserDataDir=keyboard.wtf-paid-production-candidate'
+        '/DMyUserDataDir=keyboard.wtf-paid-production-candidate',
+        '/DMySkipStartup'
     )
 }
 & $iscc @isccArguments $installerScript
