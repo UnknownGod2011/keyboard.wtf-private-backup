@@ -1,5 +1,7 @@
 namespace KeyboardWtf.Tests;
 
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
 using KeyboardWtf.Services;
 using Xunit;
 
@@ -167,6 +169,99 @@ public sealed class HotkeyServiceTests
         Assert.DoesNotContain(defaults["Jarvis"], service.ActiveRegistrations.Values, StringComparer.OrdinalIgnoreCase);
         Assert.Equal(5, platform.Active.Count);
     }
+
+    [Fact]
+    public void Hotkey_registered_from_worker_thread_dispatches_via_ui_window()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        using var ready = new ManualResetEventSlim();
+        using var fired = new ManualResetEventSlim();
+        HotkeyService service = null;
+        uint messageThreadId = 0;
+        Exception threadFailure = null;
+        var messageThread = new Thread(() =>
+        {
+            try
+            {
+                messageThreadId = GetCurrentThreadId();
+                service = new HotkeyService();
+                ready.Set();
+                Application.Run();
+            }
+            catch (Exception exception)
+            {
+                threadFailure = exception;
+                ready.Set();
+            }
+            finally
+            {
+                service?.Dispose();
+            }
+        });
+        messageThread.SetApartmentState(ApartmentState.STA);
+        messageThread.Start();
+
+        try
+        {
+            Assert.True(ready.Wait(TimeSpan.FromSeconds(5)), "The hotkey message thread did not initialize.");
+            Assert.Null(threadFailure);
+
+            var candidates = new[] { "Ctrl+Shift+F10", "Ctrl+Alt+Shift+U", "Ctrl+Alt+Shift+I" };
+            var registered = candidates.FirstOrDefault(candidate =>
+                service.RegisterForIntegrationTest(
+                    "IntegrationTest",
+                    candidate,
+                    () =>
+                    {
+                        fired.Set();
+                        Application.ExitThread();
+                    },
+                    out _));
+
+            Assert.False(string.IsNullOrWhiteSpace(registered), "No isolated integration-test hotkey was available.");
+            SendHotkey(registered);
+            Assert.True(fired.Wait(TimeSpan.FromSeconds(5)), "Windows accepted the hotkey but did not dispatch it.");
+        }
+        finally
+        {
+            if (messageThread.IsAlive && messageThreadId != 0)
+                PostThreadMessage(messageThreadId, 0x0012, IntPtr.Zero, IntPtr.Zero); // WM_QUIT
+            Assert.True(messageThread.Join(TimeSpan.FromSeconds(5)), "The hotkey message thread did not stop.");
+        }
+    }
+
+    private static void SendHotkey(string hotkey)
+    {
+        Assert.True(HotkeyService.TryParse(hotkey, out _, out var key));
+        var parts = hotkey.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var modifiers = new List<Keys>();
+        if (parts.Any(part => part.Equals("Ctrl", StringComparison.OrdinalIgnoreCase)))
+            modifiers.Add(Keys.ControlKey);
+        if (parts.Any(part => part.Equals("Alt", StringComparison.OrdinalIgnoreCase)))
+            modifiers.Add(Keys.Menu);
+        if (parts.Any(part => part.Equals("Shift", StringComparison.OrdinalIgnoreCase)))
+            modifiers.Add(Keys.ShiftKey);
+
+        foreach (var modifier in modifiers)
+            KeybdEvent((byte)modifier, 0, 0, UIntPtr.Zero);
+        KeybdEvent((byte)key, 0, 0, UIntPtr.Zero);
+        KeybdEvent((byte)key, 0, KeyEventKeyUp, UIntPtr.Zero);
+        foreach (var modifier in modifiers.AsEnumerable().Reverse())
+            KeybdEvent((byte)modifier, 0, KeyEventKeyUp, UIntPtr.Zero);
+    }
+
+    private const uint KeyEventKeyUp = 0x0002;
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool PostThreadMessage(uint threadId, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", EntryPoint = "keybd_event")]
+    private static extern void KeybdEvent(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
 
     private sealed class FakeHotkeyPlatform
     {

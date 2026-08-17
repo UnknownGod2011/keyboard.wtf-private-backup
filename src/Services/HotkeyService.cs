@@ -1,29 +1,39 @@
 namespace KeyboardWtf.Services;
 
+using System.Collections.Concurrent;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
-public sealed class HotkeyService : IMessageFilter, IDisposable
+public sealed class HotkeyService : IDisposable
 {
     private const int WmHotkey = 0x0312;
     public const string JarvisFallback = "Ctrl+Alt+J";
     public const string CancelFallback = "Ctrl+Alt+Escape";
 
-    private readonly Dictionary<int, (string Name, string Hotkey, Action Handler)> _handlers = new();
+    private readonly ConcurrentDictionary<int, (string Name, string Hotkey, Action Handler)> _handlers = new();
+    private readonly object _hotkeyGate = new();
     private readonly Func<int, uint, uint, bool> _registerHotKey;
     private readonly Func<int, bool> _unregisterHotKey;
+    private readonly HotkeyMessageWindow _messageWindow;
     private int _nextId = 100;
     private bool _disposed;
-    private bool _filterAdded;
 
     public event Action<string, string> RegistrationFailed;
     public event Action<string, string, string> RegistrationFallbackUsed;
 
     public HotkeyService()
-        : this(
-            (id, modifiers, key) => RegisterHotKey(IntPtr.Zero, id, modifiers, key),
-            id => UnregisterHotKey(IntPtr.Zero, id))
     {
+        // RegisterHotKey(NULL, ...) binds delivery to the calling thread's queue.
+        // Settings updates run on an HTTP worker thread, so Windows could accept a
+        // shortcut that would never be dispatched. A dedicated UI-thread window
+        // gives every registration one stable delivery target.
+        _messageWindow = new HotkeyMessageWindow(DispatchHotkey);
+        _messageWindow.EnsureHandle();
+        _registerHotKey = (id, modifiers, key) =>
+            _messageWindow.Invoke(() => RegisterHotKey(_messageWindow.Handle, id, modifiers, key));
+        _unregisterHotKey = id =>
+            _messageWindow.Invoke(() => UnregisterHotKey(_messageWindow.Handle, id));
     }
 
     internal HotkeyService(
@@ -34,17 +44,26 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
         _unregisterHotKey = unregisterHotKey ?? throw new ArgumentNullException(nameof(unregisterHotKey));
     }
 
-    public IReadOnlyDictionary<string, string> ActiveRegistrations =>
-        _handlers.Values.ToDictionary(entry => entry.Name, entry => entry.Hotkey, StringComparer.OrdinalIgnoreCase);
+    public IReadOnlyDictionary<string, string> ActiveRegistrations
+    {
+        get
+        {
+            return _handlers.Values.ToDictionary(
+                entry => entry.Name,
+                entry => entry.Hotkey,
+                StringComparer.OrdinalIgnoreCase);
+        }
+    }
 
     public bool RegisterDefaults(HotkeySettings settings, CommandRegistry commands)
     {
+        lock (_hotkeyGate)
+            return RegisterDefaultsCore(settings, commands);
+    }
+
+    private bool RegisterDefaultsCore(HotkeySettings settings, CommandRegistry commands)
+    {
         UnregisterAll();
-        if (!_filterAdded)
-        {
-            Application.AddMessageFilter(this);
-            _filterAdded = true;
-        }
 
         var hotkeys = settings ?? HotkeySettings.Defaults();
         var results = new[]
@@ -65,63 +84,70 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
         bool requireAllRequested,
         out string error)
     {
-        error = "";
-        if (settings == null || commands == null)
+        lock (_hotkeyGate)
         {
-            error = "Hotkey settings are unavailable.";
-            return false;
-        }
-        if (HasDuplicates(settings, out var duplicate))
-        {
-            error = $"Duplicate hotkey: {duplicate}";
-            return false;
-        }
-
-        if (!_filterAdded)
-        {
-            Application.AddMessageFilter(this);
-            _filterAdded = true;
-        }
-        var requested = new (string Name, string Hotkey, Action Handler)[]
-        {
-            ("SmartWriting", settings.PushToTalk, commands.ToggleSmartMode),
-            ("Dictation", settings.Dictation, commands.ToggleDictation),
-            ("Jarvis", settings.Jarvis, commands.ToggleJarvisMode),
-            ("Cancel", settings.Cancel, commands.CancelCurrent),
-            ("OpenSettings", settings.OpenSettings, commands.OpenSettings),
-        };
-
-        var previous = (previousSettings ?? HotkeySettings.Defaults()).ToDictionary();
-        var changed = requireAllRequested
-            ? requested
-            : requested.Where(binding =>
+            error = "";
+            if (settings == null || commands == null)
             {
-                var settingName = binding.Name == "SmartWriting" ? "PushToTalk" : binding.Name;
-                return !previous.TryGetValue(settingName, out var oldValue)
-                    || !string.Equals(
-                        Normalize(oldValue),
-                        Normalize(binding.Hotkey),
-                        StringComparison.OrdinalIgnoreCase);
-            }).ToArray();
+                error = "Hotkey settings are unavailable.";
+                return false;
+            }
+            if (HasDuplicates(settings, out var duplicate))
+            {
+                error = $"Duplicate hotkey: {duplicate}";
+                return false;
+            }
 
-        return TryReplaceBindings(changed, out error);
+            var requested = new (string Name, string Hotkey, Action Handler)[]
+            {
+                ("SmartWriting", settings.PushToTalk, commands.ToggleSmartMode),
+                ("Dictation", settings.Dictation, commands.ToggleDictation),
+                ("Jarvis", settings.Jarvis, commands.ToggleJarvisMode),
+                ("Cancel", settings.Cancel, commands.CancelCurrent),
+                ("OpenSettings", settings.OpenSettings, commands.OpenSettings),
+            };
+
+            var previous = (previousSettings ?? HotkeySettings.Defaults()).ToDictionary();
+            var changed = requireAllRequested
+                ? requested
+                : requested.Where(binding =>
+                {
+                    var settingName = binding.Name == "SmartWriting" ? "PushToTalk" : binding.Name;
+                    return !previous.TryGetValue(settingName, out var oldValue)
+                        || !string.Equals(
+                            Normalize(oldValue),
+                            Normalize(binding.Hotkey),
+                            StringComparison.OrdinalIgnoreCase);
+                }).ToArray();
+
+            return TryReplaceBindings(changed, out error);
+        }
     }
 
     internal bool TryReplaceForTests(
         IReadOnlyDictionary<string, string> requested,
         IReadOnlyDictionary<string, string> previous,
         bool requireAllRequested,
-        out string error) =>
-        TryReplaceBindings(
-            requested.Where(pair => requireAllRequested
-                    || previous is null
-                    || !previous.TryGetValue(pair.Key, out var previousValue)
-                    || !string.Equals(Normalize(previousValue), Normalize(pair.Value), StringComparison.OrdinalIgnoreCase))
-                .Select(pair => (
-                pair.Key.Equals("PushToTalk", StringComparison.OrdinalIgnoreCase) ? "SmartWriting" : pair.Key,
-                pair.Value,
-                (Action)(() => { }))).ToArray(),
-            out error);
+        out string error)
+    {
+        lock (_hotkeyGate)
+            return TryReplaceBindings(
+                requested.Where(pair => requireAllRequested
+                        || previous is null
+                        || !previous.TryGetValue(pair.Key, out var previousValue)
+                        || !string.Equals(Normalize(previousValue), Normalize(pair.Value), StringComparison.OrdinalIgnoreCase))
+                    .Select(pair => (
+                        pair.Key.Equals("PushToTalk", StringComparison.OrdinalIgnoreCase) ? "SmartWriting" : pair.Key,
+                        pair.Value,
+                        (Action)(() => { }))).ToArray(),
+                out error);
+    }
+
+    internal bool RegisterForIntegrationTest(string name, string hotkey, Action handler, out string error)
+    {
+        lock (_hotkeyGate)
+            return TryRegister(name, hotkey, handler, out error);
+    }
 
     private bool TryReplaceBindings(
         IReadOnlyList<(string Name, string Hotkey, Action Handler)> requested,
@@ -246,20 +272,14 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
         return true;
     }
 
-    public bool PreFilterMessage(ref Message m)
+    private void DispatchHotkey(int id)
     {
-        if (m.Msg != WmHotkey)
-            return false;
+        if (!_handlers.TryGetValue(id, out var entry))
+            return;
 
-        var id = m.WParam.ToInt32();
-        if (_handlers.TryGetValue(id, out var entry))
-        {
-            try { entry.Handler(); }
-            catch (Exception ex) { AppLog.Error(ex, $"Hotkey handler failed: {entry.Name}"); }
-            return true;
-        }
-
-        return false;
+        AppLog.Info($"Hotkey triggered: {entry.Name}");
+        try { entry.Handler(); }
+        catch (Exception ex) { AppLog.Error(ex, $"Hotkey handler failed: {entry.Name}"); }
     }
 
     private void UnregisterAll()
@@ -272,19 +292,94 @@ public sealed class HotkeyService : IMessageFilter, IDisposable
     private void Unregister(int id)
     {
         _unregisterHotKey(id);
-        _handlers.Remove(id);
+        _handlers.TryRemove(id, out _);
     }
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        if (_filterAdded)
+        lock (_hotkeyGate)
         {
-            Application.RemoveMessageFilter(this);
-            _filterAdded = false;
+            if (_disposed) return;
+            _disposed = true;
+            UnregisterAll();
+            _messageWindow?.Dispose();
         }
-        UnregisterAll();
+    }
+
+    private sealed class HotkeyMessageWindow : NativeWindow, IDisposable
+    {
+        private const int WmInvoke = 0x8000 + 0x51;
+        private readonly Action<int> _dispatch;
+        private readonly ConcurrentDictionary<int, Action> _pendingInvocations = new();
+        private readonly int _ownerManagedThreadId = Environment.CurrentManagedThreadId;
+        private int _nextInvocationId;
+
+        public HotkeyMessageWindow(Action<int> dispatch) =>
+            _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
+
+        public void EnsureHandle()
+        {
+            if (Handle != IntPtr.Zero)
+                return;
+
+            CreateHandle(new CreateParams
+            {
+                Caption = "keyboard.wtf hotkey dispatcher",
+                Parent = new IntPtr(-3), // HWND_MESSAGE
+            });
+        }
+
+        public T Invoke<T>(Func<T> operation)
+        {
+            if (operation == null)
+                throw new ArgumentNullException(nameof(operation));
+            if (Environment.CurrentManagedThreadId == _ownerManagedThreadId)
+                return operation();
+            if (Handle == IntPtr.Zero)
+                throw new InvalidOperationException("The hotkey dispatcher is unavailable.");
+
+            T result = default;
+            Exception failure = null;
+            var invocationId = Interlocked.Increment(ref _nextInvocationId);
+            _pendingInvocations[invocationId] = () =>
+            {
+                try { result = operation(); }
+                catch (Exception exception) { failure = exception; }
+            };
+
+            SendMessage(Handle, WmInvoke, new IntPtr(invocationId), IntPtr.Zero);
+            if (_pendingInvocations.TryRemove(invocationId, out _))
+                throw new InvalidOperationException("The hotkey dispatcher did not process the registration request.");
+            if (failure != null)
+                ExceptionDispatchInfo.Capture(failure).Throw();
+            return result;
+        }
+
+        protected override void WndProc(ref Message message)
+        {
+            if (message.Msg == WmHotkey)
+            {
+                _dispatch(message.WParam.ToInt32());
+                return;
+            }
+            if (message.Msg == WmInvoke)
+            {
+                if (_pendingInvocations.TryRemove(message.WParam.ToInt32(), out var invocation))
+                    invocation();
+                return;
+            }
+
+            base.WndProc(ref message);
+        }
+
+        public void Dispose()
+        {
+            if (Handle != IntPtr.Zero)
+                DestroyHandle();
+        }
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
     }
 
     private static string Normalize(string hotkey) =>
