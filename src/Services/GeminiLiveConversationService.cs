@@ -399,10 +399,11 @@ public sealed class GeminiLiveConversationService : IDisposable
 
     private void StartMicrophone()
     {
-        var micIndex = KeyboardWtfState.SelectedMicrophoneIndex;
+        var micIndex = AudioRecorderService.ResolveDeviceNumber(
+            KeyboardWtfState.SelectedMicrophoneIndex);
         _microphone = new WaveInEvent
         {
-            DeviceNumber = micIndex >= 0 ? micIndex : 0,
+            DeviceNumber = micIndex,
             WaveFormat = new WaveFormat(16000, 16, 1),
             BufferMilliseconds = 90,
         };

@@ -499,6 +499,8 @@ public sealed class WebSettingsService : IDisposable
             whisperLoaded = _app?.SpeechRecognition?.IsWhisperLoaded ?? false,
             voskPresent = ModelManager.IsVoskPresent,
             whisperPresent = ModelManager.IsWhisperPresent,
+            modelsDownloading = KeyboardWtfState.IsDownloadingModels,
+            modelDownloadStatus = KeyboardWtfState.ModelDownloadStatus ?? "",
             modelsPath = ModelManager.ModelsBaseDir,
             claudeApiKey = MaskApiKey(KeyboardWtfState.ClaudeApiKey),
             claudeConfigured = KeyboardWtfState.IsClaudeAvailable,
@@ -964,7 +966,8 @@ public sealed class WebSettingsService : IDisposable
         try
         {
             var format = new WaveFormat(16000, 1);
-            var deviceIndex = KeyboardWtfState.SelectedMicrophoneIndex;
+            var deviceIndex = AudioRecorderService.ResolveDeviceNumber(
+                KeyboardWtfState.SelectedMicrophoneIndex);
             var waveIn = new WaveInEvent
             {
                 DeviceNumber = deviceIndex,
@@ -1100,7 +1103,12 @@ public sealed class WebSettingsService : IDisposable
         string resultJson;
         try
         {
-            await ModelManager.EnsureModelsAsync(status => AppLog.Info($"Model download: {status}"));
+            KeyboardWtfState.IsDownloadingModels = true;
+            await ModelManager.EnsureModelsAsync(status =>
+            {
+                KeyboardWtfState.ModelDownloadStatus = status;
+                AppLog.Info($"Model download: {status}");
+            });
 
             // Reload models into the speech service
             if (ModelManager.IsVoskPresent && !(_app?.SpeechRecognition?.IsVoskLoaded ?? false))
@@ -1121,6 +1129,11 @@ public sealed class WebSettingsService : IDisposable
         catch (Exception ex)
         {
             resultJson = JsonSerializer.Serialize(new { ok = false, error = ex.Message });
+        }
+        finally
+        {
+            KeyboardWtfState.IsDownloadingModels = false;
+            KeyboardWtfState.ModelDownloadStatus = null;
         }
 
         var buffer = Encoding.UTF8.GetBytes(resultJson);
@@ -1222,7 +1235,8 @@ public sealed class WebSettingsService : IDisposable
         {
             StopLiveMicInternal(); // idempotent: stop any existing session first
 
-            var deviceIndex = KeyboardWtfState.SelectedMicrophoneIndex >= 0 ? KeyboardWtfState.SelectedMicrophoneIndex : 0;
+            var deviceIndex = AudioRecorderService.ResolveDeviceNumber(
+                KeyboardWtfState.SelectedMicrophoneIndex);
             lock (_liveMicLock)
             {
                 _liveMicPeak = 0;

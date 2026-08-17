@@ -7,6 +7,7 @@ using KeyboardWtf.Destinations;
 using KeyboardWtf.Helpers;
 using KeyboardWtf.Models;
 using System.Windows.Forms;
+using KeyboardWtf.Services.Ai;
 using KeyboardWtf.Services.BrowserAutomationV2;
 
 public sealed class CommandRegistry
@@ -60,9 +61,21 @@ public sealed class CommandRegistry
             CancelCurrent();
             return;
         }
+        if (StopLiveBeforeAnotherVoiceMode("Smart Writing"))
+            return;
         _ = _capture.ToggleSmartModeAsync(HandleSmartWritingAsync);
     }
-    public void ToggleDictation() => _ = _capture.ToggleDictationAsync(DeliverRawDictationAsync);
+    public void ToggleDictation()
+    {
+        if (KeyboardWtfState.IsProcessingAi)
+        {
+            CancelCurrent();
+            return;
+        }
+        if (StopLiveBeforeAnotherVoiceMode("Dictation"))
+            return;
+        _ = _capture.ToggleDictationAsync(DeliverRawDictationAsync);
+    }
     public void ToggleCommandMode()
     {
         if (KeyboardWtfState.IsProcessingAi)
@@ -70,6 +83,8 @@ public sealed class CommandRegistry
             CancelCurrent();
             return;
         }
+        if (StopLiveBeforeAnotherVoiceMode("Command"))
+            return;
         _ = _capture.ToggleCommandModeAsync(HandleSmartExecutionAsync);
     }
     public void ToggleConversation() => ToggleJarvisMode();
@@ -77,6 +92,11 @@ public sealed class CommandRegistry
     {
         if (_liveConversation == null)
             return;
+        if (KeyboardWtfState.IsProcessingAi)
+        {
+            CancelCurrent();
+            return;
+        }
         if (_liveConversation.IsActive || _liveConversation.IsStarting)
         {
             _ = _liveConversation.StopAsync();
@@ -107,6 +127,17 @@ public sealed class CommandRegistry
         if (string.IsNullOrWhiteSpace(transcript))
             return;
         await _app.SendJarvisTextTurnAsync(transcript);
+    }
+
+    private bool StopLiveBeforeAnotherVoiceMode(string requestedMode)
+    {
+        if (_liveConversation?.IsActive != true && _liveConversation?.IsStarting != true)
+            return false;
+        _ = _liveConversation.StopAsync();
+        _notifications.Info(
+            "Jarvis stopping",
+            $"Press the {requestedMode} shortcut again after Jarvis closes.");
+        return true;
     }
     public void ObserveJarvisTranscript(string text) =>
         TryPreRouteJarvisTranscript(text);
@@ -284,7 +315,11 @@ public sealed class CommandRegistry
             if (!string.IsNullOrWhiteSpace(transcript))
             {
                 var destination = DestinationRegistry.Current?.Name ?? _settings.Current.DefaultDestination ?? "Clipboard";
-                var ok = await _router.SendAsync(destination, transcript);
+                var ok = await _router.SendAsync(
+                    destination,
+                    transcript,
+                    _capture.CurrentDeliveryTarget,
+                    _capture.CurrentOperationToken);
                 _notifications.Info(ok ? "Sent" : "Send failed", KeyboardWtfState.LastSendResult ?? destination);
             }
         }
@@ -504,7 +539,7 @@ public sealed class CommandRegistry
                 "the speaker's meaning and tone. Return only the final text.",
                 token);
             token.ThrowIfCancellationRequested();
-            await DeliverTextAsync(string.IsNullOrWhiteSpace(result) ? transcript : result);
+            await DeliverTextAsync(string.IsNullOrWhiteSpace(result) ? transcript : result, token);
         }
         catch (OperationCanceledException)
         {
@@ -512,16 +547,26 @@ public sealed class CommandRegistry
         }
         catch (Exception ex)
         {
+            if (AiProviderRegistry.Current is PaidCloudAiProvider)
+            {
+                AppLog.Warning(ex, "Paid Smart Writing failed; no text was inserted");
+                KeyboardWtfState.SetUi(
+                    VoiceUiPhase.Error,
+                    "Smart Writing unavailable",
+                    ex.Message);
+                _notifications.Warning("Smart Writing unavailable", ex.Message);
+                return;
+            }
             AppLog.Warning(ex, "Smart writing AI failed; delivering raw transcript");
             _notifications.Warning("AI unavailable", "Typed the raw transcript instead.");
-            await DeliverTextAsync(transcript);
+            await DeliverTextAsync(transcript, token);
         }
     }
 
     private async Task DeliverRawDictationAsync(string transcript)
     {
         KeyboardWtfState.SetTranscript(transcript);
-        await DeliverTextAsync(transcript);
+        await DeliverTextAsync(transcript, _capture.CurrentOperationToken);
     }
 
     private async Task ExecutePlanAsync(SmartActionPlan plan, CancellationToken token)
@@ -849,8 +894,11 @@ public sealed class CommandRegistry
         }
     }
 
-    private async Task DeliverTextAsync(string text)
+    private async Task DeliverTextAsync(
+        string text,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var destination = _settings.Current.TextDeliveryMode switch
         {
             VoiceTextDeliveryMode.ClipboardOnly => "Clipboard",
@@ -863,7 +911,26 @@ public sealed class CommandRegistry
             return;
         }
 
-        var ok = await _router.SendAsync(destination, text);
+        var insertionTarget = _capture.CurrentDeliveryTarget;
+        if (destination == "Type Out"
+            && (insertionTarget is null || !insertionTarget.IsCurrent()))
+        {
+            await _router.SendAsync("Clipboard", text);
+            _notifications.Warning(
+                "Focus changed — copied instead",
+                "The original field is no longer active, so keyboard.wtf did not type into another app.");
+            KeyboardWtfState.SetUi(
+                VoiceUiPhase.Done,
+                "Copied — focus changed",
+                "Return to the intended field and paste when ready.");
+            return;
+        }
+
+        var ok = await _router.SendAsync(
+            destination,
+            text,
+            insertionTarget,
+            cancellationToken);
         if (!ok && destination == "Type Out")
         {
             await _router.SendAsync("Clipboard", text);

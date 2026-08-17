@@ -39,7 +39,8 @@ public static class GuitarTunerService
             {
                 WaveFormat         = new WaveFormat(SampleRate, 16, 1),
                 BufferMilliseconds = 80,
-                DeviceNumber       = Math.Max(0, KeyboardWtfState.SelectedMicrophoneIndex)
+                DeviceNumber       = AudioRecorderService.ResolveDeviceNumber(
+                    KeyboardWtfState.SelectedMicrophoneIndex)
             };
             _waveIn.DataAvailable += OnData;
             _waveIn.StartRecording();

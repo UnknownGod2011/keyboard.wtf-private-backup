@@ -27,7 +27,11 @@ internal interface IAiProvider
     /// the user's current language are passed through; providers may add their own language
     /// hints on top.
     /// </summary>
-    Task<string> ReformatAsync(string rawText, string destinationPrompt, string language);
+    Task<string> ReformatAsync(
+        string rawText,
+        string destinationPrompt,
+        string language,
+        CancellationToken cancellationToken = default);
 
     /// <summary>Low-cost smoke test for the currently-configured API key.</summary>
     Task<(bool success, string message)> TestApiKeyAsync();

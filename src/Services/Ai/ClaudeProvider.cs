@@ -21,8 +21,14 @@ internal sealed class ClaudeProvider : IAiProvider
     public bool IsImplemented => true;
     public bool IsAvailable => !string.IsNullOrEmpty(KeyboardWtfState.ClaudeApiKey);
 
-    public Task<string> ReformatAsync(string rawText, string destinationPrompt, string language)
-        => _service.ReformatAsync(rawText, destinationPrompt, language);
+    public Task<string> ReformatAsync(
+        string rawText,
+        string destinationPrompt,
+        string language,
+        CancellationToken cancellationToken = default)
+        => _service
+            .ReformatAsync(rawText, destinationPrompt, language)
+            .WaitAsync(cancellationToken);
 
     public Task<(bool success, string message)> TestApiKeyAsync()
         => _service.TestApiKeyAsync();

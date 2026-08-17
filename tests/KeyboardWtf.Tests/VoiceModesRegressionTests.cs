@@ -1,0 +1,155 @@
+namespace KeyboardWtf.Tests;
+
+using KeyboardWtf.Destinations;
+using KeyboardWtf.Helpers;
+using KeyboardWtf.Models;
+using KeyboardWtf.Services;
+using Xunit;
+
+public sealed class VoiceModesRegressionTests
+{
+    [Fact]
+    public void Raw_dictation_never_uses_AI_post_processing()
+    {
+        Assert.False(VoiceCaptureService.RecordingModeUsesAiPostProcessing(RecordingMode.Dictate));
+        Assert.True(VoiceCaptureService.RecordingModeUsesAiPostProcessing(RecordingMode.VoiceAssistant));
+        Assert.True(VoiceCaptureService.RecordingModeUsesAiPostProcessing(RecordingMode.JarvisPreflight));
+    }
+
+    [Theory]
+    [InlineData(0, -1, false)]
+    [InlineData(1, -1, true)]
+    [InlineData(1, -2, false)]
+    [InlineData(2, 1, true)]
+    [InlineData(2, 2, false)]
+    public void Microphone_selection_is_validated_before_recording(
+        int deviceCount,
+        int selectedIndex,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            VoiceCaptureService.IsMicrophoneSelectionAvailable(
+                deviceCount,
+                selectedIndex,
+                out _));
+    }
+
+    [Theory]
+    [InlineData(-1, -1)]
+    [InlineData(-5, -1)]
+    [InlineData(0, 0)]
+    [InlineData(3, 3)]
+    public void Audio_capture_preserves_the_Windows_default_mapper(
+        int configuredIndex,
+        int expectedDeviceNumber)
+    {
+        Assert.Equal(
+            expectedDeviceNumber,
+            AudioRecorderService.ResolveDeviceNumber(configuredIndex));
+    }
+
+    [Fact]
+    public void Insertion_target_rejects_a_different_window_or_title()
+    {
+        var expected = new TextInsertionTarget((IntPtr)10, 20, "Draft - Notepad");
+        Assert.True(TextInsertionTarget.Matches(
+            expected,
+            new TextInsertionTarget((IntPtr)10, 20, "Draft - Notepad")));
+        Assert.False(TextInsertionTarget.Matches(
+            expected,
+            new TextInsertionTarget((IntPtr)11, 20, "Draft - Notepad")));
+        Assert.False(TextInsertionTarget.Matches(
+            expected,
+            new TextInsertionTarget((IntPtr)10, 20, "Another tab")));
+    }
+
+    [Fact]
+    public async Task Type_out_restores_clipboard_after_verified_paste()
+    {
+        var expected = new TextInsertionTarget((IntPtr)10, 20, "Draft - Notepad");
+        var clipboardText = "original";
+        var restored = false;
+        var pasteCalls = 0;
+        var destination = CreateDestination(
+            () => expected,
+            () => new ClipboardHelper.Snapshot(),
+            text => { clipboardText = text; return true; },
+            () => clipboardText,
+            _ => { restored = true; clipboardText = "original"; return true; },
+            () => { pasteCalls++; return true; },
+            (_, _) => Task.CompletedTask);
+
+        Assert.True(await destination.SendAsync("polished", expected, CancellationToken.None));
+        Assert.Equal(1, pasteCalls);
+        Assert.True(restored);
+        Assert.Equal("original", clipboardText);
+    }
+
+    [Fact]
+    public async Task Type_out_blocks_paste_and_restores_clipboard_when_focus_changes()
+    {
+        var expected = new TextInsertionTarget((IntPtr)10, 20, "Draft - Notepad");
+        var current = expected;
+        var clipboardText = "original";
+        var restored = false;
+        var pasteCalls = 0;
+        var destination = CreateDestination(
+            () => current,
+            () => new ClipboardHelper.Snapshot(),
+            text => { clipboardText = text; return true; },
+            () => clipboardText,
+            _ => { restored = true; clipboardText = "original"; return true; },
+            () => { pasteCalls++; return true; },
+            (_, _) =>
+            {
+                current = new TextInsertionTarget((IntPtr)30, 40, "Chrome");
+                return Task.CompletedTask;
+            });
+
+        Assert.False(await destination.SendAsync("polished", expected, CancellationToken.None));
+        Assert.Equal(0, pasteCalls);
+        Assert.True(restored);
+        Assert.Equal("original", clipboardText);
+    }
+
+    [Fact]
+    public async Task Type_out_cancellation_prevents_late_paste_and_restores_clipboard()
+    {
+        var expected = new TextInsertionTarget((IntPtr)10, 20, "Draft - Notepad");
+        var clipboardText = "original";
+        var restored = false;
+        var pasteCalls = 0;
+        var destination = CreateDestination(
+            () => expected,
+            () => new ClipboardHelper.Snapshot(),
+            text => { clipboardText = text; return true; },
+            () => clipboardText,
+            _ => { restored = true; clipboardText = "original"; return true; },
+            () => { pasteCalls++; return true; },
+            (_, token) => Task.FromException(new OperationCanceledException(token)));
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            destination.SendAsync("polished", expected, CancellationToken.None));
+        Assert.Equal(0, pasteCalls);
+        Assert.True(restored);
+        Assert.Equal("original", clipboardText);
+    }
+
+    private static TypeOutDestination CreateDestination(
+        Func<TextInsertionTarget> captureTarget,
+        Func<ClipboardHelper.Snapshot> captureClipboard,
+        Func<string, bool> setClipboard,
+        Func<string> getClipboard,
+        Func<ClipboardHelper.Snapshot, bool> restoreClipboard,
+        Func<bool> sendPaste,
+        Func<int, CancellationToken, Task> delay) =>
+        new(
+            captureTarget,
+            captureClipboard,
+            setClipboard,
+            getClipboard,
+            restoreClipboard,
+            sendPaste,
+            delay);
+}

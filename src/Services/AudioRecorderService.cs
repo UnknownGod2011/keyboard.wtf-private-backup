@@ -8,6 +8,11 @@ using NAudio.Wave;
 // Future: WASAPI loopback (output capture) would enable "transcribe what's playing" mode.
 public sealed class AudioRecorderService : IDisposable
 {
+    // WinMM's WAVE_MAPPER value. NAudio forwards DeviceNumber directly to
+    // waveInOpen, so -1 follows the current Windows default input instead of
+    // pinning first-run users to whatever happens to be device zero.
+    internal const int SystemDefaultDeviceNumber = -1;
+
     private WaveInEvent _waveIn;
     private MemoryStream _pcmStream;
     private WaveFormat _waveFormat;
@@ -30,21 +35,32 @@ public sealed class AudioRecorderService : IDisposable
 
         _waveFormat = new WaveFormat(sampleRate: sampleRate, channels: 1);
         _pcmStream = new MemoryStream();
-        var micIndex = KeyboardWtfState.SelectedMicrophoneIndex;
+        var micIndex = ResolveDeviceNumber(KeyboardWtfState.SelectedMicrophoneIndex);
         _waveIn = new WaveInEvent
         {
-            DeviceNumber = micIndex >= 0 ? micIndex : 0,
+            DeviceNumber = micIndex,
             WaveFormat = _waveFormat,
             BufferMilliseconds = 50 // 50ms: responsive enough for live meter, large enough to avoid callback thrash
         };
 
         _waveIn.DataAvailable += OnDataAvailable;
         _waveIn.RecordingStopped += OnRecordingStopped;
-        _waveIn.StartRecording();
+        try
+        {
+            _waveIn.StartRecording();
+        }
+        catch
+        {
+            CleanupRecordingResources();
+            throw;
+        }
 
         _currentPeak = 0;
         IsRecording = true;
     }
+
+    internal static int ResolveDeviceNumber(int selectedIndex) =>
+        selectedIndex >= 0 ? selectedIndex : SystemDefaultDeviceNumber;
 
     public byte[] StopRecording()
     {

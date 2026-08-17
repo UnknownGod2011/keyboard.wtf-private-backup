@@ -10,6 +10,7 @@ internal static class ClipboardHelper
     public sealed class Snapshot
     {
         internal DataObject Data { get; init; }
+        internal bool WasEmpty { get; init; }
     }
 
     public static string GetText()
@@ -25,7 +26,8 @@ internal static class ClipboardHelper
     public static bool SetText(string text)
     {
         bool success = false;
-        var thread = new Thread(() => success = SetClipboardText(text));
+        var thread = new Thread(() => success = RetryClipboardOperation(
+            () => SetClipboardText(text)));
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         thread.Join(3000);
@@ -37,25 +39,35 @@ internal static class ClipboardHelper
         Snapshot snapshot = null;
         var thread = new Thread(() =>
         {
-            try
+            for (var attempt = 0; attempt < 5 && snapshot is null; attempt++)
             {
-                var source = Clipboard.GetDataObject();
-                if (source == null)
-                    return;
-                var copy = new DataObject();
-                foreach (var format in source.GetFormats())
+                try
                 {
-                    try
+                    var source = Clipboard.GetDataObject();
+                    if (source == null)
                     {
-                        var value = source.GetData(format);
-                        if (value != null)
-                            copy.SetData(format, value);
+                        snapshot = new Snapshot { WasEmpty = true };
+                        return;
                     }
-                    catch { }
+                    var copy = new DataObject();
+                    foreach (var format in source.GetFormats())
+                    {
+                        try
+                        {
+                            var value = source.GetData(format);
+                            if (value != null)
+                                copy.SetData(format, value);
+                        }
+                        catch { }
+                    }
+                    snapshot = new Snapshot { Data = copy, WasEmpty = false };
                 }
-                snapshot = new Snapshot { Data = copy };
+                catch
+                {
+                    if (attempt < 4)
+                        Thread.Sleep(20 * (attempt + 1));
+                }
             }
-            catch { }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
@@ -65,22 +77,46 @@ internal static class ClipboardHelper
 
     public static bool Restore(Snapshot snapshot)
     {
-        if (snapshot?.Data == null)
+        if (snapshot == null)
             return false;
         var success = false;
         var thread = new Thread(() =>
         {
-            try
+            success = RetryClipboardOperation(() =>
             {
-                Clipboard.SetDataObject(snapshot.Data, true);
-                success = true;
-            }
-            catch { }
+                try
+                {
+                    if (snapshot.WasEmpty)
+                        Clipboard.Clear();
+                    else if (snapshot.Data != null)
+                        Clipboard.SetDataObject(snapshot.Data, true);
+                    else
+                        return false;
+                    return true;
+                }
+                catch { return false; }
+            });
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         thread.Join(3000);
         return success;
+    }
+
+    private static bool RetryClipboardOperation(Func<bool> operation)
+    {
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            try
+            {
+                if (operation())
+                    return true;
+            }
+            catch { }
+            if (attempt < 4)
+                Thread.Sleep(20 * (attempt + 1));
+        }
+        return false;
     }
 
     private static string GetClipboardText()

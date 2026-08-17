@@ -138,7 +138,11 @@ public sealed class SmartActionPlanner
                     ? "Rewrite this as a concise, professional email body. Preserve every important fact. Return only the body."
                     : "Clean this spoken email into a clear, natural email body. Preserve the tone and meaning. Return only the body.";
                 body = await gemini
-                    .ReformatAsync(body, prompt, KeyboardWtfState.SelectedLanguage)
+                    .ReformatAsync(
+                        body,
+                        prompt,
+                        KeyboardWtfState.SelectedLanguage,
+                        cancellationToken)
                     .WaitAsync(TimeSpan.FromSeconds(8), cancellationToken);
             }
             catch (TimeoutException)

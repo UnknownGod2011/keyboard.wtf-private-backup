@@ -15,11 +15,15 @@ internal sealed class PaidCloudAiProvider : IStructuredAiProvider
     public string DisplayName => "keyboard.wtf Cloud AI";
     public bool IsImplemented => true;
     public bool IsAvailable => _account.Enabled && _account.IsSignedIn;
+    internal string UnavailableMessage => !_account.IsSignedIn
+        ? "Sign in with Google in Account & Billing before using Smart Writing."
+        : "Smart Writing is unavailable for this account right now.";
 
     public async Task<string> ReformatAsync(
         string rawText,
         string destinationPrompt,
-        string language)
+        string language,
+        CancellationToken cancellationToken = default)
     {
         var response = await _account.GenerateAsync(
             rawText,
@@ -28,7 +32,7 @@ internal sealed class PaidCloudAiProvider : IStructuredAiProvider
             null,
             null,
             "desktop-reformat",
-            CancellationToken.None);
+            cancellationToken);
         return response.Text;
     }
 

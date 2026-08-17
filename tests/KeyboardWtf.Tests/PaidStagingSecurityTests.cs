@@ -213,6 +213,39 @@ public sealed class PaidStagingSecurityTests
     }
 
     [Fact]
+    public async Task Smart_writing_cancellation_reaches_the_authenticated_generate_request()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var (store, directory) = CreateSessionStore();
+        try
+        {
+            SaveValidSession(store);
+            var handler = new CancellableGenerateHandler();
+            using var account = CreateAccount(store, handler);
+            await account.InitializeAsync();
+            var provider = new PaidCloudAiProvider(account);
+            using var cancellation = new CancellationTokenSource();
+
+            var request = provider.ReformatAsync(
+                "messy words",
+                "Polish this text.",
+                "en",
+                cancellation.Token);
+            await handler.GenerateStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            cancellation.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => request);
+            Assert.Equal(1, handler.GenerateCalls);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task Intentional_activation_can_warm_the_authenticated_backend_without_using_AI()
     {
         if (!OperatingSystem.IsWindows())
@@ -733,6 +766,48 @@ public sealed class PaidStagingSecurityTests
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),
             };
+        }
+    }
+
+    private sealed class CancellableGenerateHandler : HttpMessageHandler
+    {
+        public TaskCompletionSource GenerateStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int GenerateCalls { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.AbsolutePath == "/v1/account")
+            {
+                var account = JsonSerializer.Serialize(new
+                {
+                    userId = "uid-1",
+                    email = "person@example.test",
+                    displayName = "Test Person",
+                    status = "active",
+                    planId = "monthly_standard_inr_999_v1",
+                    availableCreditMicros = 1_000_000,
+                    reservedCreditMicros = 0,
+                    cycleUsageCreditMicros = 0,
+                    cycleEndsAt = DateTimeOffset.UtcNow.AddDays(30),
+                    devices = Array.Empty<object>(),
+                    recentUsage = Array.Empty<object>(),
+                    recentPurchases = Array.Empty<object>(),
+                    subscriptionStatus = "active",
+                });
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(account, Encoding.UTF8, "application/json"),
+                };
+            }
+
+            Assert.Equal("/v1/ai/generate", request.RequestUri.AbsolutePath);
+            GenerateCalls++;
+            GenerateStarted.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("The cancelled request unexpectedly resumed.");
         }
     }
 

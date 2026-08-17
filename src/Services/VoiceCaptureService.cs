@@ -23,6 +23,11 @@ public sealed class VoiceCaptureService
     private string _lastPreview = "";
     private int _autoCompleteInProgress;
     private int _operationId;
+    private TextInsertionTarget _deliveryTarget;
+
+    internal TextInsertionTarget CurrentDeliveryTarget => _deliveryTarget;
+    internal CancellationToken CurrentOperationToken =>
+        _processingCts?.Token ?? CancellationToken.None;
 
     public VoiceCaptureService(
         AudioRecorderService audioRecorder,
@@ -55,15 +60,28 @@ public sealed class VoiceCaptureService
             return false;
         }
 
+        _deliveryTarget = TextInsertionTarget.Capture();
         StartLivePreview();
         try
         {
             _audioRecorder.StartRecording();
         }
-        catch
+        catch (Exception ex)
         {
             StopLivePreview();
-            throw;
+            _deliveryTarget = null;
+            KeyboardWtfState.IsRecording = false;
+            KeyboardWtfState.CurrentRecordingMode = RecordingMode.None;
+            KeyboardWtfState.LastSendResult = "Microphone unavailable";
+            KeyboardWtfState.SetUi(
+                VoiceUiPhase.Error,
+                "Microphone unavailable",
+                "Microphone access is required. Check Windows privacy settings and the selected input device.");
+            _notifications.Error(
+                "Microphone unavailable",
+                "Microphone access is required. Check Windows privacy settings and the selected input device.");
+            AppLog.Warning(ex, "Microphone recording could not start");
+            return false;
         }
         KeyboardWtfState.IsRecording = true;
         KeyboardWtfState.CurrentRecordingMode = mode;
@@ -87,7 +105,10 @@ public sealed class VoiceCaptureService
         return true;
     }
 
-    public async Task<string> StopAndTranscribeAsync(bool updateTranscript = true, bool preferFast = false)
+    public async Task<string> StopAndTranscribeAsync(
+        bool updateTranscript = true,
+        bool preferFast = false,
+        bool keepProcessingUntilCompletionHandler = false)
     {
         if (!KeyboardWtfState.IsRecording)
             return string.Empty;
@@ -116,7 +137,10 @@ public sealed class VoiceCaptureService
         {
             var transcript = await _speechRecognition.RecognizeFromWavAsync(wavData, token, preferFast);
             token.ThrowIfCancellationRequested();
-            transcript = await PostProcessTranscriptAsync(transcript);
+            transcript = await PostProcessTranscriptAsync(
+                transcript,
+                allowAiTranslation: RecordingModeUsesAiPostProcessing(mode),
+                token);
             if (operationId != _operationId)
                 return string.Empty;
             if (updateTranscript)
@@ -141,7 +165,7 @@ public sealed class VoiceCaptureService
         }
         finally
         {
-            if (operationId == _operationId)
+            if (operationId == _operationId && !keepProcessingUntilCompletionHandler)
                 KeyboardWtfState.IsProcessing = false;
         }
     }
@@ -171,7 +195,11 @@ public sealed class VoiceCaptureService
             _preferFastRecognition = true;
             _completionHandler = async transcript =>
             {
-                var ok = await _router.SendAsync(destinationName, transcript);
+                var ok = await _router.SendAsync(
+                    destinationName,
+                    transcript,
+                    _deliveryTarget,
+                    _processingCts?.Token ?? CancellationToken.None);
                 _notifications.Info(ok ? "Sent" : "Send failed", KeyboardWtfState.LastSendResult ?? destinationName);
             };
             Start(RecordingMode.QuickSend, destinationName);
@@ -198,6 +226,7 @@ public sealed class VoiceCaptureService
         KeyboardWtfState.CurrentRecordingMode = RecordingMode.None;
         KeyboardWtfState.IsProcessing = false;
         KeyboardWtfState.IsProcessingAi = false;
+        _deliveryTarget = null;
         KeyboardWtfState.LastSendResult = "Cancelled";
         KeyboardWtfState.SetUi(VoiceUiPhase.Cancelled, "Cancelled", "Nothing was typed or executed.");
         _notifications.Info("Cancelled", "Current voice operation cancelled.");
@@ -214,6 +243,8 @@ public sealed class VoiceCaptureService
         var provider = AiProviderRegistry.Current;
         if (provider == null || !provider.IsAvailable)
         {
+            if (provider is PaidCloudAiProvider paidProvider)
+                throw new InvalidOperationException(paidProvider.UnavailableMessage);
             _notifications.Warning("AI unavailable", "No configured AI provider; copied raw transcript instead.");
             return transcript;
         }
@@ -223,8 +254,11 @@ public sealed class VoiceCaptureService
         try
         {
             var result = await provider
-                .ReformatAsync(transcript, prompt, KeyboardWtfState.SelectedLanguage)
-                .WaitAsync(cancellationToken);
+                .ReformatAsync(
+                    transcript,
+                    prompt,
+                    KeyboardWtfState.SelectedLanguage,
+                    cancellationToken);
             if (!string.IsNullOrWhiteSpace(result))
                 KeyboardWtfState.SetTranscript(result);
             return string.IsNullOrWhiteSpace(result) ? transcript : result;
@@ -235,7 +269,13 @@ public sealed class VoiceCaptureService
         }
     }
 
-    private async Task<string> PostProcessTranscriptAsync(string transcript)
+    internal static bool RecordingModeUsesAiPostProcessing(RecordingMode mode) =>
+        mode != RecordingMode.Dictate;
+
+    private async Task<string> PostProcessTranscriptAsync(
+        string transcript,
+        bool allowAiTranslation,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(transcript))
             return transcript;
@@ -245,7 +285,7 @@ public sealed class VoiceCaptureService
         transcript = CaseTransformer.Apply(transcript, KeyboardWtfState.SelectedCaseTransform);
 
         var targetLang = KeyboardWtfState.TranslateTargetLanguage;
-        if (!string.IsNullOrEmpty(targetLang))
+        if (allowAiTranslation && !string.IsNullOrEmpty(targetLang))
         {
             var provider = AiProviderRegistry.Current;
             if (provider?.IsAvailable == true)
@@ -254,7 +294,8 @@ public sealed class VoiceCaptureService
                 var translated = await provider.ReformatAsync(
                     transcript,
                     $"Translate the following text to {langName}. Return only the translated text, no explanations.",
-                    targetLang);
+                    targetLang,
+                    cancellationToken);
                 if (!string.IsNullOrWhiteSpace(translated))
                     transcript = translated;
             }
@@ -376,7 +417,10 @@ public sealed class VoiceCaptureService
         try
         {
             var handler = _completionHandler;
-            var transcript = await StopAndTranscribeAsync(updateTranscript: false, preferFast: _preferFastRecognition);
+            var transcript = await StopAndTranscribeAsync(
+                updateTranscript: false,
+                preferFast: _preferFastRecognition,
+                keepProcessingUntilCompletionHandler: true);
             if (!string.IsNullOrWhiteSpace(transcript) && handler != null)
                 await handler(transcript);
         }
@@ -394,6 +438,8 @@ public sealed class VoiceCaptureService
         {
             _completionHandler = null;
             _preferFastRecognition = false;
+            _deliveryTarget = null;
+            KeyboardWtfState.IsProcessing = false;
             Interlocked.Exchange(ref _autoCompleteInProgress, 0);
         }
     }
@@ -456,27 +502,39 @@ public sealed class VoiceCaptureService
     {
         try
         {
-            var count = WaveInEvent.DeviceCount;
-            if (count == 0)
-            {
-                reason = "No microphone detected.";
-                return false;
-            }
-
-            var idx = KeyboardWtfState.SelectedMicrophoneIndex;
-            if (idx >= count)
-            {
-                reason = $"Selected microphone {idx} is not available.";
-                return false;
-            }
-
-            reason = null;
-            return true;
+            return IsMicrophoneSelectionAvailable(
+                WaveInEvent.DeviceCount,
+                KeyboardWtfState.SelectedMicrophoneIndex,
+                out reason);
         }
         catch (Exception ex)
         {
             reason = ex.Message;
             return false;
         }
+    }
+
+    internal static bool IsMicrophoneSelectionAvailable(
+        int deviceCount,
+        int selectedIndex,
+        out string reason)
+    {
+        if (deviceCount <= 0)
+        {
+            reason = "No microphone detected.";
+            return false;
+        }
+        if (selectedIndex >= deviceCount)
+        {
+            reason = $"Selected microphone {selectedIndex} is not available.";
+            return false;
+        }
+        if (selectedIndex < AudioRecorderService.SystemDefaultDeviceNumber)
+        {
+            reason = $"Selected microphone {selectedIndex} is invalid.";
+            return false;
+        }
+        reason = null;
+        return true;
     }
 }

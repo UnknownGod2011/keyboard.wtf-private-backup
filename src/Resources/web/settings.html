@@ -1112,6 +1112,7 @@
         <button class="ghost" id="downloadBtn" onclick="downloadModels()">Download missing models</button>
         <span id="downloadSpinner" style="display:none"><span class="spinner"></span></span>
       </div>
+      <div class="hint" id="modelDownloadProgress" aria-live="polite" style="display:none;margin-top:10px"></div>
 
       <div class="field" style="margin-top:16px">
         <label>Location</label>
@@ -1599,8 +1600,15 @@ async function loadSettings() {
     setModelStatus('whisperStatus', 'whisperStatusText', settings.whisperPresent, settings.whisperLoaded);
 
     const anyMissing = !settings.voskPresent || !settings.whisperPresent;
-    document.getElementById('downloadBtn').textContent = anyMissing ? 'Download missing models' : 'Models up to date';
-    document.getElementById('downloadBtn').disabled = !anyMissing;
+    const modelsDownloading = settings.modelsDownloading === true;
+    document.getElementById('downloadBtn').textContent = modelsDownloading
+      ? 'Downloading…'
+      : anyMissing ? 'Download missing models' : 'Models up to date';
+    document.getElementById('downloadBtn').disabled = modelsDownloading || !anyMissing;
+    const progress = document.getElementById('modelDownloadProgress');
+    progress.textContent = settings.modelDownloadStatus || (modelsDownloading ? 'Preparing speech models…' : '');
+    progress.style.display = modelsDownloading ? 'block' : 'none';
+    scheduleModelStatusRefresh(modelsDownloading);
 
     document.getElementById('modelsPath').textContent = settings.modelsPath || '(unknown)';
 
@@ -3168,6 +3176,20 @@ window.addEventListener('beforeunload', () => {
 async function modelSizeChanged() {
   await settingChanged();
   await downloadModels();
+}
+
+let modelStatusRefreshTimer = null;
+function scheduleModelStatusRefresh(active) {
+  if (modelStatusRefreshTimer) {
+    clearTimeout(modelStatusRefreshTimer);
+    modelStatusRefreshTimer = null;
+  }
+  if (active) {
+    modelStatusRefreshTimer = setTimeout(() => {
+      modelStatusRefreshTimer = null;
+      loadSettings();
+    }, 1500);
+  }
 }
 
 async function downloadModels() {

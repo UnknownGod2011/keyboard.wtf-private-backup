@@ -22,7 +22,11 @@ internal sealed class ComingSoonProvider : IAiProvider
     public bool IsImplemented => false;
     public bool IsAvailable => false;
 
-    public Task<string> ReformatAsync(string rawText, string destinationPrompt, string language)
+    public Task<string> ReformatAsync(
+        string rawText,
+        string destinationPrompt,
+        string language,
+        CancellationToken cancellationToken = default)
         => throw new NotSupportedException($"{DisplayName} provider is not yet implemented");
 
     public Task<(bool success, string message)> TestApiKeyAsync()

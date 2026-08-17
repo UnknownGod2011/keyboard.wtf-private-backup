@@ -416,21 +416,34 @@ public sealed class KeyboardWtfApp : IDisposable
             if (ModelManager.IsWhisperPresent)
                 _speechRecognition.LoadWhisperModel(ModelManager.WhisperModelPath);
 
-            var needsDownload = !ModelManager.IsVoskPresent || !ModelManager.IsWhisperPresent;
-            if (!needsDownload)
-                return;
-
             KeyboardWtfState.IsDownloadingModels = true;
-            await ModelManager.EnsureModelsAsync(status =>
+            void ReportModelStatus(string status)
             {
                 KeyboardWtfState.ModelDownloadStatus = status;
                 AppLog.Info($"Model download: {status}");
-            });
+            }
 
-            if (ModelManager.IsVoskPresent && !_speechRecognition.IsVoskLoaded)
+            var voskReady = ModelManager.IsVoskPresent
+                || await ModelManager.DownloadVoskModelAsync(ReportModelStatus);
+
+            if (voskReady && ModelManager.IsVoskPresent && !_speechRecognition.IsVoskLoaded)
                 _speechRecognition.LoadVoskModel(ModelManager.VoskModelPath);
-            if (ModelManager.IsWhisperPresent && !_speechRecognition.IsWhisperLoaded)
+            else if (!voskReady)
+                _notifications?.Warning(
+                    "Dictation model unavailable",
+                    "The local Vosk model could not be downloaded. Check your connection and retry in Settings.");
+
+            // Vosk is available after the small first download, so Dictation
+            // can start while the more accurate Whisper model continues.
+            var whisperReady = ModelManager.IsWhisperPresent
+                || await ModelManager.DownloadWhisperModelAsync(ReportModelStatus);
+
+            if (whisperReady && ModelManager.IsWhisperPresent && !_speechRecognition.IsWhisperLoaded)
                 _speechRecognition.LoadWhisperModel(ModelManager.WhisperModelPath);
+            else if (!whisperReady)
+                _notifications?.Warning(
+                    "Accurate speech model unavailable",
+                    "Whisper could not be downloaded. Fast local Dictation remains available when Vosk is ready.");
         }
         catch (Exception ex)
         {

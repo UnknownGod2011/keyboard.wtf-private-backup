@@ -25,7 +25,11 @@ internal sealed class OpenAiProvider : IAiProvider, IDisposable
     public bool IsImplemented => true;
     public bool IsAvailable => !string.IsNullOrEmpty(KeyboardWtfState.OpenAiApiKey);
 
-    public async Task<string> ReformatAsync(string rawText, string destinationPrompt, string language)
+    public async Task<string> ReformatAsync(
+        string rawText,
+        string destinationPrompt,
+        string language,
+        CancellationToken cancellationToken = default)
     {
         if (!IsAvailable)
             throw new InvalidOperationException("OpenAI API key not configured");
@@ -43,7 +47,7 @@ internal sealed class OpenAiProvider : IAiProvider, IDisposable
             },
         };
 
-        return await SendAsync(body);
+        return await SendAsync(body, cancellationToken);
     }
 
     public async Task<(bool success, string message)> TestApiKeyAsync()
@@ -59,7 +63,7 @@ internal sealed class OpenAiProvider : IAiProvider, IDisposable
         }
     }
 
-    private async Task<string> SendAsync(object body)
+    private async Task<string> SendAsync(object body, CancellationToken cancellationToken)
     {
         var json = JsonSerializer.Serialize(body);
         var request = new HttpRequestMessage(HttpMethod.Post, ApiUrl)
@@ -68,8 +72,8 @@ internal sealed class OpenAiProvider : IAiProvider, IDisposable
         };
         request.Headers.Add("Authorization", $"Bearer {KeyboardWtfState.OpenAiApiKey}");
 
-        var response = await _http.SendAsync(request);
-        var responseBody = await response.Content.ReadAsStringAsync();
+        var response = await _http.SendAsync(request, cancellationToken);
+        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
 
         if (!response.IsSuccessStatusCode)
         {
