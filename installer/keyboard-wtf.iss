@@ -156,8 +156,37 @@ begin
   end;
 end;
 
+procedure UnregisterOwnedNativeHost();
+var
+  RegisteredManifest: String;
+  OwnedManifest: String;
+begin
+  if not RegQueryStringValue(
+    HKCU,
+    NativeHostRegistryPath,
+    '',
+    RegisteredManifest) then
+    Exit;
+
+  OwnedManifest := ExpandConstant(
+    '{localappdata}\{#MyUserDataDir}\browser-helper\wtf.keyboard.browser.json');
+  if CompareText(RegisteredManifest, OwnedManifest) <> 0 then
+  begin
+    Log('Chrome native-messaging host belongs to another installation; leaving it unchanged.');
+    Exit;
+  end;
+
+  if RegDeleteKeyIncludingSubkeys(HKCU, NativeHostRegistryPath) then
+    Log('Removed this installation''s Chrome native-messaging host registration.')
+  else
+    Log('Could not remove this installation''s Chrome native-messaging host registration.');
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
+  if CurUninstallStep = usUninstall then
+    UnregisterOwnedNativeHost();
+
   if (CurUninstallStep = usPostUninstall) and
      HasCommandLineParameter('/REMOVEUSERDATA') then
   begin

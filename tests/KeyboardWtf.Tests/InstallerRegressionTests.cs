@@ -18,6 +18,18 @@ public sealed class InstallerRegressionTests
         Assert.Contains("RegWriteStringValue", installer, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Uninstall_removes_only_the_native_host_owned_by_that_installation()
+    {
+        var root = FindRepositoryRoot();
+        var installer = File.ReadAllText(Path.Combine(root, "installer", "keyboard-wtf.iss"));
+
+        Assert.Contains("procedure UnregisterOwnedNativeHost", installer, StringComparison.Ordinal);
+        Assert.Contains("CompareText(RegisteredManifest, OwnedManifest) <> 0", installer, StringComparison.Ordinal);
+        Assert.Contains("RegDeleteKeyIncludingSubkeys(HKCU, NativeHostRegistryPath)", installer, StringComparison.Ordinal);
+        Assert.Contains("if CurUninstallStep = usUninstall then", installer, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
