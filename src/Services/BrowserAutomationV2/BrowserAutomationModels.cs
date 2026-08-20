@@ -279,7 +279,14 @@ internal static class BrowserHelperProtocol
     public const string DevelopmentExtensionId = "gfndpohemndahmmeealkdobepjacblnf";
     public const string ExtensionId = StoreExtensionId;
     public const string NativeHostName = "wtf.keyboard.browser";
+#if KEYBOARD_WTF_PAID_PRODUCTION_CANDIDATE
+    // The side-by-side verification build must not attach its Chrome native
+    // host to an already-running stable/BYOK process. Production and normal
+    // upgrades retain the established pipe name below.
+    public const string PipeName = "keyboard.wtf.browser.v2.paid-production-candidate";
+#else
     public const string PipeName = "keyboard.wtf.browser.v2";
+#endif
 
     public static IReadOnlyList<string> AllowedExtensionIds { get; } =
         new[] { StoreExtensionId, DevelopmentExtensionId };
