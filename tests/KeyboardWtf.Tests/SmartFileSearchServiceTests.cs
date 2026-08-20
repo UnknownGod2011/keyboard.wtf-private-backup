@@ -125,8 +125,12 @@ public sealed class SmartFileSearchServiceTests : IDisposable
             CancellationToken.None,
             maxDepth: 2,
             maxResults: 5,
-            timeout: TimeSpan.FromSeconds(2));
+            // Exercise the real production search budget. A two-second budget
+            // made this filesystem-I/O test depend on shared-runner load even
+            // though the breadth-first result was correct.
+            timeout: SmartFileSearchService.DefaultTimeout);
 
+        Assert.False(result.TimedOut);
         Assert.NotEqual(FileResolutionStatus.NotFound, result.Status);
         Assert.Equal(target, result.Best.Path);
     }
