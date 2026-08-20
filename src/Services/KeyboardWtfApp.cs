@@ -114,6 +114,7 @@ public sealed class KeyboardWtfApp : IDisposable
         _liveConversation.SetSessionEndingObserver(
             () => _browserAutomation.CancelAsync("Jarvis conversation ended"));
         _overlay = new VoiceOverlayForm(_audioRecorder);
+        _overlay.InitializeUiThreadHandle();
 
         WebSettingsService.Instance.Initialize(
             this,

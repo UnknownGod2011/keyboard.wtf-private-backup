@@ -7,6 +7,7 @@ using KeyboardWtf.Services;
 internal sealed class VoiceOverlayForm : Form
 {
     private readonly AudioRecorderService _audioRecorder;
+    private readonly int _uiThreadId;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly Label _statusLabel;
     private readonly Label _detailLabel;
@@ -18,6 +19,7 @@ internal sealed class VoiceOverlayForm : Form
     public VoiceOverlayForm(AudioRecorderService audioRecorder)
     {
         _audioRecorder = audioRecorder;
+        _uiThreadId = Environment.CurrentManagedThreadId;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
@@ -71,6 +73,21 @@ internal sealed class VoiceOverlayForm : Form
         KeyboardWtfState.UiChanged += HandleUiChanged;
     }
 
+    /// <summary>
+    /// Creates the native window handle on the application's UI thread before
+    /// background services can publish their first status update. Without this,
+    /// WinForms can report InvokeRequired=false for a handle-less form and the
+    /// first worker-thread update may accidentally create the window there.
+    /// </summary>
+    internal void InitializeUiThreadHandle()
+    {
+        if (Environment.CurrentManagedThreadId != _uiThreadId)
+            throw new InvalidOperationException("The voice overlay must be initialized on the UI thread.");
+
+        if (!IsHandleCreated)
+            _ = Handle;
+    }
+
     protected override bool ShowWithoutActivation => true;
 
     protected override CreateParams CreateParams
@@ -113,10 +130,26 @@ internal sealed class VoiceOverlayForm : Form
         if (IsDisposed)
             return;
 
+        // A handle-less WinForms control cannot reliably determine whether a
+        // caller is on another thread. Never let a background status event
+        // become the thread that creates this form's native window.
+        if (!IsHandleCreated)
+        {
+            if (Environment.CurrentManagedThreadId != _uiThreadId)
+                return;
+            InitializeUiThreadHandle();
+        }
+
         if (InvokeRequired)
         {
-            if (IsHandleCreated)
+            try
+            {
                 BeginInvoke((Action)RefreshState);
+            }
+            catch (InvalidOperationException) when (IsDisposed || !IsHandleCreated)
+            {
+                // Shutdown raced a best-effort visual status update.
+            }
             return;
         }
 

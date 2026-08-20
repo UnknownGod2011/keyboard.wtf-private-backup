@@ -10,9 +10,9 @@
     <Nullable>disable</Nullable>
     <RootNamespace>KeyboardWtf</RootNamespace>
     <AssemblyName>keyboard.wtf</AssemblyName>
-    <Version>1.4.3</Version>
-    <FileVersion>1.4.3.0</FileVersion>
-    <AssemblyVersion>1.4.3.0</AssemblyVersion>
+    <Version>1.4.4</Version>
+    <FileVersion>1.4.4.0</FileVersion>
+    <AssemblyVersion>1.4.4.0</AssemblyVersion>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationIcon />
