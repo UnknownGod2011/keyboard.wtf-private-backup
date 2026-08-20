@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "channel": "stable",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "minimumVersion": "1.2.0",
-  "publishedAt": "2026-08-20T20:44:56.2189281+00:00",
-  "packageUrl": "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.3/keyboard-wtf-setup.exe",
-  "sha256": "2c4ac2bcf47607a113aec8546938ad4b479eb3db2e405cde7c61a048a10af6bb",
-  "sizeBytes": 84213840,
-  "releaseNotes": "# keyboard.wtf 1.4.3\n\nkeyboard.wtf 1.4.3 is a focused Jarvis and Smart Writing reliability release.\n\n- Pressing the Jarvis shortcut now immediately opens the real authenticated\n  Gemini Live connection. There is no local Vosk or speech-detection gate and\n  no second visible startup after the user begins speaking.\n- One logical Jarvis conversation now survives recoverable provider and Cloud\n  Run WebSocket rollovers. The microphone and single Jarvis surface remain\n  active until the user stops the conversation, including through normal\n  thinking pauses and silence.\n- Live transport closes are recorded with content-free diagnostic metadata so\n  reconnect causes can be distinguished without logging audio or transcripts.\n- Smart Writing now has bounded request time and exactly one terminal UI path.\n  Successful clipboard fallback, failure, cancellation, and timeout can no\n  longer leave the Polishing overlay running indefinitely.\n- Repeated deterministic tool failures are suppressed, while one bounded retry\n  remains available for genuinely transient failures.\n- Browser close commands prefer a matching tab when the requested target is a\n  web page; the whole browser is closed only when the user explicitly requests\n  the browser application itself.\n- Explicit user-approved HTTP or HTTPS aliases use the existing learned-mapping\n  store and are available to the generic open-target resolver.\n- Chrome Helper protocol compatibility remains unchanged. The desktop supports\n  the published Store Helper 2.1.21 and the upcoming 2.1.22 package.\n\nThe installer is not yet Authenticode-signed, so Windows may show an\nunknown-publisher warning. Download it only from https://keyboardwtf.com or the\nofficial keyboard.wtf GitHub Release.\n",
+  "publishedAt": "2026-08-20T21:37:08.4069459+00:00",
+  "packageUrl": "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.4/keyboard-wtf-setup.exe",
+  "sha256": "a78a0dd7a37b2abdc2da075f74314e4dcf790be9b4af41b02af625c784cd1d17",
+  "sizeBytes": 84210395,
+  "releaseNotes": "# keyboard.wtf 1.4.4\n\nkeyboard.wtf 1.4.4 is a focused Windows overlay reliability update.\n\n- The shared Jarvis, Smart Writing, and Dictation overlay now creates and owns\n  its native window handle on the application\u0027s UI thread before background\n  account, provider, browser, or diagnostic work can publish status updates.\n- Background status updates are marshalled to that established UI handle. A\n  shutdown race now drops only the best-effort visual update instead of\n  surfacing a raw Microsoft .NET window-handle error.\n- Jarvis continuity, Smart Writing\u0027s bounded terminal states, billing,\n  authenticated usage metering, hotkeys, and Chrome Helper protocol behavior\n  are unchanged from 1.4.3.\n\nThe installer is not yet Authenticode-signed, so Windows may show an\nunknown-publisher warning. Download it only from https://keyboardwtf.com or the\nofficial keyboard.wtf GitHub Release.\n",
   "keyId": "kwt-release-2026-01",
-  "signature": "M3kkIuG58gZhqRL1Jr3kvvVgRJ3ouOVAQ0J932lWczWc8oVbZeu2bH4bx3hxnBXxE1XAEXzqkf/OvqWZRn4PjQ=="
+  "signature": "InyqxD5h\u002BdHmdrk4hrU\u002BC0NAgq9fCuyVnsqwcg7KX7hT8UOkXa/dfAjL87YgTebpH/Ftf2m/gGEbUXY0QZHC1A=="
 }
