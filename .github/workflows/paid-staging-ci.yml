@@ -92,7 +92,10 @@ jobs:
         with:
           name: keyboard-wtf-${{ github.sha }}
           if-no-files-found: error
-          retention-days: 14
+          # This is a short-lived CI verification bundle, not a release or backup.
+          # Release assets remain in GitHub Releases; keeping every ~80 MB commit
+          # bundle for two weeks exhausted the account's Actions storage quota.
+          retention-days: 1
           path: |
             dist/installer/keyboard-wtf-paid-production-candidate-setup.exe
             dist/release-provenance.json
