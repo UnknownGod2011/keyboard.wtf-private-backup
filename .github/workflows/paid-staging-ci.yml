@@ -71,16 +71,23 @@ jobs:
 
       - name: Generate SBOM
         shell: pwsh
-        run: scripts/release/generate-sbom.ps1 -BuildDirectory dist/release/keyboard-wtf-paid-production-candidate-win-x64 -Version 1.4.0
+        run: |
+          [xml]$project = Get-Content src/KeyboardWtf.csproj
+          $version = @($project.Project.PropertyGroup.Version | Where-Object { $_ })[0]
+          if ([string]::IsNullOrWhiteSpace($version)) { throw 'Could not read the desktop version.' }
+          scripts/release/generate-sbom.ps1 -BuildDirectory dist/release/keyboard-wtf-paid-production-candidate-win-x64 -Version $version
 
       - name: Record provenance
         shell: pwsh
         run: |
+          [xml]$project = Get-Content src/KeyboardWtf.csproj
+          $version = @($project.Project.PropertyGroup.Version | Where-Object { $_ })[0]
+          if ([string]::IsNullOrWhiteSpace($version)) { throw 'Could not read the desktop version.' }
           $installer = Get-Item dist/installer/keyboard-wtf-paid-production-candidate-setup.exe
           $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           [ordered]@{
             sourceCommit = $env:GITHUB_SHA
-            version = '1.4.0'
+            version = $version
             buildDateUtc = [DateTimeOffset]::UtcNow.ToString('O')
             installer = $installer.Name
             installerSha256 = $hash
