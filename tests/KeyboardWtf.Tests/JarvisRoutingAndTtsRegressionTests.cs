@@ -1,11 +1,64 @@
 namespace KeyboardWtf.Tests;
 
+using System.Text.Json;
 using KeyboardWtf.Services;
 using KeyboardWtf.Services.BrowserAutomationV2;
 using Xunit;
 
 public sealed class JarvisRoutingAndTtsRegressionTests
 {
+    [Theory]
+    [InlineData("https://example.com/portal", true)]
+    [InlineData("http://localhost:8080/test", true)]
+    [InlineData("javascript:alert(1)", false)]
+    [InlineData("not a URL", false)]
+    public void Explicit_selected_link_alias_accepts_only_http_or_https(
+        string selected,
+        bool expected)
+    {
+        var result = new Dictionary<string, object>
+        {
+            ["ok"] = true,
+            ["text"] = selected,
+        };
+
+        Assert.Equal(expected, CommandRegistry.TryGetSelectedHttpUrl(result).Length > 0);
+    }
+
+    [Fact]
+    public void Deterministic_tool_failure_is_not_executed_twice_in_one_turn()
+    {
+        var guard = new ToolAttemptGuard();
+        var args = JsonSerializer.SerializeToElement(new { app_name = "missing app" });
+        guard.Record("open_app", args, new Dictionary<string, object>
+        {
+            ["ok"] = false,
+            ["supported"] = false,
+            ["message"] = "I could not find that app.",
+        });
+
+        Assert.True(guard.TryGetSuppressed("open_app", args, out var result));
+        Assert.True((bool)result["duplicate_suppressed"]);
+    }
+
+    [Fact]
+    public void Transient_tool_failure_allows_only_one_silent_retry()
+    {
+        var guard = new ToolAttemptGuard();
+        var args = JsonSerializer.SerializeToElement(new { url = "https://example.com" });
+        var transient = new Dictionary<string, object>
+        {
+            ["ok"] = false,
+            ["supported"] = true,
+            ["message"] = "The connection was interrupted.",
+        };
+        guard.Record("open_url", args, transient);
+        Assert.False(guard.TryGetSuppressed("open_url", args, out _));
+
+        guard.Record("open_url", args, transient);
+        Assert.True(guard.TryGetSuppressed("open_url", args, out _));
+    }
+
     [Fact]
     public void Verified_first_tab_switch_receipt_is_reused_not_blocked()
     {
@@ -168,36 +221,6 @@ public sealed class JarvisRoutingAndTtsRegressionTests
             buffer,
             tooLarge));
         Assert.Equal(0, buffer.BufferedBytes);
-    }
-
-    [Fact]
-    public void Paid_live_speech_gate_keeps_silence_and_steady_room_noise_local()
-    {
-        var gate = new LocalSpeechActivationGate();
-
-        for (var frame = 0; frame < 20; frame++)
-            Assert.False(gate.Observe(-90, -80));
-
-        gate.Reset();
-        for (var frame = 0; frame < 20; frame++)
-            Assert.False(gate.Observe(-42, -34));
-    }
-
-    [Fact]
-    public void Paid_live_speech_gate_requires_sustained_speech_and_resets_cleanly()
-    {
-        var gate = new LocalSpeechActivationGate();
-        for (var frame = 0; frame < 6; frame++)
-            Assert.False(gate.Observe(-65, -55));
-
-        Assert.False(gate.Observe(-28, -18));
-        Assert.False(gate.Observe(-29, -19));
-        Assert.True(gate.Observe(-30, -20));
-
-        gate.Reset();
-        Assert.False(gate.Observe(-28, -18));
-        Assert.False(gate.Observe(-65, -55));
-        Assert.False(gate.Observe(-28, -18));
     }
 
     [Fact]

@@ -31,6 +31,7 @@ public sealed class JarvisAutomationService : IDisposable
     private readonly AppResolverService _apps;
     private readonly SmartFileSearchService _files;
     private readonly BrowserLauncherService _browsers;
+    private readonly BrowserHelperBridge _browserHelper;
     private readonly GeminiScreenGuidanceService _screenGuidance;
     private readonly WebcamCaptureService _webcam = new();
     private readonly Action _openSettings;
@@ -56,6 +57,7 @@ public sealed class JarvisAutomationService : IDisposable
             mappings,
             openSettings,
             timerService,
+            null,
             null)
     {
     }
@@ -67,7 +69,8 @@ public sealed class JarvisAutomationService : IDisposable
         LearnedMappingService mappings,
         Action openSettings,
         JarvisTimerService timerService,
-        PaidAccountService paidAccount = null)
+        PaidAccountService paidAccount = null,
+        BrowserHelperBridge browserHelper = null)
     {
         _notifications = notifications;
         _settings = settings;
@@ -76,6 +79,7 @@ public sealed class JarvisAutomationService : IDisposable
         _apps = new AppResolverService(mappings);
         _files = new SmartFileSearchService(mappings);
         _browsers = new BrowserLauncherService(_apps, settings);
+        _browserHelper = browserHelper;
         _screenGuidance = new GeminiScreenGuidanceService(paidAccount);
         _openSettings = openSettings;
         _timerService = timerService ?? new JarvisTimerService(notifications, history);
@@ -107,7 +111,10 @@ public sealed class JarvisAutomationService : IDisposable
             "open_url" => OpenUrl(GetString(args, "url"), GetString(args, "browser")),
             "open_folder" => await OpenFolderAsync(GetString(args, "folder"), token),
             "open_path" => await OpenPathAsync(GetString(args, "path"), token),
-            "window_action" => WindowAction(GetString(args, "action"), GetString(args, "app_name")),
+            "window_action" => await WindowActionAsync(
+                GetString(args, "action"),
+                GetString(args, "app_name"),
+                token),
             "browser_action" => BrowserAction(GetString(args, "action")),
             "web_search" => WebSearch(
                 GetString(args, "query"),
@@ -325,6 +332,11 @@ public sealed class JarvisAutomationService : IDisposable
         var name = NormalizeWords(appName);
         if (string.IsNullOrWhiteSpace(name))
             return Result(false, "Which app should I open?", needsClarification: true);
+
+        var learnedLink = _mappings.FindExact(LearnedMappingKind.Link, appName)
+            ?? _mappings.FindExact(LearnedMappingKind.Link, name);
+        if (learnedLink != null)
+            return OpenUrl(learnedLink.Target, "");
 
         if (name is "downloads" or "download folder" or "downloads folder"
             or "documents" or "documents folder" or "pictures" or "pictures folder")
@@ -560,6 +572,23 @@ public sealed class JarvisAutomationService : IDisposable
             });
     }
 
+    private async Task<Dictionary<string, object>> WindowActionAsync(
+        string action,
+        string appName,
+        CancellationToken token)
+    {
+        var normalized = NormalizeWords(action);
+        if (normalized is "close" or "quit" or "exit"
+            && !IsExplicitBrowserApplication(appName))
+        {
+            var tabResult = await TryCloseMatchingBrowserTabAsync(appName, token);
+            if (tabResult != null)
+                return tabResult;
+        }
+
+        return WindowAction(action, appName);
+    }
+
     private Dictionary<string, object> WindowAction(string action, string appName)
     {
         var normalized = NormalizeWords(action);
@@ -599,6 +628,16 @@ public sealed class JarvisAutomationService : IDisposable
             case "close":
             case "quit":
             case "exit":
+                if (!IsExplicitBrowserApplication(appName)
+                    && IsBrowserWindow(handle))
+                {
+                    return Logged(
+                        "window_action",
+                        $"close {appName}",
+                        false,
+                        "A matching browser tab was not verified, so the browser was left open.",
+                        supported: false);
+                }
                 var title = GetWindowTitle(handle);
                 var label = string.IsNullOrWhiteSpace(title)
                     ? string.IsNullOrWhiteSpace(appName) ? "the active window" : appName
@@ -609,6 +648,134 @@ public sealed class JarvisAutomationService : IDisposable
                 return Result(false, "Supported window actions are list, switch, minimize, maximize, restore, and close.", supported: false);
         }
     }
+
+    private async Task<Dictionary<string, object>> TryCloseMatchingBrowserTabAsync(
+        string target,
+        CancellationToken token)
+    {
+        target = (target ?? "").Trim();
+        if (_browserHelper == null || string.IsNullOrWhiteSpace(target))
+            return null;
+        var initial = _browserHelper.Status;
+        if (!initial.Connected || initial.WindowId is null)
+            return null;
+
+        var browserWindow = EnumerateWindows()
+            .FirstOrDefault(window => string.Equals(
+                window.ProcessName,
+                "chrome",
+                StringComparison.OrdinalIgnoreCase));
+        if (browserWindow.Handle == IntPtr.Zero)
+            return null;
+
+        ShowWindow(browserWindow.Handle, SwRestore);
+        SetForegroundWindow(browserWindow.Handle);
+        await Task.Delay(120, token);
+
+        var selection = ResolveBrowserTarget(target);
+        var active = _browserHelper.Status;
+        if (!BrowserTargetMatches(selection, active.ActiveTitle, active.ActiveUrl))
+        {
+            SendKeysOnUiThread("^+a");
+            await Task.Delay(180, token);
+            SendKeysOnUiThread(EscapeSendKeysText(selection));
+            await Task.Delay(100, token);
+            SendKeysOnUiThread("{ENTER}");
+
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2.5);
+            do
+            {
+                await Task.Delay(120, token);
+                active = _browserHelper.Status;
+                if (BrowserTargetMatches(selection, active.ActiveTitle, active.ActiveUrl))
+                    break;
+            }
+            while (DateTime.UtcNow < deadline);
+        }
+
+        if (!BrowserTargetMatches(selection, active.ActiveTitle, active.ActiveUrl))
+        {
+            SendKeysOnUiThread("{ESC}");
+            return null;
+        }
+
+        var closingTabId = active.TabId;
+        var closingUrl = active.ActiveUrl;
+        SendKeysOnUiThread("^w");
+        var verifyDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(2.5);
+        do
+        {
+            await Task.Delay(120, token);
+            var current = _browserHelper.Status;
+            if (current.TabId != closingTabId
+                || !string.Equals(current.ActiveUrl, closingUrl, StringComparison.Ordinal))
+            {
+                return Logged(
+                    "close_browser_tab",
+                    target,
+                    true,
+                    $"Closed the matching {target} browser tab.");
+            }
+        }
+        while (DateTime.UtcNow < verifyDeadline);
+
+        return Logged(
+            "close_browser_tab",
+            target,
+            false,
+            "Chrome did not confirm that the matching tab closed.",
+            supported: false);
+    }
+
+    private string ResolveBrowserTarget(string target)
+    {
+        var mapping = _mappings.FindExact(LearnedMappingKind.Link, target);
+        return mapping?.Target ?? target;
+    }
+
+    internal static bool BrowserTargetMatches(string target, string title, string url)
+    {
+        var needle = NormalizeWords(target);
+        if (needle.Length < 2)
+            return false;
+        var titleWords = NormalizeWords(title);
+        if (titleWords.Contains(needle, StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (!Uri.TryCreate(target, UriKind.Absolute, out var targetUri)
+            || !Uri.TryCreate(url, UriKind.Absolute, out var activeUri))
+            return NormalizeWords(url).Contains(needle, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(
+            NormalizeHost(targetUri.Host),
+            NormalizeHost(activeUri.Host),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static bool IsExplicitBrowserApplication(string value) =>
+        NormalizeWords(value) is "chrome" or "google chrome" or "browser" or "the browser"
+            or "edge" or "microsoft edge" or "brave" or "firefox" or "opera" or "vivaldi" or "arc";
+
+    private static bool IsBrowserWindow(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero)
+            return false;
+        GetWindowThreadProcessId(handle, out var processId);
+        try
+        {
+            return IsBrowserProcess(Process.GetProcessById((int)processId).ProcessName);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string EscapeSendKeysText(string value) =>
+        Regex.Replace((value ?? "").Trim(), @"([+^%~(){}\[\]])", "{$1}");
+
+    private static string NormalizeHost(string host) =>
+        (host ?? "").StartsWith("www.", StringComparison.OrdinalIgnoreCase)
+            ? host[4..]
+            : host ?? "";
 
     internal Dictionary<string, object> ExecuteBrowserShortcut(string action) =>
         BrowserAction(action);

@@ -504,6 +504,8 @@ internal sealed class PaidAccountService : IDisposable
         await EnsureUsableCreditsAsync(cancellationToken);
         var entitlementMs = (long)Stopwatch.GetElapsedTime(entitlementStarted).TotalMilliseconds;
         var requestId = $"desktop_{Guid.NewGuid():N}";
+        AppLog.Info(
+            $"Paid AI request stage: request={requestId} task={SafeTaskKind(taskKind)} stage=request_started entitlementMs={entitlementMs}");
         var requestStarted = Stopwatch.GetTimestamp();
         var response = await SendAuthorizedAsync<PaidGenerateResponse>(
             HttpMethod.Post,
@@ -520,6 +522,8 @@ internal sealed class PaidAccountService : IDisposable
             },
             cancellationToken);
         var requestMs = (long)Stopwatch.GetElapsedTime(requestStarted).TotalMilliseconds;
+        AppLog.Info(
+            $"Paid AI request stage: request={requestId} task={SafeTaskKind(taskKind)} stage=response_completed requestMs={requestMs}");
         if (_account is not null)
         {
             _account = _account with
@@ -723,8 +727,17 @@ internal sealed class PaidAccountService : IDisposable
                 JsonSerializer.Serialize(body, JsonOptions),
                 Encoding.UTF8,
                 "application/json");
-        using var response = await _http.SendAsync(request, cancellationToken);
+        var requestStarted = Stopwatch.GetTimestamp();
+        using var response = await _http.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+        var headersMs = (long)Stopwatch.GetElapsedTime(requestStarted).TotalMilliseconds;
+        var bodyStarted = Stopwatch.GetTimestamp();
         var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        AppLog.Info(
+            $"Paid API response timing: path={path} status={(int)response.StatusCode} " +
+            $"headersMs={headersMs} bodyMs={(long)Stopwatch.GetElapsedTime(bodyStarted).TotalMilliseconds}");
         if (!response.IsSuccessStatusCode)
             throw new PaidApiException(response.StatusCode, ErrorMessage(text, response.StatusCode));
         if (typeof(T) == typeof(JsonElement) && string.IsNullOrWhiteSpace(text))

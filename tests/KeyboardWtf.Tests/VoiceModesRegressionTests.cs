@@ -9,6 +9,22 @@ using Xunit;
 public sealed class VoiceModesRegressionTests
 {
     [Fact]
+    public void Smart_writing_has_a_bounded_end_to_end_post_transcription_timeout() =>
+        Assert.InRange(CommandRegistry.SmartWritingTimeout, TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(40));
+
+    [Theory]
+    [InlineData(VoiceUiPhase.Thinking, "Polishing", true)]
+    [InlineData(VoiceUiPhase.Thinking, "Understanding command", false)]
+    [InlineData(VoiceUiPhase.Done, "Copied instead", false)]
+    [InlineData(VoiceUiPhase.Error, "Smart Writing timed out", false)]
+    [InlineData(VoiceUiPhase.Cancelled, "Cancelled", false)]
+    public void Smart_writing_terminal_cleanup_only_repairs_a_stale_polishing_surface(
+        VoiceUiPhase phase,
+        string title,
+        bool expected) =>
+        Assert.Equal(expected, CommandRegistry.NeedsSmartWritingTerminalCleanup(phase, title));
+
+    [Fact]
     public void Raw_dictation_never_uses_AI_post_processing()
     {
         Assert.False(VoiceCaptureService.RecordingModeUsesAiPostProcessing(RecordingMode.Dictate));

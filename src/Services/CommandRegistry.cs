@@ -12,6 +12,7 @@ using KeyboardWtf.Services.BrowserAutomationV2;
 
 public sealed class CommandRegistry
 {
+    internal static readonly TimeSpan SmartWritingTimeout = TimeSpan.FromSeconds(35);
     private readonly KeyboardWtfApp _app;
     private readonly VoiceCaptureService _capture;
     private readonly DestinationRouter _router;
@@ -106,9 +107,9 @@ public sealed class CommandRegistry
             _ = _liveConversation.StopAsync();
             return;
         }
-        // Paid Jarvis owns its own local speech-activity gate and PCM pre-roll.
-        // Start that logical session immediately instead of transcribing a
-        // separate Vosk "preflight" turn before Live can listen.
+        // The dedicated Jarvis shortcut is explicit user intent. Start the
+        // authenticated Live transport immediately; no local transcription or
+        // speech-activity preflight owns this path.
         _ = _liveConversation.StartAsync();
     }
     public void CancelCurrent() => _ = CancelCurrentAsync();
@@ -338,6 +339,8 @@ public sealed class CommandRegistry
                 return BrowserAutomationStatus();
             if (toolName == "browser_automation_control")
                 return await ControlBrowserAutomationAsync(args);
+            if (toolName == "remember_link_alias")
+                return await RememberLinkAliasAsync(args, token);
             if (toolName == "browser_action"
                 && _browserAutomation != null
                 && JarvisAutomationService.TryGetBrowserTabSelection(
@@ -518,33 +521,54 @@ public sealed class CommandRegistry
     private async Task HandleSmartWritingAsync(string transcript)
     {
         ResetActionCancellation();
-        var token = _actionCts.Token;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_actionCts.Token);
+        timeout.CancelAfter(SmartWritingTimeout);
+        var token = timeout.Token;
+        var operation = Guid.NewGuid().ToString("N")[..12];
         var operationStarted = Stopwatch.GetTimestamp();
         long polishMs = 0;
         long insertionMs = 0;
         try
         {
+            AppLog.Info($"Smart Writing stage: operation={operation} stage=transcript_ready");
             KeyboardWtfState.SetTranscript(transcript);
             var polishStarted = Stopwatch.GetTimestamp();
+            AppLog.Info($"Smart Writing stage: operation={operation} stage=polish_started");
             var result = await _capture.ApplyPromptToCurrentTranscriptAsync(
                 "Clean this spoken dictation into ready-to-send writing. Remove filler words and false starts, " +
                 "honor self-corrections such as 'actually' or 'scratch that', add natural punctuation, and keep " +
                 "the speaker's meaning and tone. Return only the final text.",
                 token);
             polishMs = (long)Stopwatch.GetElapsedTime(polishStarted).TotalMilliseconds;
+            AppLog.Info(
+                $"Smart Writing stage: operation={operation} stage=polish_completed elapsedMs={polishMs}");
             token.ThrowIfCancellationRequested();
             var insertionStarted = Stopwatch.GetTimestamp();
+            AppLog.Info($"Smart Writing stage: operation={operation} stage=insertion_started");
             await DeliverTextAsync(string.IsNullOrWhiteSpace(result) ? transcript : result, token);
             insertionMs = (long)Stopwatch.GetElapsedTime(insertionStarted).TotalMilliseconds;
             AppLog.Info(
-                $"Smart Writing timing: recordingMs={_capture.LastRecordingDurationMs} " +
+                $"Smart Writing timing: operation={operation} recordingMs={_capture.LastRecordingDurationMs} " +
                 $"transcriptionMs={_capture.LastTranscriptionDurationMs} polishMs={polishMs} " +
                 $"insertionMs={insertionMs} totalAfterTranscriptMs=" +
                 $"{(long)Stopwatch.GetElapsedTime(operationStarted).TotalMilliseconds}");
         }
+        catch (OperationCanceledException) when (_actionCts.IsCancellationRequested)
+        {
+            AppLog.Info($"Smart Writing stage: operation={operation} stage=cancelled");
+            KeyboardWtfState.SetUi(VoiceUiPhase.Cancelled, "Cancelled", "Smart writing was stopped.");
+        }
         catch (OperationCanceledException)
         {
-            KeyboardWtfState.SetUi(VoiceUiPhase.Cancelled, "Cancelled", "Smart writing was stopped.");
+            AppLog.Warning(
+                $"Smart Writing stage: operation={operation} stage=timeout limitMs={(long)SmartWritingTimeout.TotalMilliseconds}");
+            KeyboardWtfState.SetUi(
+                VoiceUiPhase.Error,
+                "Smart Writing timed out",
+                "The request took too long and was stopped. Please try again.");
+            _notifications.Warning(
+                "Smart Writing timed out",
+                "The request took too long and was stopped. Please try again.");
         }
         catch (Exception ex)
         {
@@ -562,7 +586,71 @@ public sealed class CommandRegistry
             _notifications.Warning("AI unavailable", "Typed the raw transcript instead.");
             await DeliverTextAsync(transcript, token);
         }
+        finally
+        {
+            // Every Smart Writing operation owns one terminal UI transition.
+            // This guards against a completed provider/delivery path leaving
+            // the stopwatch overlay in Polishing indefinitely.
+            if (NeedsSmartWritingTerminalCleanup(
+                    KeyboardWtfState.UiPhase,
+                    KeyboardWtfState.UiTitle))
+            {
+                AppLog.Warning(
+                    $"Smart Writing stage: operation={operation} stage=terminal_cleanup_recovery");
+                KeyboardWtfState.SetUi(
+                    VoiceUiPhase.Error,
+                    "Smart Writing did not finish",
+                    "The operation ended without a delivery result. Please try again.");
+            }
+        }
     }
+
+    private async Task<Dictionary<string, object>> RememberLinkAliasAsync(
+        JsonElement args,
+        CancellationToken token)
+    {
+        if (_automation == null)
+            return ToolResult(false, "No action executor is available.", supported: false);
+        var alias = GetString(args, "alias");
+        var url = GetString(args, "url");
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            var selection = await _automation.ExecuteAsync(
+                "get_selected_text",
+                JsonSerializer.SerializeToElement(new { }),
+                token);
+            url = TryGetSelectedHttpUrl(selection);
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return ToolResult(
+                    false,
+                    "The selected text is not a valid http or https link. Select one link and try again.",
+                    supported: false);
+            }
+            args = JsonSerializer.SerializeToElement(new { alias, url });
+        }
+        return await _automation.ExecuteAsync("remember_link_alias", args, token);
+    }
+
+    internal static string TryGetSelectedHttpUrl(Dictionary<string, object> result)
+    {
+        if (result == null
+            || !result.TryGetValue("ok", out var ok)
+            || ok is not true
+            || !result.TryGetValue("text", out var textValue))
+            return "";
+        var text = textValue?.ToString()?.Trim() ?? "";
+        return Uri.TryCreate(text, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            ? uri.ToString()
+            : "";
+    }
+
+    internal static bool NeedsSmartWritingTerminalCleanup(
+        VoiceUiPhase phase,
+        string title) =>
+        phase == VoiceUiPhase.Thinking
+        && string.Equals(title, "Polishing", StringComparison.Ordinal);
 
     private async Task DeliverRawDictationAsync(string transcript)
     {
@@ -934,8 +1022,18 @@ public sealed class CommandRegistry
             cancellationToken);
         if (!ok && destination == "Type Out")
         {
-            await _router.SendAsync("Clipboard", text);
-            _notifications.Warning("Copied instead", "Typing failed, so the transcript was copied to clipboard.");
+            var copied = await _router.SendAsync("Clipboard", text);
+            _notifications.Warning(
+                copied ? "Copied instead" : "Delivery failed",
+                copied
+                    ? "Typing failed, so the transcript was copied to clipboard."
+                    : "Typing and clipboard delivery both failed. The transcript remains in keyboard.wtf.");
+            KeyboardWtfState.SetUi(
+                copied ? VoiceUiPhase.Done : VoiceUiPhase.Error,
+                copied ? "Copied instead" : "Delivery failed",
+                copied
+                    ? "Typing failed, so the final text is on the clipboard."
+                    : "The final text remains available in keyboard.wtf.");
         }
         else
         {

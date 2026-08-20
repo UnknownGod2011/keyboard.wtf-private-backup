@@ -3,6 +3,7 @@ namespace KeyboardWtf.Services;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using KeyboardWtf.Models;
 using KeyboardWtf.Services.PaidStaging;
 using NAudio.Wave;
@@ -10,7 +11,8 @@ using NAudio.Wave;
 public sealed class GeminiLiveConversationService : IDisposable
 {
     private const string Model = "gemini-3.1-flash-live-preview";
-    private const int PaidActivationBufferChunks = 16;
+    private const int PaidActivationBufferChunks = 64;
+    private const int MaxPaidReconnectAttempts = 2;
     private const int RolloverContextEntries = 12;
     private const int RolloverContextCharacters = 4000;
     private const int RolloverContextEntryCharacters = 600;
@@ -19,14 +21,15 @@ public sealed class GeminiLiveConversationService : IDisposable
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly SemaphoreSlim _audioSendLock = new(1, 1);
     private readonly SemaphoreSlim _textTurnLock = new(1, 1);
+    private readonly SemaphoreSlim _stopLock = new(1, 1);
     private readonly object _turnStateLock = new();
     private readonly object _paidActivationLock = new();
     private readonly object _conversationContextLock = new();
     private readonly Queue<byte[]> _paidActivationAudio = new();
     private readonly Queue<ConversationContextEntry> _conversationContext = new();
+    private readonly ToolAttemptGuard _toolAttemptGuard = new();
     private readonly StringBuilder _currentUserTranscript = new();
     private readonly StringBuilder _currentAssistantTranscript = new();
-    private readonly LocalSpeechActivationGate _paidSpeechGate = new();
     private readonly NotificationService _notifications;
     private readonly SettingsService _settings;
     private readonly IntentMemoryService _memory;
@@ -43,6 +46,7 @@ public sealed class GeminiLiveConversationService : IDisposable
     private Task _receiveTask;
     private TaskCompletionSource<bool> _turnComplete = CompletedTurn();
     private Task _paidActivationTask = Task.CompletedTask;
+    private Task _paidReconnectTask = Task.CompletedTask;
     private bool _autoEnding;
     private bool _paidLiveReady;
     private bool _suppressPaidActivationAudio;
@@ -50,7 +54,8 @@ public sealed class GeminiLiveConversationService : IDisposable
     private int _startInProgress;
     private int _paidActivationStarted;
     private int _paidActivationFailures;
-    private DateTime _nextPaidActivationUtc;
+    private string _logicalSessionId = "";
+    private int _providerSocketSequence;
 
     public GeminiLiveConversationService(
         NotificationService notifications,
@@ -137,34 +142,33 @@ public sealed class GeminiLiveConversationService : IDisposable
             _autoEnding = false;
             ResetPaidActivation();
             ResetConversationContext();
+            _toolAttemptGuard.Reset();
+            _logicalSessionId = Guid.NewGuid().ToString("N");
+            _providerSocketSequence = 0;
 
             try
             {
                 if (_paidAccount?.Enabled == true)
                 {
-                    // Paid mode listens and buffers only a short in-memory
-                    // pre-roll locally. Vertex is opened only after real speech
-                    // (or an explicit text turn), so activation and silence cost
-                    // no provider usage.
                     KeyboardWtfState.SetUi(
-                        VoiceUiPhase.Listening,
+                        VoiceUiPhase.Thinking,
                         AssistantName(),
-                        "Starting microphone...");
-                    // Yield once so the overlay can become visible even when
-                    // opening the Windows audio driver takes a few seconds.
+                        "Connecting securely...");
                     await Task.Yield();
                     var microphoneStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                     StartMicrophone();
-                    KeyboardWtfState.SetUi(
-                        VoiceUiPhase.Listening,
-                        AssistantName(),
-                        $"Listening locally. Speak to begin, or press {JarvisHotkey()} to cancel.");
                     AppLog.Info(
-                        "Jarvis local microphone started: startupMs=" +
+                        $"Jarvis logical session started: logicalSession={_logicalSessionId} microphoneStartupMs=" +
                         (long)System.Diagnostics.Stopwatch
                             .GetElapsedTime(microphoneStarted)
                             .TotalMilliseconds);
-                    _notifications.Info("Jarvis mode", "Listening locally. AI starts after you speak.");
+                    // The dedicated Jarvis hotkey is the user's explicit intent.
+                    // Open the real paid transport immediately and retain a short
+                    // bounded PCM pre-roll only so words spoken during setup are
+                    // not clipped.
+                    await EnsurePaidLiveActivatedAsync(
+                        includeBufferedAudio: true,
+                        token);
                     return;
                 }
 
@@ -173,7 +177,7 @@ public sealed class GeminiLiveConversationService : IDisposable
                 lock (_paidActivationLock)
                     _paidLiveReady = true;
                 StartMicrophone();
-                ShowConversationReady();
+                ShowConversationReady(announce: true);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -218,8 +222,13 @@ public sealed class GeminiLiveConversationService : IDisposable
         }
 
         _socket = socket;
+        var diagnostics = new ProviderSocketDiagnostics(
+            _logicalSessionId,
+            Interlocked.Increment(ref _providerSocketSequence),
+            DateTimeOffset.UtcNow,
+            Volatile.Read(ref _paidActivationFailures));
         _receiveTask = Task.Run(
-            () => ReceiveLoopAsync(socket, expectedSession, setupReady, token),
+            () => ReceiveLoopAsync(socket, expectedSession, setupReady, diagnostics, token),
             token);
         await SendJsonAsync(new
         {
@@ -264,66 +273,95 @@ public sealed class GeminiLiveConversationService : IDisposable
         StartPlayback();
     }
 
-    private void ShowConversationReady()
+    private void ShowConversationReady(bool announce)
     {
         KeyboardWtfState.SetUi(
             VoiceUiPhase.Listening,
             AssistantName(),
             $"Talk naturally. Press {JarvisHotkey()} or say bye to finish.");
-        _notifications.Info("Jarvis mode", "Conversation started.");
+        if (announce)
+            _notifications.Info("Jarvis mode", "Conversation started.");
     }
 
     public async Task StopAsync(bool showDone = true)
     {
-        var hadLogicalSession = IsActive || _socket is not null;
-        var hadProviderSocket = _socket is not null;
-        if (hadLogicalSession && _sessionEndingObserver != null)
+        await _stopLock.WaitAsync();
+        try
         {
-            try { await _sessionEndingObserver(); }
-            catch (Exception ex) { AppLog.Warning(ex, "Jarvis session-end cleanup failed"); }
-        }
-        _sessionCts?.Cancel();
-        ResetPaidActivation();
-        ResetConversationContext();
-        MarkTurnCompleted();
-        StopMicrophone();
-        StopPlayback();
+            var hadLogicalSession = IsActive
+                || _sessionCts is { IsCancellationRequested: false }
+                || _socket is not null;
+            var hadProviderSocket = _socket is not null;
+            if (!hadLogicalSession)
+                return;
 
-        var socket = _socket;
-        _socket = null;
-        if (socket != null)
-        {
-            try
-            {
-                if (socket.State == WebSocketState.Open)
-                    await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Session ended", CancellationToken.None);
-            }
-            catch { }
-            socket.Dispose();
-        }
+            // User stop is locally authoritative. Release microphone, playback,
+            // reconnect workers, and the visible session before waiting for any
+            // secondary browser-task cleanup.
+            _sessionCts?.Cancel();
+            ResetPaidActivation();
+            ResetConversationContext();
+            _toolAttemptGuard.Reset();
+            MarkTurnCompleted();
+            StopMicrophone();
+            StopPlayback();
 
-        if (ShouldRefreshAccountAfterStop(
-                _paidAccount?.Enabled == true,
-                _paidAccount?.IsSignedIn == true,
-                hadProviderSocket))
-        {
-            try
+            if (showDone)
             {
-                // The backend settles Live usage only after the provider socket
-                // closes. Refresh from that authoritative account instead of
-                // leaving a stale desktop balance until the next restart.
-                await _paidAccount.RefreshAccountAsync(CancellationToken.None);
+                KeyboardWtfState.SetUi(VoiceUiPhase.Done, $"{AssistantName()} ended", $"{JarvisHotkey()} starts another conversation.");
+                _notifications.Info("Jarvis mode", "Conversation ended.");
             }
-            catch (Exception ex)
-            {
-                AppLog.Warning(ex, "Paid account refresh after Jarvis session settlement failed");
-            }
-        }
 
-        if (showDone)
+            var socket = _socket;
+            _socket = null;
+            if (socket != null)
+            {
+                try
+                {
+                    if (socket.State == WebSocketState.Open)
+                    {
+                        using var closeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                        await socket.CloseAsync(
+                            WebSocketCloseStatus.NormalClosure,
+                            "Session ended",
+                            closeTimeout.Token);
+                    }
+                }
+                catch
+                {
+                    try { socket.Abort(); } catch { }
+                }
+                socket.Dispose();
+            }
+
+            if (_sessionEndingObserver != null)
+            {
+                try { await _sessionEndingObserver(); }
+                catch (Exception ex) { AppLog.Warning(ex, "Jarvis session-end cleanup failed"); }
+            }
+
+            if (ShouldRefreshAccountAfterStop(
+                    _paidAccount?.Enabled == true,
+                    _paidAccount?.IsSignedIn == true,
+                    hadProviderSocket))
+            {
+                try
+                {
+                    // The backend settles Live usage only after the provider socket
+                    // closes. Refresh from that authoritative account instead of
+                    // leaving a stale desktop balance until the next restart.
+                    await _paidAccount.RefreshAccountAsync(CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Warning(ex, "Paid account refresh after Jarvis session settlement failed");
+                }
+            }
+
+        }
+        finally
         {
-            KeyboardWtfState.SetUi(VoiceUiPhase.Done, $"{AssistantName()} ended", $"{JarvisHotkey()} starts another conversation.");
-            _notifications.Info("Jarvis mode", "Conversation ended.");
+            _stopLock.Release();
         }
     }
 
@@ -466,7 +504,6 @@ public sealed class GeminiLiveConversationService : IDisposable
             if (_paidAccount?.Enabled == true)
             {
                 var sendToLive = false;
-                var activate = false;
                 lock (_paidActivationLock)
                 {
                     sendToLive = _paidLiveReady;
@@ -475,19 +512,11 @@ public sealed class GeminiLiveConversationService : IDisposable
                         _paidActivationAudio.Enqueue(bytes);
                         while (_paidActivationAudio.Count > PaidActivationBufferChunks)
                             _paidActivationAudio.Dequeue();
-                        activate = DateTime.UtcNow >= _nextPaidActivationUtc
-                            && _paidSpeechGate.Observe(RmsDb(bytes), peakDb);
                     }
                 }
 
                 if (!sendToLive)
-                {
-                    if (activate)
-                        ObservePaidActivation(EnsurePaidLiveActivatedAsync(
-                            includeBufferedAudio: true,
-                            _sessionCts?.Token ?? CancellationToken.None));
                     return;
-                }
             }
 
             if (_socket?.State == WebSocketState.Open)
@@ -540,10 +569,6 @@ public sealed class GeminiLiveConversationService : IDisposable
         bool includeBufferedAudio,
         CancellationToken token)
     {
-        KeyboardWtfState.SetUi(
-            VoiceUiPhase.Thinking,
-            "Connecting",
-            $"Starting {AssistantName()} after speech detection...");
         await ConnectAndSetupLiveAsync(expectedSession, token);
 
         await _audioSendLock.WaitAsync(token);
@@ -561,7 +586,6 @@ public sealed class GeminiLiveConversationService : IDisposable
                 _suppressPaidActivationAudio = false;
                 _paidLiveReady = true;
                 _paidActivationFailures = 0;
-                _nextPaidActivationUtc = DateTime.MinValue;
             }
 
             foreach (var chunk in buffered)
@@ -572,63 +596,13 @@ public sealed class GeminiLiveConversationService : IDisposable
             _audioSendLock.Release();
         }
 
-        ShowConversationReady();
-    }
-
-    private async void ObservePaidActivation(Task activation)
-    {
-        try
-        {
-            await activation;
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex)
-        {
-            AppLog.Warning(ex, "Jarvis paid speech activation failed");
-            if (_paidAccount?.IsSignedIn == true && IsActive)
-            {
-                var retryAvailable = PrepareForPaidActivationRetry();
-                var detail = retryAvailable
-                    ? "The connection was interrupted. Keep speaking or try again in a moment."
-                    : "Jarvis could not reconnect after three attempts. Press the Jarvis shortcut twice to start a fresh session.";
-                KeyboardWtfState.SetUi(
-                    retryAvailable ? VoiceUiPhase.Listening : VoiceUiPhase.Error,
-                    retryAvailable ? "Reconnecting" : "Jarvis temporarily unavailable",
-                    detail);
-                if (!retryAvailable)
-                    _notifications.Error("Jarvis temporarily unavailable", FriendlyError(ex));
-                return;
-            }
-
-            await StopAsync(showDone: false);
-            KeyboardWtfState.SetUi(VoiceUiPhase.Error, "Jarvis mode failed", FriendlyError(ex));
-            _notifications.Error("Jarvis mode failed", FriendlyError(ex));
-        }
-    }
-
-    private bool PrepareForPaidActivationRetry()
-    {
-        lock (_paidActivationLock)
-        {
-            _paidLiveReady = false;
-            _suppressPaidActivationAudio = false;
-            _paidActivationTask = Task.CompletedTask;
-            Interlocked.Exchange(ref _paidActivationStarted, 0);
-            _paidSpeechGate.Reset();
-            _paidActivationFailures++;
-            if (_paidActivationFailures >= 3)
-            {
-                _suppressPaidActivationAudio = true;
-                return false;
-            }
-
-            _nextPaidActivationUtc = DateTime.UtcNow + PaidReconnectDelay(_paidActivationFailures);
-            return true;
-        }
+        ShowConversationReady(announce: Volatile.Read(ref _providerSocketSequence) == 1);
     }
 
     internal static TimeSpan PaidReconnectDelay(int failureCount) =>
-        TimeSpan.FromSeconds(Math.Clamp(1 << Math.Clamp(failureCount - 1, 0, 2), 1, 4));
+        failureCount <= 1
+            ? TimeSpan.Zero
+            : TimeSpan.FromSeconds(Math.Clamp(1 << Math.Clamp(failureCount - 2, 0, 1), 1, 2));
 
     private async Task SendAudioChunkAsync(byte[] bytes, CancellationToken token)
     {
@@ -661,13 +635,12 @@ public sealed class GeminiLiveConversationService : IDisposable
         lock (_paidActivationLock)
         {
             _paidActivationAudio.Clear();
-            _paidSpeechGate.Reset();
             _paidLiveReady = false;
             _suppressPaidActivationAudio = false;
             _paidActivationTask = Task.CompletedTask;
             Interlocked.Exchange(ref _paidActivationStarted, 0);
             _paidActivationFailures = 0;
-            _nextPaidActivationUtc = DateTime.MinValue;
+            _paidReconnectTask = Task.CompletedTask;
         }
     }
 
@@ -721,17 +694,24 @@ public sealed class GeminiLiveConversationService : IDisposable
         ClientWebSocket socket,
         CancellationTokenSource expectedSession,
         TaskCompletionSource<bool> setupReady,
+        ProviderSocketDiagnostics diagnostics,
         CancellationToken token)
     {
         Exception endedBy = null;
+        ReceivedSocketMessage closeMessage = null;
         try
         {
             while (!token.IsCancellationRequested && socket.State == WebSocketState.Open)
             {
-                var json = await ReceiveMessageAsync(socket, token);
-                if (string.IsNullOrWhiteSpace(json))
+                var received = await ReceiveMessageAsync(socket, token);
+                if (received.IsClose)
+                {
+                    closeMessage = received;
+                    break;
+                }
+                if (string.IsNullOrWhiteSpace(received.Text))
                     continue;
-                await HandleServerMessageAsync(json, setupReady, token);
+                await HandleServerMessageAsync(received.Text, setupReady, token);
             }
         }
         catch (OperationCanceledException) { }
@@ -743,6 +723,21 @@ public sealed class GeminiLiveConversationService : IDisposable
         }
         finally
         {
+            var closeCategory = ClassifyProviderSocketClose(
+                token.IsCancellationRequested,
+                closeMessage?.CloseStatus,
+                endedBy,
+                DateTimeOffset.UtcNow - diagnostics.StartedAt);
+            AppLog.Info(
+                $"Jarvis Live socket closed: logicalSession={diagnostics.LogicalSessionId} " +
+                $"physicalSocket={diagnostics.Sequence} socketAgeMs=" +
+                $"{(long)(DateTimeOffset.UtcNow - diagnostics.StartedAt).TotalMilliseconds} " +
+                $"closeStatus={closeMessage?.CloseStatus?.ToString() ?? "none"} " +
+                $"closeCode={(int?)closeMessage?.CloseStatus ?? 0} category={closeCategory} " +
+                $"initiator={(token.IsCancellationRequested ? "client" : closeMessage?.IsClose == true ? "remote" : "transport")} " +
+                $"auth={(_paidAccount?.IsSignedIn == true ? "signed_in" : "signed_out")} " +
+                $"reconnectReason={(token.IsCancellationRequested ? "none" : closeCategory)} " +
+                $"retry={diagnostics.RetryNumber}");
             if (!token.IsCancellationRequested)
             {
                 setupReady.TrySetException(
@@ -752,7 +747,10 @@ public sealed class GeminiLiveConversationService : IDisposable
                         ReferenceEquals(_sessionCts, expectedSession) && IsActive))
                 {
                     if (setupReady.Task.IsCompletedSuccessfully)
+                    {
                         PrepareForNextPaidProviderSession(socket, endedBy);
+                        SchedulePaidReconnect(expectedSession);
+                    }
                     else
                         ReleaseFailedProviderSocket(socket);
                 }
@@ -798,11 +796,9 @@ public sealed class GeminiLiveConversationService : IDisposable
             _paidLiveReady = false;
             _suppressPaidActivationAudio = false;
             _paidActivationAudio.Clear();
-            _paidSpeechGate.Reset();
             _paidActivationTask = Task.CompletedTask;
             Interlocked.Exchange(ref _paidActivationStarted, 0);
             _paidActivationFailures = 0;
-            _nextPaidActivationUtc = DateTime.MinValue;
         }
         try { endedSocket.Dispose(); } catch { }
         MarkTurnCompleted();
@@ -810,11 +806,77 @@ public sealed class GeminiLiveConversationService : IDisposable
         AppLog.Info(
             $"Jarvis provider session ended; logical session remains active category=" +
             $"{(endedBy is null ? "provider_close" : endedBy.GetType().Name)}");
-        KeyboardWtfState.SetUi(
-            VoiceUiPhase.Listening,
-            AssistantName(),
-            "Listening. Speak to continue; Jarvis reconnects automatically.");
         _ = RefreshAccountAfterProviderSessionAsync();
+    }
+
+    private void SchedulePaidReconnect(CancellationTokenSource expectedSession)
+    {
+        lock (_paidActivationLock)
+        {
+            if (!ReferenceEquals(_sessionCts, expectedSession)
+                || expectedSession.IsCancellationRequested
+                || _paidReconnectTask is { IsCompleted: false })
+                return;
+            _paidReconnectTask = Task.Run(
+                () => RecoverPaidTransportAsync(expectedSession),
+                expectedSession.Token);
+        }
+    }
+
+    private async Task RecoverPaidTransportAsync(CancellationTokenSource expectedSession)
+    {
+        Exception lastError = null;
+        for (var attempt = 1; attempt <= MaxPaidReconnectAttempts; attempt++)
+        {
+            try
+            {
+                await Task.Delay(PaidReconnectDelay(attempt), expectedSession.Token);
+                lock (_paidActivationLock)
+                {
+                    _paidActivationFailures = attempt;
+                }
+                await EnsurePaidLiveActivatedAsync(
+                    includeBufferedAudio: true,
+                    expectedSession.Token);
+                AppLog.Info(
+                    $"Jarvis Live transport recovered: logicalSession={_logicalSessionId} retry={attempt}");
+                return;
+            }
+            catch (OperationCanceledException) when (expectedSession.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                AppLog.Warning(
+                    ex,
+                    $"Jarvis Live reconnect failed: logicalSession={_logicalSessionId} retry={attempt}");
+                ResetFailedPaidConnection();
+            }
+        }
+
+        if (!ReferenceEquals(_sessionCts, expectedSession) || expectedSession.IsCancellationRequested)
+            return;
+        await StopAsync(showDone: false);
+        KeyboardWtfState.SetUi(
+            VoiceUiPhase.Error,
+            "Jarvis temporarily unavailable",
+            FriendlyError(lastError ?? new WebSocketException("The live connection could not be restored.")));
+        _notifications.Error(
+            "Jarvis temporarily unavailable",
+            "The live connection could not be restored. Press the Jarvis shortcut to try again.");
+    }
+
+    private void ResetFailedPaidConnection()
+    {
+        lock (_paidActivationLock)
+        {
+            _paidLiveReady = false;
+            _suppressPaidActivationAudio = false;
+            _paidActivationTask = Task.CompletedTask;
+            Interlocked.Exchange(ref _paidActivationStarted, 0);
+        }
     }
 
     private async Task RefreshAccountAfterProviderSessionAsync()
@@ -947,7 +1009,12 @@ public sealed class GeminiLiveConversationService : IDisposable
             var name = call.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : "";
             var args = call.TryGetProperty("args", out var argsEl) ? argsEl : default;
 
-            var response = await ExecuteToolAsync(name, args, token);
+            Dictionary<string, object> response;
+            if (!_toolAttemptGuard.TryGetSuppressed(name, args, out response))
+            {
+                response = await ExecuteToolAsync(name, args, token);
+                _toolAttemptGuard.Record(name, args, response);
+            }
             responses.Add(new
             {
                 id,
@@ -1055,14 +1122,18 @@ public sealed class GeminiLiveConversationService : IDisposable
 
     private void MarkTurnStarted()
     {
+        var newTurn = false;
         lock (_turnStateLock)
         {
             if (_turnComplete.Task.IsCompleted)
             {
                 _turnComplete = new TaskCompletionSource<bool>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
+                newTurn = true;
             }
         }
+        if (newTurn)
+            _toolAttemptGuard.Reset();
     }
 
     private void MarkTurnCompleted()
@@ -1081,7 +1152,9 @@ public sealed class GeminiLiveConversationService : IDisposable
         return completion;
     }
 
-    private static async Task<string> ReceiveMessageAsync(ClientWebSocket socket, CancellationToken token)
+    private static async Task<ReceivedSocketMessage> ReceiveMessageAsync(
+        ClientWebSocket socket,
+        CancellationToken token)
     {
         var buffer = new byte[16384];
         using var stream = new MemoryStream();
@@ -1090,12 +1163,43 @@ public sealed class GeminiLiveConversationService : IDisposable
         {
             result = await socket.ReceiveAsync(buffer, token);
             if (result.MessageType == WebSocketMessageType.Close)
-                return "";
+                return new ReceivedSocketMessage(
+                    "",
+                    true,
+                    result.CloseStatus);
             stream.Write(buffer, 0, result.Count);
         }
         while (!result.EndOfMessage);
 
-        return Encoding.UTF8.GetString(stream.ToArray());
+        return new ReceivedSocketMessage(
+            Encoding.UTF8.GetString(stream.ToArray()),
+            false,
+            null);
+    }
+
+    internal static string ClassifyProviderSocketClose(
+        bool clientCancelled,
+        WebSocketCloseStatus? closeStatus,
+        Exception exception,
+        TimeSpan socketAge)
+    {
+        if (clientCancelled)
+            return "client_cancel";
+        if (exception is OperationCanceledException)
+            return "transport_cancel";
+        if (exception is WebSocketException)
+            return socketAge >= TimeSpan.FromSeconds(110)
+                ? "cloud_run_request_rollover"
+                : "transport_error";
+        if (closeStatus is WebSocketCloseStatus.PolicyViolation)
+            return "policy_or_auth_rejection";
+        if (closeStatus is WebSocketCloseStatus.NormalClosure)
+            return socketAge >= TimeSpan.FromSeconds(110)
+                ? "cloud_run_request_rollover"
+                : "remote_normal_close";
+        return socketAge >= TimeSpan.FromSeconds(110)
+            ? "cloud_run_request_rollover"
+            : "remote_close";
     }
 
     private string BuildSystemInstruction()
@@ -1114,9 +1218,11 @@ public sealed class GeminiLiveConversationService : IDisposable
             permissionInstruction +
             "You can chat normally, but when the user asks you to do a supported computer action, call the matching tool immediately. " +
             "Use tools only for allowed actions; never claim an action finished until the tool response says it did. " +
+            "For the same user request, never repeat an identical action after a deterministic failure. A transient failure may receive at most one silent identical retry. Do not narrate internal retries or repeat the same failure aloud; use one genuinely different capability if available, otherwise explain the final limitation once. " +
             "App names and file names do not need to be exact. Use open_app, open_folder, open_path, or search_files with the user's natural approximate wording; the local resolver performs fuzzy matching and returns choices when confidence is low. " +
             "If the local resolver returns multiple candidates, read only the short names, ask the user to choose, and then retry with the chosen name or path. Do not guess between ambiguous matches. " +
             "If the user corrects an app, file, folder, link, or browser choice, ask whether they want that correction remembered. Call a remember tool only after they explicitly approve it. " +
+            "When the user explicitly asks to remember a selected http/https link for a phrase such as open test portal, call remember_link_alias with the phrase as alias. If the URL is omitted, the local tool safely reads the current selection, validates it, and restores the clipboard. Do not claim the alias was saved until that tool succeeds. " +
             "Use list_learned_mappings and forget_learned_mapping for requests to inspect or forget local mappings. " +
             "Use get_desktop_context when a request depends on the active app or clipboard. Re-evaluate routing independently for every user turn; never carry selected-content mode or page-action mode forward from the previous turn. If the current request explicitly says the user selected or highlighted something, call get_selected_text and use that selection as normal answer context. The selection may be one word needing a definition, a paragraph needing a summary, questions needing answers, or any other content, including content inside a webpage or form. Do not start browser automation for that turn unless the same current request explicitly asks to fill, enter, click, choose, submit, paste, or otherwise modify the page. A current request to fill, complete, or solve a form, quiz, questionnaire, assessment, or survey without mentioning a selection is a page-action request and should use browser automation; do not ask the user to select text merely because the previous turn used a selection. For a bare answer this, solve these, explain this, or what does this mean request with neither explicit selection context nor a clear page-action target, ask one short clarification. " +
             "Use the existing open_url, web_search, browser_action, and app tools for simple browser work such as opening a site, opening a known URL, searching Google, searching YouTube, searching Amazon through a direct search URL, opening or closing tabs, refreshing, or going back. Never start smart browser automation for those simple tasks. " +
@@ -1827,8 +1933,6 @@ public sealed class GeminiLiveConversationService : IDisposable
 
         return normalized.Contains(" bye ")
             || normalized.Contains(" goodbye ")
-            || normalized.Contains(" thank you ")
-            || normalized.Contains(" thanks ")
             || normalized.Contains(" thats all ")
             || normalized.Contains(" that's all ")
             || normalized.Contains(" that is all ")
@@ -1880,24 +1984,6 @@ public sealed class GeminiLiveConversationService : IDisposable
         return peak > 0 ? 20.0 * Math.Log10(peak / 32768.0) : -96;
     }
 
-    private static double RmsDb(byte[] bytes)
-    {
-        if (bytes.Length < 2)
-            return -96;
-        double sumSquares = 0;
-        var samples = 0;
-        for (var index = 0; index + 1 < bytes.Length; index += 2)
-        {
-            var sample = (short)(bytes[index] | (bytes[index + 1] << 8));
-            var normalized = sample / 32768.0;
-            sumSquares += normalized * normalized;
-            samples++;
-        }
-        if (samples == 0 || sumSquares <= 0)
-            return -96;
-        return Math.Max(-96, 20.0 * Math.Log10(Math.Sqrt(sumSquares / samples)));
-    }
-
     private static string FriendlyError(Exception ex)
     {
         if (ex is TimeoutException)
@@ -1935,59 +2021,96 @@ public sealed class GeminiLiveConversationService : IDisposable
         _sendLock.Dispose();
         _audioSendLock.Dispose();
         _textTurnLock.Dispose();
+        _stopLock.Dispose();
         _sessionCts?.Dispose();
     }
+
+    private sealed record ReceivedSocketMessage(
+        string Text,
+        bool IsClose,
+        WebSocketCloseStatus? CloseStatus);
+
+    private sealed record ProviderSocketDiagnostics(
+        string LogicalSessionId,
+        int Sequence,
+        DateTimeOffset StartedAt,
+        int RetryNumber);
 }
 
-internal sealed class LocalSpeechActivationGate
+internal sealed class ToolAttemptGuard
 {
-    private const int CalibrationFrames = 5;
-    private const int RequiredSpeechFrames = 3;
-    private double _noiseFloorDb = -60;
-    private int _observedFrames;
-    private int _consecutiveSpeechFrames;
-    private bool _triggered;
+    private readonly object _sync = new();
+    private readonly Dictionary<string, Attempt> _attempts = new(StringComparer.Ordinal);
 
-    public bool Observe(double rmsDb, double peakDb)
+    public bool TryGetSuppressed(
+        string toolName,
+        JsonElement args,
+        out Dictionary<string, object> result)
     {
-        if (_triggered)
+        var key = Key(toolName, args);
+        lock (_sync)
+        {
+            if (!_attempts.TryGetValue(key, out var attempt)
+                || (!attempt.Succeeded && !attempt.DeterministicFailure && attempt.Count < 2))
+            {
+                result = null;
+                return false;
+            }
+
+            result = new Dictionary<string, object>
+            {
+                ["ok"] = attempt.Succeeded,
+                ["supported"] = !attempt.DeterministicFailure,
+                ["duplicate_suppressed"] = true,
+                ["message"] = attempt.Succeeded
+                    ? "That exact action already completed for this request. Do not repeat it."
+                    : "That exact action already failed for this request. Do not retry it again; use a genuinely different capability or explain the limitation once.",
+            };
             return true;
-
-        rmsDb = Math.Clamp(rmsDb, -96, 0);
-        peakDb = Math.Clamp(peakDb, -96, 0);
-        var obviousSpeech = peakDb >= -28 && rmsDb >= -52;
-        if (_observedFrames < CalibrationFrames && !obviousSpeech)
-        {
-            _noiseFloorDb = _observedFrames == 0
-                ? rmsDb
-                : (_noiseFloorDb * 0.75) + (rmsDb * 0.25);
-            _observedFrames++;
-            _consecutiveSpeechFrames = 0;
-            return false;
         }
+    }
 
-        _observedFrames++;
-        var thresholdDb = Math.Clamp(_noiseFloorDb + 10, -46, -34);
-        var speech = obviousSpeech || rmsDb >= thresholdDb;
-        if (speech)
+    public void Record(
+        string toolName,
+        JsonElement args,
+        Dictionary<string, object> result)
+    {
+        var key = Key(toolName, args);
+        var succeeded = result?.TryGetValue("ok", out var ok) == true && ok is true;
+        var deterministic = !succeeded && IsDeterministicFailure(result);
+        lock (_sync)
         {
-            _consecutiveSpeechFrames++;
+            var count = _attempts.TryGetValue(key, out var prior) ? prior.Count + 1 : 1;
+            _attempts[key] = new Attempt(count, succeeded, deterministic);
         }
-        else
-        {
-            _consecutiveSpeechFrames = 0;
-            _noiseFloorDb = (_noiseFloorDb * 0.9) + (rmsDb * 0.1);
-        }
-
-        _triggered = _consecutiveSpeechFrames >= RequiredSpeechFrames;
-        return _triggered;
     }
 
     public void Reset()
     {
-        _noiseFloorDb = -60;
-        _observedFrames = 0;
-        _consecutiveSpeechFrames = 0;
-        _triggered = false;
+        lock (_sync)
+            _attempts.Clear();
     }
+
+    internal static bool IsDeterministicFailure(Dictionary<string, object> result)
+    {
+        if (result == null)
+            return false;
+        if (result.TryGetValue("supported", out var supported) && supported is false)
+            return true;
+        if (result.TryGetValue("needs_clarification", out var clarification) && clarification is true)
+            return true;
+        var message = result.TryGetValue("message", out var value)
+            ? value?.ToString() ?? ""
+            : "";
+        return Regex.IsMatch(
+            message,
+            @"\b(?:not found|could not find|unsupported|not supported|invalid|permission denied|access denied)\b",
+            RegexOptions.IgnoreCase);
+    }
+
+    private static string Key(string toolName, JsonElement args) =>
+        (toolName ?? "").Trim() + "\n" +
+        (args.ValueKind == JsonValueKind.Undefined ? "{}" : args.GetRawText());
+
+    private sealed record Attempt(int Count, bool Succeeded, bool DeterministicFailure);
 }

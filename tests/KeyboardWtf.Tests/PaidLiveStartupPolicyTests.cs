@@ -24,16 +24,33 @@ public sealed class PaidLiveStartupPolicyTests
                 logicalSessionActive));
 
     [Theory]
-    [InlineData(1, 1)]
-    [InlineData(2, 2)]
-    [InlineData(3, 4)]
-    [InlineData(20, 4)]
+    [InlineData(1, 0)]
+    [InlineData(2, 1)]
+    [InlineData(3, 2)]
+    [InlineData(20, 2)]
     public void Paid_reconnect_backoff_is_bounded_and_exponential(
         int failures,
         int expectedSeconds) =>
         Assert.Equal(
             TimeSpan.FromSeconds(expectedSeconds),
             GeminiLiveConversationService.PaidReconnectDelay(failures));
+
+    [Theory]
+    [InlineData(true, null, 10, "client_cancel")]
+    [InlineData(false, System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, 30, "remote_normal_close")]
+    [InlineData(false, System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, 119, "cloud_run_request_rollover")]
+    public void Provider_close_diagnostics_distinguish_user_stop_from_rollover(
+        bool clientCancelled,
+        System.Net.WebSockets.WebSocketCloseStatus? closeStatus,
+        int socketAgeSeconds,
+        string expected) =>
+        Assert.Equal(
+            expected,
+            GeminiLiveConversationService.ClassifyProviderSocketClose(
+                clientCancelled,
+                closeStatus,
+                null,
+                TimeSpan.FromSeconds(socketAgeSeconds)));
 
     [Theory]
     [InlineData(true, true, true, true)]

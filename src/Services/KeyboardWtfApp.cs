@@ -97,7 +97,8 @@ public sealed class KeyboardWtfApp : IDisposable
             _learnedMappings,
             OpenSettings,
             _timers,
-            _paidAccount);
+            _paidAccount,
+            _browserHelper);
         _commands = new CommandRegistry(
             this,
             _capture,

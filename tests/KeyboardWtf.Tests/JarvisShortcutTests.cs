@@ -6,6 +6,28 @@ using Xunit;
 public sealed class JarvisShortcutTests
 {
     [Theory]
+    [InlineData("ChatGPT", "ChatGPT", "https://chatgpt.com/", true)]
+    [InlineData("Gmail", "Inbox - Gmail", "https://mail.google.com/", true)]
+    [InlineData("ChatGPT", "Inbox - Gmail", "https://mail.google.com/", false)]
+    [InlineData("https://example.com/portal", "Portal", "https://example.com/portal/home", true)]
+    public void Named_browser_close_requires_a_verified_matching_tab(
+        string target,
+        string title,
+        string url,
+        bool expected) =>
+        Assert.Equal(expected, JarvisAutomationService.BrowserTargetMatches(target, title, url));
+
+    [Theory]
+    [InlineData("Chrome", true)]
+    [InlineData("the browser", true)]
+    [InlineData("ChatGPT", false)]
+    [InlineData("Discord", false)]
+    public void Only_explicit_browser_names_authorize_closing_the_browser_window(
+        string target,
+        bool expected) =>
+        Assert.Equal(expected, JarvisAutomationService.IsExplicitBrowserApplication(target));
+
+    [Theory]
     [InlineData("new tab", "^t")]
     [InlineData("close this website", "^w")]
     [InlineData("reopen closed tab", "^+t")]
