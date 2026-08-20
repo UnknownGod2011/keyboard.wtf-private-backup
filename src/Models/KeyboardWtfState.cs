@@ -142,6 +142,7 @@ public static class KeyboardWtfState
     public static string UiTitle { get; private set; } = "keyboard.wtf";
     public static string UiDetail { get; private set; } = "Ready";
     public static DateTime UiPhaseStartedUtc { get; private set; } = DateTime.UtcNow;
+    public static event Action UiChanged;
     public static double InputLevelDb { get; set; } = -96;
     public static bool IsDownloadingModels { get; set; }
     public static string ModelDownloadStatus { get; set; }
@@ -159,6 +160,8 @@ public static class KeyboardWtfState
         UiTitle = title ?? "keyboard.wtf";
         UiDetail = detail ?? "";
         UiPhaseStartedUtc = DateTime.UtcNow;
+        try { UiChanged?.Invoke(); }
+        catch { /* UI feedback must never break the active operation. */ }
     }
 
     // Noise gate: silence frames below -38 dBFS before sending to speech engines

@@ -64,7 +64,12 @@ public sealed class VoiceCaptureService
         }
 
         _deliveryTarget = TextInsertionTarget.Capture();
+        KeyboardWtfState.SetUi(
+            VoiceUiPhase.Listening,
+            ModeTitle(mode),
+            "Starting microphone...");
         StartLivePreview();
+        var microphoneStarted = Stopwatch.GetTimestamp();
         try
         {
             _audioRecorder.StartRecording();
@@ -86,6 +91,9 @@ public sealed class VoiceCaptureService
             AppLog.Warning(ex, "Microphone recording could not start");
             return false;
         }
+        AppLog.Info(
+            $"Microphone capture started: mode={mode} startupMs=" +
+            $"{(long)Stopwatch.GetElapsedTime(microphoneStarted).TotalMilliseconds}");
         KeyboardWtfState.IsRecording = true;
         KeyboardWtfState.CurrentRecordingMode = mode;
         KeyboardWtfState.ActiveQuickSendTarget = quickTarget;

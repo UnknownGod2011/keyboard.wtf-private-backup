@@ -68,6 +68,7 @@ internal sealed class VoiceOverlayForm : Form
         _timer = new System.Windows.Forms.Timer { Interval = 80 };
         _timer.Tick += (_, _) => RefreshState();
         _timer.Start();
+        KeyboardWtfState.UiChanged += HandleUiChanged;
     }
 
     protected override bool ShowWithoutActivation => true;
@@ -100,8 +101,29 @@ internal sealed class VoiceOverlayForm : Form
     protected override void Dispose(bool disposing)
     {
         if (disposing)
+        {
+            KeyboardWtfState.UiChanged -= HandleUiChanged;
             _timer.Dispose();
+        }
         base.Dispose(disposing);
+    }
+
+    private void HandleUiChanged()
+    {
+        if (IsDisposed)
+            return;
+
+        if (InvokeRequired)
+        {
+            if (IsHandleCreated)
+                BeginInvoke((Action)RefreshState);
+            return;
+        }
+
+        RefreshState();
+        // Force the tiny overlay to paint before a slow audio driver blocks
+        // the UI thread while opening the selected microphone.
+        Update();
     }
 
     private void RefreshState()

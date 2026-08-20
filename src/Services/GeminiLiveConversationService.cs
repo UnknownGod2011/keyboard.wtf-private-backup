@@ -146,11 +146,24 @@ public sealed class GeminiLiveConversationService : IDisposable
                     // pre-roll locally. Vertex is opened only after real speech
                     // (or an explicit text turn), so activation and silence cost
                     // no provider usage.
+                    KeyboardWtfState.SetUi(
+                        VoiceUiPhase.Listening,
+                        AssistantName(),
+                        "Starting microphone...");
+                    // Yield once so the overlay can become visible even when
+                    // opening the Windows audio driver takes a few seconds.
+                    await Task.Yield();
+                    var microphoneStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                     StartMicrophone();
                     KeyboardWtfState.SetUi(
                         VoiceUiPhase.Listening,
                         AssistantName(),
                         $"Listening locally. Speak to begin, or press {JarvisHotkey()} to cancel.");
+                    AppLog.Info(
+                        "Jarvis local microphone started: startupMs=" +
+                        (long)System.Diagnostics.Stopwatch
+                            .GetElapsedTime(microphoneStarted)
+                            .TotalMilliseconds);
                     _notifications.Info("Jarvis mode", "Listening locally. AI starts after you speak.");
                     return;
                 }
@@ -262,7 +275,9 @@ public sealed class GeminiLiveConversationService : IDisposable
 
     public async Task StopAsync(bool showDone = true)
     {
-        if (_sessionEndingObserver != null)
+        var hadLogicalSession = IsActive || _socket is not null;
+        var hadProviderSocket = _socket is not null;
+        if (hadLogicalSession && _sessionEndingObserver != null)
         {
             try { await _sessionEndingObserver(); }
             catch (Exception ex) { AppLog.Warning(ex, "Jarvis session-end cleanup failed"); }
@@ -287,7 +302,10 @@ public sealed class GeminiLiveConversationService : IDisposable
             socket.Dispose();
         }
 
-        if (_paidAccount?.Enabled == true && _paidAccount.IsSignedIn)
+        if (ShouldRefreshAccountAfterStop(
+                _paidAccount?.Enabled == true,
+                _paidAccount?.IsSignedIn == true,
+                hadProviderSocket))
         {
             try
             {
@@ -481,6 +499,12 @@ public sealed class GeminiLiveConversationService : IDisposable
             AppLog.Warning(ex, "Jarvis microphone send failed");
         }
     }
+
+    internal static bool ShouldRefreshAccountAfterStop(
+        bool usesPaidBackend,
+        bool signedIn,
+        bool hadProviderSocket) =>
+        usesPaidBackend && signedIn && hadProviderSocket;
 
     private Task EnsurePaidLiveActivatedAsync(
         bool includeBufferedAudio,

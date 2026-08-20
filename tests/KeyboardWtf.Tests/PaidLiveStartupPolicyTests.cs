@@ -35,6 +35,23 @@ public sealed class PaidLiveStartupPolicyTests
             TimeSpan.FromSeconds(expectedSeconds),
             GeminiLiveConversationService.PaidReconnectDelay(failures));
 
+    [Theory]
+    [InlineData(true, true, true, true)]
+    [InlineData(true, true, false, false)]
+    [InlineData(true, false, true, false)]
+    [InlineData(false, true, true, false)]
+    public void Account_refresh_after_stop_requires_a_real_paid_provider_socket(
+        bool paid,
+        bool signedIn,
+        bool hadProviderSocket,
+        bool expected) =>
+        Assert.Equal(
+            expected,
+            GeminiLiveConversationService.ShouldRefreshAccountAfterStop(
+                paid,
+                signedIn,
+                hadProviderSocket));
+
     [Fact]
     public void Provider_rollover_context_is_bounded_sanitized_and_keeps_recent_turns()
     {
