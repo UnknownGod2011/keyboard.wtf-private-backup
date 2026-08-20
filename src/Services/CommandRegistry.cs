@@ -63,6 +63,10 @@ public sealed class CommandRegistry
         }
         if (StopLiveBeforeAnotherVoiceMode("Smart Writing"))
             return;
+        // Wake the authenticated REST path while the user is speaking. This
+        // endpoint never reserves credits or invokes Vertex, and a failed
+        // warmup must never prevent local recording from starting.
+        _ = _liveConversation?.WarmPaidBackendAsync();
         _ = _capture.ToggleSmartModeAsync(HandleSmartWritingAsync);
     }
     public void ToggleDictation()
@@ -102,15 +106,9 @@ public sealed class CommandRegistry
             _ = _liveConversation.StopAsync();
             return;
         }
-        if (ShouldUseLocalJarvisPreflight(_liveConversation.UsesPaidBackend, _liveConversation.IsActive))
-        {
-            // A paid provider socket is opened only after local speech has
-            // produced a real user turn. Merely opening Jarvis therefore costs
-            // zero, and silence/cancellation never reserves paid allowance.
-            _ = _liveConversation.WarmPaidBackendAsync();
-            _ = _capture.ToggleJarvisPreflightAsync(StartPaidJarvisTurnAsync);
-            return;
-        }
+        // Paid Jarvis owns its own local speech-activity gate and PCM pre-roll.
+        // Start that logical session immediately instead of transcribing a
+        // separate Vosk "preflight" turn before Live can listen.
         _ = _liveConversation.StartAsync();
     }
     public void CancelCurrent() => _ = CancelCurrentAsync();
@@ -118,16 +116,7 @@ public sealed class CommandRegistry
     public void QuickSendDefault() => _ = _capture.QuickSendAsync(_settings.Current.DefaultDestination ?? "Clipboard");
     public void OpenSettings() => _app.OpenSettings();
     public object PendingSensitiveAction => _automation?.PendingSnapshot();
-
-    internal static bool ShouldUseLocalJarvisPreflight(bool usesPaidBackend, bool isLiveActive) =>
-        usesPaidBackend && !isLiveActive;
-
-    private async Task StartPaidJarvisTurnAsync(string transcript)
-    {
-        if (string.IsNullOrWhiteSpace(transcript))
-            return;
-        await _app.SendJarvisTextTurnAsync(transcript);
-    }
+    internal static bool UsesJarvisTranscriptPreflight => false;
 
     private bool StopLiveBeforeAnotherVoiceMode(string requestedMode)
     {
@@ -530,16 +519,28 @@ public sealed class CommandRegistry
     {
         ResetActionCancellation();
         var token = _actionCts.Token;
+        var operationStarted = Stopwatch.GetTimestamp();
+        long polishMs = 0;
+        long insertionMs = 0;
         try
         {
             KeyboardWtfState.SetTranscript(transcript);
+            var polishStarted = Stopwatch.GetTimestamp();
             var result = await _capture.ApplyPromptToCurrentTranscriptAsync(
                 "Clean this spoken dictation into ready-to-send writing. Remove filler words and false starts, " +
                 "honor self-corrections such as 'actually' or 'scratch that', add natural punctuation, and keep " +
                 "the speaker's meaning and tone. Return only the final text.",
                 token);
+            polishMs = (long)Stopwatch.GetElapsedTime(polishStarted).TotalMilliseconds;
             token.ThrowIfCancellationRequested();
+            var insertionStarted = Stopwatch.GetTimestamp();
             await DeliverTextAsync(string.IsNullOrWhiteSpace(result) ? transcript : result, token);
+            insertionMs = (long)Stopwatch.GetElapsedTime(insertionStarted).TotalMilliseconds;
+            AppLog.Info(
+                $"Smart Writing timing: recordingMs={_capture.LastRecordingDurationMs} " +
+                $"transcriptionMs={_capture.LastTranscriptionDurationMs} polishMs={polishMs} " +
+                $"insertionMs={insertionMs} totalAfterTranscriptMs=" +
+                $"{(long)Stopwatch.GetElapsedTime(operationStarted).TotalMilliseconds}");
         }
         catch (OperationCanceledException)
         {

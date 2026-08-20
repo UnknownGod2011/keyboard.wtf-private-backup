@@ -187,6 +187,8 @@ public sealed class SettingsService
 
         Current.Hotkeys ??= HotkeySettings.Defaults();
         MigrateLegacyHotkeys();
+        if (string.Equals(Current.AssistantName, "Cursivis", StringComparison.OrdinalIgnoreCase))
+            Current.AssistantName = "Jarvis";
         Current.CustomPrompts ??= new Dictionary<string, string>();
         Current.JarvisWorkflows ??= new List<JarvisWorkflowSettings>();
         Current.UpdateChannel = string.Equals(Current.UpdateChannel, "beta", StringComparison.OrdinalIgnoreCase)

@@ -1375,6 +1375,7 @@ public sealed class WebSettingsService : IDisposable
         var helper = _browserAutomation?.HelperStatus ?? new BrowserHelperStatus();
         var task = _browserAutomation?.Snapshot() ?? new BrowserAutomationSnapshot();
         var executable = Environment.ProcessPath ?? _app?.StartupExecutablePath ?? "";
+        var nativeHost = _browserNativeHostInstaller.Inspect(executable);
         return new
         {
             enabled = _settings?.Current.BrowserAutomationEnabled ?? false,
@@ -1387,8 +1388,11 @@ public sealed class WebSettingsService : IDisposable
             helperConnected = helper.Connected,
             currentTabAutomationAvailable = helper.CommandChannelReady,
             multipleHelpersDetected = helper.MultipleHelpersDetected,
-            nativeHostRegistered = !string.IsNullOrWhiteSpace(executable)
-                && _browserNativeHostInstaller.IsRegistered(executable),
+            nativeHostRegistered = nativeHost.Ready,
+            nativeHostIssue = nativeHost.Issue,
+            nativeHostExecutableName = string.IsNullOrWhiteSpace(nativeHost.ExecutablePath)
+                ? ""
+                : Path.GetFileName(nativeHost.ExecutablePath),
             expectedVersion = BrowserHelperProtocol.Version,
             serviceWorkerVersion = helper.ServiceWorkerVersion,
             contentScriptVersion = helper.ContentScriptVersion,
@@ -1886,6 +1890,7 @@ public sealed class WebSettingsService : IDisposable
             await WriteJson(response, new
             {
                 ok = false,
+                code = "settings_session_expired",
                 error = "This settings action is not authorized for the current app session.",
             });
             return false;
@@ -1958,26 +1963,47 @@ public sealed class WebSettingsService : IDisposable
 
     private string InjectSettingsRequestGuard(string html)
     {
-        var tokenJson = JsonSerializer.Serialize(_settingsActionToken);
         var script = $@"<script>
-(() => {{
-  const actionToken = {tokenJson};
-  const originalFetch = window.fetch.bind(window);
-  window.fetch = (input, init = {{}}) => {{
-    const target = new URL(typeof input === 'string' ? input : input.url, window.location.href);
-    const method = String(init.method || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
-    if (target.origin === window.location.origin && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {{
-      const headers = new Headers(init.headers || (typeof input === 'object' ? input.headers : undefined));
-      headers.set('X-Keyboard-Wtf-Settings-Action', actionToken);
-      init = {{ ...init, headers }};
-    }}
-    return originalFetch(input, init);
-  }};
-}})();
+{BuildSettingsRequestGuardScript(_settingsActionToken)}
 </script>";
         var marker = "</head>";
         var index = html.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
         return index >= 0 ? html.Insert(index, script) : script + html;
+    }
+
+    internal static string BuildSettingsRequestGuardScript(string actionToken)
+    {
+        var tokenJson = JsonSerializer.Serialize(actionToken ?? "");
+        return $@"
+(() => {{
+  const actionToken = {tokenJson};
+  const recoveryKey = 'keyboard-wtf-settings-session-reloaded';
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = (input, init = {{}}) => {{
+    const target = new URL(typeof input === 'string' ? input : input.url, window.location.href);
+    const method = String(init.method || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
+    const isStateChanging = target.origin === window.location.origin && !['GET', 'HEAD', 'OPTIONS'].includes(method);
+    if (isStateChanging) {{
+      const headers = new Headers(init.headers || (typeof input === 'object' ? input.headers : undefined));
+      headers.set('X-Keyboard-Wtf-Settings-Action', actionToken);
+      init = {{ ...init, headers }};
+    }}
+    return originalFetch(input, init).then(async response => {{
+      if (isStateChanging && response.status === 403) {{
+        try {{
+          const body = await response.clone().json();
+          if (body && body.code === 'settings_session_expired'
+              && sessionStorage.getItem(recoveryKey) !== actionToken) {{
+            sessionStorage.setItem(recoveryKey, actionToken);
+            window.location.reload();
+          }}
+        }} catch {{}}
+      }}
+      return response;
+    }});
+  }};
+}})();
+";
     }
 
     private async Task PreviewFilenameEndpoint(HttpListenerRequest req, HttpListenerResponse resp)

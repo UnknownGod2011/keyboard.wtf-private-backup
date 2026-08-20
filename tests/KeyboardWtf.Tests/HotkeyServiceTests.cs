@@ -8,6 +8,27 @@ using Xunit;
 public sealed class HotkeyServiceTests
 {
     [Fact]
+    public void Legacy_product_assistant_name_migrates_to_Jarvis()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "keyboard-wtf-settings-tests", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "settings.json");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            File.WriteAllText(path, "{\"AssistantName\":\"Cursivis\"}");
+            var service = new SettingsService(path);
+
+            service.Load();
+
+            Assert.Equal("Jarvis", service.Current.AssistantName);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public void ConflictFallbacksDoNotUseReservedCursivisShortcut()
     {
         Assert.Equal("Ctrl+Alt+J", HotkeyService.JarvisFallback);

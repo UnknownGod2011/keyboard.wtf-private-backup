@@ -1,5 +1,6 @@
 namespace KeyboardWtf.Services;
 
+using System.Diagnostics;
 using NAudio.Wave;
 using KeyboardWtf.Helpers;
 using KeyboardWtf.Models;
@@ -28,6 +29,8 @@ public sealed class VoiceCaptureService
     internal TextInsertionTarget CurrentDeliveryTarget => _deliveryTarget;
     internal CancellationToken CurrentOperationToken =>
         _processingCts?.Token ?? CancellationToken.None;
+    internal long LastRecordingDurationMs { get; private set; }
+    internal long LastTranscriptionDurationMs { get; private set; }
 
     public VoiceCaptureService(
         AudioRecorderService audioRecorder,
@@ -117,6 +120,9 @@ public sealed class VoiceCaptureService
         _silenceCts?.Cancel();
         var mode = KeyboardWtfState.CurrentRecordingMode;
         var wavData = _audioRecorder.StopRecording();
+        LastRecordingDurationMs = Math.Max(
+            0,
+            (long)(DateTime.UtcNow - _recordingStartUtc).TotalMilliseconds);
         StopLivePreview();
         KeyboardWtfState.IsRecording = false;
         KeyboardWtfState.CurrentRecordingMode = RecordingMode.None;
@@ -135,18 +141,26 @@ public sealed class VoiceCaptureService
 
         try
         {
+            var recognitionStarted = Stopwatch.GetTimestamp();
             var transcript = await _speechRecognition.RecognizeFromWavAsync(wavData, token, preferFast);
             token.ThrowIfCancellationRequested();
             transcript = await PostProcessTranscriptAsync(
                 transcript,
                 allowAiTranslation: RecordingModeUsesAiPostProcessing(mode),
                 token);
+            LastTranscriptionDurationMs = (long)Stopwatch
+                .GetElapsedTime(recognitionStarted)
+                .TotalMilliseconds;
             if (operationId != _operationId)
                 return string.Empty;
             if (updateTranscript)
                 KeyboardWtfState.SetTranscript(transcript);
-            AppLog.Info($"Transcript [{mode}]: {transcript}");
-            _notifications.Info("Transcribed", string.IsNullOrWhiteSpace(transcript) ? "No speech detected." : transcript);
+            AppLog.Info(
+                $"Voice transcription completed: mode={mode} recordingMs={LastRecordingDurationMs} " +
+                $"transcriptionMs={LastTranscriptionDurationMs} characters={transcript?.Length ?? 0}");
+            _notifications.InfoTransient(
+                "Transcribed",
+                string.IsNullOrWhiteSpace(transcript) ? "No speech detected." : transcript);
             if (string.IsNullOrWhiteSpace(transcript))
                 KeyboardWtfState.SetUi(VoiceUiPhase.Done, "No speech detected", "Press a shortcut to try again.");
             return transcript;

@@ -574,6 +574,55 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Native_host_diagnostics_distinguish_current_stale_and_unsafe_registration()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "keyboard-wtf-native-host-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var current = Path.Combine(directory, "current.exe");
+            var old = Path.Combine(directory, "old.exe");
+            File.WriteAllBytes(current, [0]);
+            File.WriteAllBytes(old, [0]);
+            var manifest = Path.Combine(directory, "host.json");
+
+            WriteNativeHostManifest(manifest, current, BrowserHelperProtocol.AllowedExtensionOrigins);
+            Assert.True(BrowserNativeHostInstaller.EvaluateManifest(manifest, current).Ready);
+
+            WriteNativeHostManifest(manifest, old, BrowserHelperProtocol.AllowedExtensionOrigins);
+            var stale = BrowserNativeHostInstaller.EvaluateManifest(manifest, current);
+            Assert.False(stale.Ready);
+            Assert.Contains("another keyboard.wtf installation", stale.Issue, StringComparison.OrdinalIgnoreCase);
+
+            WriteNativeHostManifest(
+                manifest,
+                current,
+                BrowserHelperProtocol.AllowedExtensionOrigins.Append(
+                    "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"));
+            var unsafeRegistration = BrowserNativeHostInstaller.EvaluateManifest(manifest, current);
+            Assert.False(unsafeRegistration.Ready);
+            Assert.Contains("unsafe", unsafeRegistration.Issue, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static void WriteNativeHostManifest(
+        string path,
+        string executable,
+        IEnumerable<string> origins) =>
+        File.WriteAllText(path, JsonSerializer.Serialize(new
+        {
+            name = "wtf.keyboard.browser",
+            description = "test",
+            path = executable,
+            type = "stdio",
+            allowed_origins = origins,
+        }));
+
+    [Fact]
     public void Two_fresh_helper_identities_fail_closed()
     {
         var now = DateTime.UtcNow;

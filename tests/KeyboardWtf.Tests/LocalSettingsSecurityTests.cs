@@ -16,6 +16,19 @@ public sealed class LocalSettingsSecurityTests
         Assert.False(WebSettingsService.HasValidSettingsActionToken(null, expected));
     }
 
+    [Fact]
+    public void Stale_settings_page_recovers_only_from_the_machine_readable_session_error()
+    {
+        var script = WebSettingsService.BuildSettingsRequestGuardScript("fresh-process-token");
+
+        Assert.Contains("X-Keyboard-Wtf-Settings-Action", script);
+        Assert.Contains("settings_session_expired", script);
+        Assert.Contains("response.status === 403", script);
+        Assert.Contains("sessionStorage", script);
+        Assert.Contains("window.location.reload()", script);
+        Assert.DoesNotContain("localStorage", script);
+    }
+
     [Theory]
     [InlineData(null, true)]
     [InlineData("", true)]

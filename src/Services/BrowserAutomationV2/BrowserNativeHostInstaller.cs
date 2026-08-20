@@ -34,6 +34,64 @@ public sealed class BrowserNativeHostInstaller
         "browser-helper",
         "extension");
 
+    public BrowserNativeHostRegistration Inspect(string expectedExecutablePath)
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(RegistryPath);
+            var manifestPath = key?.GetValue(null) as string;
+            if (string.IsNullOrWhiteSpace(manifestPath))
+                return new(false, "", "Chrome native messaging is not registered.");
+            return EvaluateManifest(manifestPath, expectedExecutablePath);
+        }
+        catch (Exception exception)
+        {
+            return new(false, "", $"Chrome native-host registration is invalid: {exception.Message}");
+        }
+    }
+
+    internal static BrowserNativeHostRegistration EvaluateManifest(
+        string manifestPath,
+        string expectedExecutablePath)
+    {
+        if (string.IsNullOrWhiteSpace(manifestPath) || !File.Exists(manifestPath))
+            return new(false, "", "The Chrome native-host manifest is missing.");
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(manifestPath));
+            var executable = document.RootElement.TryGetProperty("path", out var path)
+                ? path.GetString() ?? ""
+                : "";
+            if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable))
+                return new(false, executable, "The Chrome native host points to a missing keyboard.wtf executable.");
+            var origins = document.RootElement.TryGetProperty("allowed_origins", out var allowed)
+                && allowed.ValueKind == JsonValueKind.Array
+                    ? allowed.EnumerateArray()
+                        .Select(value => value.GetString())
+                        .Where(value => !string.IsNullOrWhiteSpace(value))
+                    : Array.Empty<string>();
+            if (!HasExactAllowedOrigins(origins))
+                return new(false, executable, "The Chrome native host has an unsafe or incomplete extension allowlist.");
+            if (string.IsNullOrWhiteSpace(expectedExecutablePath)
+                || !string.Equals(
+                    Path.GetFullPath(executable),
+                    Path.GetFullPath(expectedExecutablePath),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return new(
+                    false,
+                    executable,
+                    "Chrome Helper is registered to another keyboard.wtf installation. Retry reconnect after installing the current production build.");
+            }
+
+            return new(true, executable, "");
+        }
+        catch (Exception exception)
+        {
+            return new(false, "", $"Chrome native-host registration is invalid: {exception.Message}");
+        }
+    }
+
     public bool IsRegistered(string executablePath)
     {
         try
@@ -215,3 +273,8 @@ public sealed class BrowserNativeHostInstaller
         return packaged;
     }
 }
+
+public sealed record BrowserNativeHostRegistration(
+    bool Ready,
+    string ExecutablePath,
+    string Issue);

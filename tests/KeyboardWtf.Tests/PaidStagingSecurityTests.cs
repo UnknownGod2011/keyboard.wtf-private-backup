@@ -272,6 +272,20 @@ public sealed class PaidStagingSecurityTests
         }
     }
 
+    [Theory]
+    [InlineData(401, true)]
+    [InlineData(403, true)]
+    [InlineData(400, false)]
+    [InlineData(429, false)]
+    [InlineData(500, false)]
+    public void Live_authentication_retry_is_limited_to_auth_rejections(
+        int statusCode,
+        bool expected) =>
+        Assert.Equal(
+            expected,
+            PaidAccountService.IsLiveAuthenticationRejection(
+                (System.Net.HttpStatusCode)statusCode));
+
     [Fact]
     public async Task Sign_out_all_devices_is_server_authoritative_and_clears_the_local_session()
     {
@@ -591,6 +605,37 @@ public sealed class PaidStagingSecurityTests
     }
 
     [Fact]
+    public async Task Transient_refresh_network_failure_preserves_the_desktop_session()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var (store, directory) = CreateSessionStore();
+        try
+        {
+            store.Save(new PaidSessionTokens(
+                "expired-access-token",
+                DateTimeOffset.UtcNow.AddMinutes(-2),
+                "still-valid-refresh-token",
+                DateTimeOffset.UtcNow.AddDays(10),
+                "session-id",
+                "device-id",
+                "installation-id"));
+            using var account = CreateAccount(store, new RefreshNetworkFailureHandler());
+
+            await account.InitializeAsync();
+
+            Assert.True(account.IsSignedIn);
+            Assert.NotNull(store.Load());
+            Assert.Contains("temporarily unavailable", account.LastError, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task Switching_accounts_revokes_the_current_session_and_forces_one_account_chooser()
     {
         if (!OperatingSystem.IsWindows())
@@ -848,6 +893,17 @@ public sealed class PaidStagingSecurityTests
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),
             });
+        }
+    }
+
+    private sealed class RefreshNetworkFailureHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal("/v1/sessions/refresh", request.RequestUri!.AbsolutePath);
+            throw new HttpRequestException("Simulated network interruption");
         }
     }
 

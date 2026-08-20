@@ -499,8 +499,12 @@ internal sealed class PaidAccountService : IDisposable
         CancellationToken cancellationToken)
     {
         EnsureEnabled();
+        var totalStarted = Stopwatch.GetTimestamp();
+        var entitlementStarted = Stopwatch.GetTimestamp();
         await EnsureUsableCreditsAsync(cancellationToken);
+        var entitlementMs = (long)Stopwatch.GetElapsedTime(entitlementStarted).TotalMilliseconds;
         var requestId = $"desktop_{Guid.NewGuid():N}";
+        var requestStarted = Stopwatch.GetTimestamp();
         var response = await SendAuthorizedAsync<PaidGenerateResponse>(
             HttpMethod.Post,
             "v1/ai/generate",
@@ -515,6 +519,7 @@ internal sealed class PaidAccountService : IDisposable
                 images,
             },
             cancellationToken);
+        var requestMs = (long)Stopwatch.GetElapsedTime(requestStarted).TotalMilliseconds;
         if (_account is not null)
         {
             _account = _account with
@@ -524,6 +529,10 @@ internal sealed class PaidAccountService : IDisposable
                     _account.CycleUsageCreditMicros + response.ChargedCreditMicros),
             };
         }
+        AppLog.Info(
+            $"Paid AI request timing: task={SafeTaskKind(taskKind)} entitlementMs={entitlementMs} " +
+            $"authorizedRequestMs={requestMs} totalMs=" +
+            $"{(long)Stopwatch.GetElapsedTime(totalStarted).TotalMilliseconds}");
         return response;
     }
 
@@ -539,21 +548,53 @@ internal sealed class PaidAccountService : IDisposable
             Scheme = _configuration.BackendBaseUri.Scheme == Uri.UriSchemeHttps ? "wss" : "ws",
             Query = $"requestId={Uri.EscapeDataString(requestId)}",
         };
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var socket = CreateLiveSocket(accessToken);
+            try
+            {
+                await socket.ConnectAsync(builder.Uri, cancellationToken);
+                if (attempt > 0)
+                    AppLog.Info("Jarvis Live authentication recovered after one token refresh");
+                return socket;
+            }
+            catch (WebSocketException)
+                when (attempt == 0 && IsLiveAuthenticationRejection(socket.HttpStatusCode))
+            {
+                AppLog.Warning(
+                    $"Jarvis Live authentication was rejected with HTTP {(int?)socket.HttpStatusCode}; refreshing once");
+                socket.Dispose();
+                accessToken = await RefreshTokensAsync(cancellationToken, forceRefresh: true);
+            }
+            catch (WebSocketException exception)
+                when (IsLiveAuthenticationRejection(socket.HttpStatusCode))
+            {
+                socket.Dispose();
+                InvalidateLocalSession(
+                    "This desktop session was signed out or revoked. Sign in again to use Jarvis AI.");
+                throw new InvalidOperationException(_lastError, exception);
+            }
+            catch
+            {
+                socket.Dispose();
+                throw;
+            }
+        }
+
+        throw new InvalidOperationException("Jarvis Live could not establish an authenticated connection.");
+    }
+
+    private static ClientWebSocket CreateLiveSocket(string accessToken)
+    {
         var socket = new ClientWebSocket();
         socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
         socket.Options.SetRequestHeader("Authorization", $"Bearer {accessToken}");
         socket.Options.SetRequestHeader(DesktopVersionHeader, DesktopVersion);
-        try
-        {
-            await socket.ConnectAsync(builder.Uri, cancellationToken);
-            return socket;
-        }
-        catch
-        {
-            socket.Dispose();
-            throw;
-        }
+        return socket;
     }
+
+    internal static bool IsLiveAuthenticationRejection(HttpStatusCode? statusCode) =>
+        statusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden;
 
     private async Task EnsureUsableCreditsAsync(CancellationToken cancellationToken)
     {
@@ -578,7 +619,7 @@ internal sealed class PaidAccountService : IDisposable
         }
         catch (PaidApiException exception) when (exception.StatusCode == HttpStatusCode.Unauthorized)
         {
-            accessToken = await RefreshTokensAsync(cancellationToken);
+            accessToken = await RefreshTokensAsync(cancellationToken, forceRefresh: true);
             try
             {
                 return await SendAsync<T>(method, path, body, true, cancellationToken, accessToken);
@@ -600,33 +641,55 @@ internal sealed class PaidAccountService : IDisposable
         return await RefreshTokensAsync(cancellationToken);
     }
 
-    private async Task<string> RefreshTokensAsync(CancellationToken cancellationToken)
+    private async Task<string> RefreshTokensAsync(
+        CancellationToken cancellationToken,
+        bool forceRefresh = false)
     {
         await _authGate.WaitAsync(cancellationToken);
         try
         {
             if (_tokens is null || _tokens.RefreshTokenExpiresAt <= DateTimeOffset.UtcNow)
-                throw new InvalidOperationException("The desktop session expired. Sign in again.");
-            if (_tokens.AccessTokenExpiresAt > DateTimeOffset.UtcNow.AddMinutes(1))
+            {
+                InvalidateLocalSession("The desktop session expired. Sign in again to use Jarvis AI.");
+                throw new InvalidOperationException(_lastError);
+            }
+            if (!forceRefresh && _tokens.AccessTokenExpiresAt > DateTimeOffset.UtcNow.AddMinutes(1))
                 return _tokens.AccessToken;
-            var refreshed = await SendAsync<SessionTokenResponse>(
-                HttpMethod.Post,
-                "v1/sessions/refresh",
-                new { refreshToken = _tokens.RefreshToken },
-                authenticated: false,
-                cancellationToken);
+            SessionTokenResponse refreshed;
+            try
+            {
+                refreshed = await SendAsync<SessionTokenResponse>(
+                    HttpMethod.Post,
+                    "v1/sessions/refresh",
+                    new { refreshToken = _tokens.RefreshToken },
+                    authenticated: false,
+                    cancellationToken);
+            }
+            catch (PaidApiException exception)
+                when (exception.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            {
+                InvalidateLocalSession(
+                    "The desktop session expired or was revoked. Sign in again to use Jarvis AI.");
+                throw new InvalidOperationException(_lastError, exception);
+            }
             SaveTokens(refreshed, _tokens.DeviceInstallationId);
+            AppLog.Info("Paid account access token refreshed");
             return _tokens.AccessToken;
-        }
-        catch
-        {
-            InvalidateLocalSession("The desktop session expired. Sign in again to use Jarvis AI.");
-            throw;
         }
         finally
         {
             _authGate.Release();
         }
+    }
+
+    private static string SafeTaskKind(string taskKind)
+    {
+        var value = string.IsNullOrWhiteSpace(taskKind) ? "unspecified" : taskKind.Trim();
+        value = new string(value
+            .Where(character => char.IsLetterOrDigit(character) || character is '-' or '_' or '.')
+            .Take(80)
+            .ToArray());
+        return string.IsNullOrWhiteSpace(value) ? "unspecified" : value;
     }
 
     private void InvalidateLocalSession(string message)

@@ -1545,13 +1545,17 @@ async function loadSettings() {
     if (mics.devices.length === 0) {
       micSelect.innerHTML = '<option value="-1">No microphones found</option>';
     } else {
+      const systemDefault = document.createElement('option');
+      systemDefault.value = '-1';
+      systemDefault.textContent = 'System default microphone';
+      micSelect.appendChild(systemDefault);
       mics.devices.forEach(d => {
         const opt = document.createElement('option');
         opt.value = d.index;
         opt.textContent = d.name + (d.channels > 1 ? ` (${d.channels}ch)` : '');
         micSelect.appendChild(opt);
       });
-      micSelect.value = settings.microphoneDevice >= 0 ? settings.microphoneDevice : mics.devices[0].index;
+      micSelect.value = String(settings.microphoneDevice >= 0 ? settings.microphoneDevice : -1);
     }
 
     // API keys - masked values as placeholders when stored
@@ -2117,7 +2121,9 @@ function renderBrowserAutomation(browser) {
     browser.currentTabAutomationAvailable ? 'Connected and ready'
       : (browser.helperConnected ? 'Connected; tab not ready' : 'Not connected');
   document.getElementById('browserBridgeStatus').textContent =
-    browser.nativeHostRegistered ? 'Registered' : 'Not registered';
+    browser.nativeHostRegistered
+      ? 'Registered to this app'
+      : (browser.nativeHostIssue || 'Not registered');
   document.getElementById('browserHelperVersion').textContent =
     `${browser.serviceWorkerVersion || '—'} / ${browser.contentScriptVersion || '—'} · expected ${browser.expectedVersion || '—'}`;
   document.getElementById('browserCurrentTabStatus').textContent =
@@ -2135,7 +2141,7 @@ function renderBrowserAutomation(browser) {
       ? `${browser.activeTabTitle || 'Current tab'} · ${browser.activeTabUrl}`
       : 'Open a normal http/https page in Chrome.';
   document.getElementById('browserAutomationError').textContent =
-    browser.lastError || '';
+    browser.lastError || browser.nativeHostIssue || '';
 }
 
 async function browserAutomationChanged() {
