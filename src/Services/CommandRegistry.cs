@@ -605,6 +605,27 @@ public sealed class CommandRegistry
         }
     }
 
+#if KEYBOARD_WTF_PAID_PRODUCTION_CANDIDATE
+    internal async Task<object> RunSmartWritingDiagnosticAsync(string transcript)
+    {
+        transcript = (transcript ?? "").Trim();
+        if (transcript.Length is < 1 or > 1000)
+            throw new ArgumentException("The diagnostic transcript must contain 1 to 1000 characters.", nameof(transcript));
+
+        var started = Stopwatch.GetTimestamp();
+        await HandleSmartWritingAsync(transcript);
+        return new
+        {
+            phase = KeyboardWtfState.UiPhase.ToString(),
+            title = KeyboardWtfState.UiTitle,
+            terminal = !NeedsSmartWritingTerminalCleanup(
+                KeyboardWtfState.UiPhase,
+                KeyboardWtfState.UiTitle),
+            elapsedMs = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+        };
+    }
+#endif
+
     private async Task<Dictionary<string, object>> RememberLinkAliasAsync(
         JsonElement args,
         CancellationToken token)
