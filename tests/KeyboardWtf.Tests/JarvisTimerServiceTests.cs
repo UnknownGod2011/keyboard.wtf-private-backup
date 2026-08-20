@@ -5,6 +5,11 @@ using Xunit;
 
 public sealed class JarvisTimerServiceTests
 {
+    // JarvisTimerService intentionally clamps user timers to at least one
+    // second. Give loaded Windows CI runners enough scheduling headroom while
+    // still failing promptly if the completion callback is genuinely lost.
+    private static readonly TimeSpan AsyncCompletionTimeout = TimeSpan.FromSeconds(10);
+
     [Fact]
     public async Task Timer_completes_once_notifies_and_leaves_no_active_runtime()
     {
@@ -23,7 +28,7 @@ public sealed class JarvisTimerServiceTests
         };
 
         service.Start(TimeSpan.FromMilliseconds(120), "short test");
-        var result = await completed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        var result = await completed.Task.WaitAsync(AsyncCompletionTimeout);
 
         Assert.Equal(JarvisTimerState.Completed, result.State);
         Assert.Empty(service.ActiveTimers);
@@ -72,7 +77,7 @@ public sealed class JarvisTimerServiceTests
         };
 
         service.Start(TimeSpan.FromMilliseconds(100), "natural voice test");
-        await completed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await completed.Task.WaitAsync(AsyncCompletionTimeout);
 
         Assert.Empty(spoken);
         var announcement = Assert.Single(announcements);
