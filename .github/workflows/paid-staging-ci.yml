@@ -94,14 +94,16 @@ jobs:
             signingKeyId = 'kwt-release-2026-01'
           } | ConvertTo-Json | Set-Content -Encoding utf8 dist/release-provenance.json
 
-      - name: Upload verified candidate artifacts
+      - name: Upload verified candidate artifacts (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: keyboard-wtf-${{ github.sha }}
           if-no-files-found: error
-          # This is a short-lived CI verification bundle, not a release or backup.
-          # Release assets remain in GitHub Releases; keeping every ~80 MB commit
-          # bundle for two weeks exhausted the account's Actions storage quota.
+          # This is an optional short-lived diagnostic bundle, not a release or
+          # backup. Push/PR CI still builds and verifies the exact package but
+          # does not retain another ~80 MB copy for every commit. Release assets
+          # remain in GitHub Releases.
           retention-days: 1
           path: |
             dist/installer/keyboard-wtf-paid-production-candidate-setup.exe
