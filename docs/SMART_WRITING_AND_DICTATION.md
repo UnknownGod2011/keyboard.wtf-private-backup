@@ -1,6 +1,6 @@
 # Smart Writing and Raw Dictation
 
-This document describes the Windows 1.4.2 production implementation. It is based on the code paths that ship in the desktop build, not on planned behavior.
+This document describes the Windows 1.4.3 production implementation. It is based on the code paths that ship in the desktop build, not on planned behavior.
 
 ## The three interaction modes
 
@@ -8,7 +8,7 @@ This document describes the Windows 1.4.2 production implementation. It is based
 |---|---|---|---|---|
 | Smart Writing | `Ctrl+Alt+K` | Local Vosk fast path | Yes: authenticated keyboard.wtf Cloud AI | Active field, clipboard, or ask each time |
 | Raw Dictation | `Ctrl+Alt+D` | Local Vosk fast path | No | Active field, clipboard, or ask each time |
-| Jarvis | `Ctrl+Alt+Q` | Local speech-activity gate with PCM pre-roll | Yes, only after meaningful speech | Conversational response and supported actions |
+| Jarvis | `Ctrl+Alt+Q` | Direct Gemini Live audio after hotkey activation | Yes, immediately after the user invokes Jarvis | Conversational response and supported actions |
 
 The displayed shortcut is the shortcut Windows actually registered. If a shortcut is unavailable, Settings reports it as unavailable and asks the user to choose another; the public build does not silently fall back to F13-F24.
 
@@ -18,7 +18,7 @@ The displayed shortcut is the shortcut Windows actually registered. If a shortcu
 
 The shortcut toggles recording. Silence detection or the maximum recording duration can also stop capture. The visible states are Listening, Transcribing, Polishing (Smart Writing only), Done, Cancelled, and Error. A microphone or Windows privacy failure is surfaced as an error and is never reported as success.
 
-Jarvis does not run a separate Vosk transcription before it starts listening. Its logical conversation begins immediately, while a local speech-activity gate keeps the paid provider disconnected during silence and preserves approximately 1.4 seconds of PCM pre-roll. A provider-side idle/socket rollover therefore does not end the logical conversation: the microphone remains under the same user-visible Jarvis session and reconnects with bounded backoff only after later speech is detected.
+Jarvis does not run a Vosk transcription or local speech gate before Live starts. Pressing the dedicated Jarvis shortcut immediately creates one logical conversation, opens the microphone, and begins the authenticated Gemini Live connection. A short PCM pre-roll prevents first-word clipping while that connection is established. Recoverable provider or Cloud Run socket rollovers replace only the physical transport: the microphone, bounded in-memory context, and single user-visible Jarvis surface remain part of the same logical session until the user stops it.
 
 Only one recording/transcription operation is allowed at a time. A second press of the same shortcut stops the current recording. A competing voice mode cannot open a second microphone capture or overlap an active Jarvis session. `Cancel Anything` stops recording, cancels local recognition and the cancellable cloud request, prevents late paste, and returns the voice state to idle/cancelled.
 
@@ -66,7 +66,7 @@ verified desktop session
 
 The desktop does not receive a provider credential and does not decide its own UID, model price, token count, balance, or ledger entry. Smart Writing cancellation is passed to the authenticated HTTP request. If the account is signed out, revoked, has no usable entitlement/allowance, or the paid request fails, the production build reports the failure and inserts nothing; it does not misleadingly type the raw transcript as though Smart Writing succeeded.
 
-While the user records, Smart Writing sends a no-cost `/v1/ready` warm-up to the authenticated backend. That warm-up cannot reserve allowance or invoke Vertex, and a warm-up failure never prevents local recording. Safe stage timings (recording, transcription, authorized cloud request, polishing, and insertion) are logged without recording the transcript or generated text.
+While the user records, Smart Writing sends a no-cost `/v1/ready` warm-up to the authenticated backend. That warm-up cannot reserve allowance or invoke Vertex, and a warm-up failure never prevents local recording. Safe stage timings (recording, transcription, authorized cloud request, polishing, and insertion) are logged without recording the transcript or generated text. The paid polishing stage has a bounded timeout and every path ends in exactly one terminal success, clipboard fallback, failure, cancellation, or timeout state; a late response cannot paste after cancellation.
 
 The transformation instruction removes conversational filler and false starts where appropriate, honors explicit self-corrections, improves grammar/punctuation, and preserves meaning and tone. The returned text is the only text delivered.
 
