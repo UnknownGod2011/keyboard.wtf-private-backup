@@ -31,6 +31,19 @@ public sealed class FinalPolishRegressionTests : IDisposable
     }
 
     [Fact]
+    public void Initial_settings_deep_link_remains_authoritative_while_account_layout_loads()
+    {
+        var root = FindRepositoryRoot();
+        var html = File.ReadAllText(Path.Combine(root, "src", "Resources", "web", "settings.html"));
+
+        Assert.Contains("let initialRoute = resolveRoute(location.hash);", html, StringComparison.Ordinal);
+        Assert.Contains("if (initialRoute)", html, StringComparison.Ordinal);
+        Assert.Contains("window.finishInitialSettingsRoute", html, StringComparison.Ordinal);
+        Assert.Contains("loadSettings().finally(() => window.finishInitialSettingsRoute?.());", html,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Deleted_workflow_tombstone_survives_restart_and_is_cleared_by_explicit_resave()
     {
         Directory.CreateDirectory(_root);

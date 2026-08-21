@@ -1405,6 +1405,7 @@ let paidLastSignInState = 'idle';
   let scrollFrame;
   let clickTarget;
   let clickReleaseTimer;
+  let initialRoute = resolveRoute(location.hash);
 
   function visibleSections() {
     return navLinks
@@ -1461,6 +1462,15 @@ let paidLastSignInState = 'idle';
       setActive(undefined);
       return;
     }
+    // Account data and paid/BYOK visibility change the height of sections above
+    // the requested deep link during the first load. Keep that explicit route
+    // authoritative until the initial settings render has settled; otherwise a
+    // ResizeObserver callback can rewrite (for example) #browser-automation to
+    // whichever section temporarily occupies the old scroll position.
+    if (initialRoute) {
+      setActive(initialRoute);
+      return;
+    }
     const atBottom = mainEl.scrollTop + mainEl.clientHeight >= mainEl.scrollHeight - 4;
     if (atBottom) {
       clickTarget = undefined;
@@ -1507,9 +1517,22 @@ let paidLastSignInState = 'idle';
   new ResizeObserver(scheduleScrollSpy).observe(mainEl);
   window.refreshSettingsScrollSpy = scheduleScrollSpy;
   window.syncSettingsRoute = () => {
-    const id = resolveRoute(location.hash);
+    const id = initialRoute || resolveRoute(location.hash);
     if (id && scrollToSection(id, false, false)) return;
     scheduleScrollSpy();
+  };
+  window.finishInitialSettingsRoute = () => {
+    if (!initialRoute) return;
+    const id = initialRoute;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      scrollToSection(id, false, false);
+      if (location.hash !== '#' + id)
+        history.replaceState(null, '', '#' + id);
+      setTimeout(() => {
+        initialRoute = undefined;
+        scheduleScrollSpy();
+      }, 200);
+    }));
   };
   window.syncSettingsRoute();
 })();
@@ -3448,7 +3471,7 @@ function showToast(msg) {
   setTimeout(() => toast.classList.remove('show'), 1800);
 }
 
-loadSettings();
+loadSettings().finally(() => window.finishInitialSettingsRoute?.());
 setInterval(refreshBrowserAutomationStatus, 2500);
 </script>
 </body>
