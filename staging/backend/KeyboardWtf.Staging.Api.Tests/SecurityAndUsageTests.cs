@@ -1757,6 +1757,76 @@ public sealed class SecurityAndUsageTests
 
     [Fact]
     [Trait("Category", "FirestoreIntegration")]
+    public async Task Firestore_live_and_one_shot_ai_use_independent_concurrency_lanes_when_enabled()
+    {
+        var accessToken = Environment.GetEnvironmentVariable("KEYBOARD_WTF_FIRESTORE_TEST_ACCESS_TOKEN");
+        if (string.IsNullOrWhiteSpace(accessToken))
+            return;
+
+        var db = new FirestoreDbBuilder
+        {
+            ProjectId = "keyboard-wtf-staging",
+            Credential = GoogleCredential.FromAccessToken(accessToken),
+        }.Build();
+        var store = new FirestoreAccountStore(db, new SystemClock(), Options.Create(TestOptions()));
+        var suffix = Guid.NewGuid().ToString("N");
+        var caller = new CallerIdentity(
+            $"integration-live-tool-{suffix}",
+            $"live-tool-{suffix}@example.invalid",
+            "Integration Live Tool",
+            "test");
+        var liveRequest = $"live-{suffix}";
+        var screenRequest = $"screen-{suffix}";
+        try
+        {
+            await store.EnsureAccountAsync(caller, CancellationToken.None);
+            await store.GrantCreditsAsync(
+                caller.UserId,
+                1_000_000,
+                "integration live tool concurrency",
+                $"grant-live-tool-{suffix}",
+                "integration-test",
+                CancellationToken.None);
+
+            var live = await store.ReserveAsync(
+                caller, liveRequest, "gemini-live-test", "test", 100_000, 500_000,
+                20, 1, 1_000_000_000, CancellationToken.None, "live_audio");
+            var screen = await store.ReserveAsync(
+                caller, screenRequest, "gemini-screen-test", "test", 100_000, 500_000,
+                20, 1, 1_000_000_000, CancellationToken.None, "screen_reasoning");
+
+            Assert.True(live.Created);
+            Assert.True(screen.Created);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => store.ReserveAsync(
+                caller, $"live-second-{suffix}", "gemini-live-test", "test", 100_000, 500_000,
+                20, 1, 1_000_000_000, CancellationToken.None, "live_audio"));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => store.ReserveAsync(
+                caller, $"screen-second-{suffix}", "gemini-screen-test", "test", 100_000, 500_000,
+                20, 1, 1_000_000_000, CancellationToken.None, "screen_reasoning"));
+
+            await store.ReleaseReservationAsync(
+                caller.UserId, screenRequest, "integration_cleanup", CancellationToken.None);
+            var selected = await store.ReserveAsync(
+                caller, $"selected-{suffix}", "gemini-selected-test", "test", 100_000, 500_000,
+                20, 1, 1_000_000_000, CancellationToken.None, "selected_text");
+            Assert.True(selected.Created);
+
+            await store.ReleaseReservationAsync(
+                caller.UserId, selected.Reservation.RequestId, "integration_cleanup", CancellationToken.None);
+            await store.ReleaseReservationAsync(
+                caller.UserId, liveRequest, "integration_cleanup", CancellationToken.None);
+            var account = await store.GetAccountAsync(caller.UserId, CancellationToken.None);
+            Assert.Equal(1_000_000, account.AvailableCreditMicros);
+            Assert.Equal(0, account.ReservedCreditMicros);
+        }
+        finally
+        {
+            await DeleteIntegrationAccountAsync(db, caller.UserId);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "FirestoreIntegration")]
     public async Task Firestore_burst_reservations_enforce_account_concurrency_and_preserve_the_balance_when_enabled()
     {
         var accessToken = Environment.GetEnvironmentVariable("KEYBOARD_WTF_FIRESTORE_TEST_ACCESS_TOKEN");
@@ -2180,6 +2250,30 @@ public sealed class SecurityAndUsageTests
         Assert.Equal(0, store.SettleCalls);
         Assert.Equal(0, store.ReleaseCalls);
         Assert.Equal(1, store.ReconciliationCalls);
+    }
+
+    [Fact]
+    public async Task Provider_marker_failure_releases_pre_dispatch_ownership_immediately()
+    {
+        var store = new FakeStore
+        {
+            Available = 1_000_000_000,
+            FailProviderStarted = true,
+        };
+        var vertex = new FakeVertex(new VertexGenerateResult(
+            "never",
+            new ProviderUsage(1, 1, 0, 0, 0, 0, 2, null)));
+        var service = CreateAi(store, vertex);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.GenerateAsync(
+            Caller,
+            new GenerateRequest("request-provider-marker-failed", "hello", null, 128),
+            CancellationToken.None));
+
+        Assert.Equal(1, store.ProviderStartedCalls);
+        Assert.Equal(0, vertex.Calls);
+        Assert.Equal(1, store.ReleaseCalls);
+        Assert.Equal(0, store.ReconciliationCalls);
     }
 
     [Fact]
@@ -2830,6 +2924,7 @@ public sealed class SecurityAndUsageTests
         public long Available { get; set; }
         public bool ReserveCreated { get; set; } = true;
         public bool FailProviderCompletion { get; set; }
+        public bool FailProviderStarted { get; set; }
         public bool SettlementCancellationRequested { get; private set; }
         public List<string> Calls { get; } = [];
         public int ReserveCalls { get; private set; }
@@ -2894,6 +2989,8 @@ public sealed class SecurityAndUsageTests
         {
             ProviderStartedCalls++;
             Calls.Add("provider-started");
+            if (FailProviderStarted)
+                throw new InvalidOperationException("simulated dispatch marker failure");
             return Task.CompletedTask;
         }
 

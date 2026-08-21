@@ -46,6 +46,7 @@ public sealed class FirestoreAccountStore : IAccountStore
                     ["allowanceRulesVersion"] = AllowanceWallet.CurrentRulesVersion,
                     ["allowanceBuckets"] = new Dictionary<string, object>(),
                     ["activeRequests"] = 0L,
+                    ["activeLiveRequests"] = 0L,
                     ["rateWindowCount"] = 0L,
                     ["rateWindowStartedAt"] = now,
                     ["createdAt"] = now,
@@ -246,6 +247,8 @@ public sealed class FirestoreAccountStore : IAccountStore
             throw new InvalidOperationException("The request exceeds its approved task budget.");
 
         var now = _clock.UtcNow;
+        var cleanedActivityType = CleanActivityType(activityType);
+        var liveReservation = IsLiveActivity(cleanedActivityType);
         await RecoverExpiredReservationsAsync(caller.UserId, now, cancellationToken);
         var accountRef = Account(caller.UserId);
         var reservationRef = accountRef.Collection("reservations").Document(SafeId(requestId));
@@ -290,8 +293,19 @@ public sealed class FirestoreAccountStore : IAccountStore
             var allowanceAllocations = wallet.Reserve(reserveCreditMicros);
 
             var activeRequests = Long(account, "activeRequests");
-            if (activeRequests >= maxConcurrent)
-                throw new InvalidOperationException("Another AI request is already running for this account.");
+            var activeLiveRequests = Math.Min(
+                activeRequests,
+                Long(account, "activeLiveRequests"));
+            var activeOneShotRequests = Math.Max(0, activeRequests - activeLiveRequests);
+            if (liveReservation)
+            {
+                if (activeLiveRequests >= _options.MaxConcurrentLiveSessionsPerUser)
+                    throw new InvalidOperationException("Another Jarvis Live session is already running for this account.");
+            }
+            else if (activeOneShotRequests >= maxConcurrent)
+            {
+                throw new InvalidOperationException("Another one-shot AI request is already running for this account.");
+            }
 
             var windowStartedAt = Date(account, "rateWindowStartedAt");
             var rateCount = Long(account, "rateWindowCount");
@@ -338,7 +352,7 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ["reservedCreditMicros"] = reserveCreditMicros,
                 ["model"] = model,
                 ["pricingVersion"] = pricingVersion,
-                ["activityType"] = CleanActivityType(activityType),
+                ["activityType"] = cleanedActivityType,
                 ["globalUsageDate"] = globalUsageDate,
                 ["globalUsageShardId"] = globalShardId,
                 ["taskCapCreditMicros"] = taskCapCreditMicros,
@@ -392,6 +406,9 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ["allowanceRulesVersion"] = AllowanceWallet.CurrentRulesVersion,
                 ["allowanceBuckets"] = wallet.ToFirestoreMap(),
                 ["activeRequests"] = activeRequests + 1,
+                ["activeLiveRequests"] = liveReservation
+                    ? activeLiveRequests + 1
+                    : activeLiveRequests,
                 ["rateWindowStartedAt"] = Ts(windowStartedAt),
                 ["rateWindowCount"] = rateCount + 1,
                 ["updatedAt"] = Ts(now),
@@ -579,6 +596,7 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ["cycleUsageCreditMicros"] = Long(account, "cycleUsageCreditMicros") + charged,
                 ["creditDebtMicros"] = Long(account, "creditDebtMicros") + debtAdded,
                 ["activeRequests"] = Math.Max(0, Long(account, "activeRequests") - 1),
+                ["activeLiveRequests"] = RemainingLiveRequests(account, reservation),
                 ["updatedAt"] = Ts(now),
             };
             if (bucketedSettlement)
@@ -962,6 +980,7 @@ public sealed class FirestoreAccountStore : IAccountStore
                     ? wallet.ReservedCreditMicros
                     : Math.Max(0, Long(account, "reservedCreditMicros") - reserved),
                 ["activeRequests"] = Math.Max(0, Long(account, "activeRequests") - 1),
+                ["activeLiveRequests"] = RemainingLiveRequests(account, reservation),
                 ["updatedAt"] = Ts(now),
             };
             if (bucketedReservation)
@@ -1016,6 +1035,7 @@ public sealed class FirestoreAccountStore : IAccountStore
             transaction.Update(accountRef, new Dictionary<string, object>
             {
                 ["activeRequests"] = Math.Max(0, Long(account, "activeRequests") - 1),
+                ["activeLiveRequests"] = RemainingLiveRequests(account, reservation),
                 ["updatedAt"] = Ts(now),
             });
             transaction.Set(auditRef, new Dictionary<string, object>
@@ -2440,6 +2460,21 @@ public sealed class FirestoreAccountStore : IAccountStore
             || cleaned.Any(character => !(char.IsAsciiLetterOrDigit(character) || character is '_' or '-')))
             throw new ArgumentException("The activity type is invalid.", nameof(value));
         return cleaned;
+    }
+
+    private static bool IsLiveActivity(string? activityType) =>
+        string.Equals(activityType, "live_audio", StringComparison.Ordinal);
+
+    private static long RemainingLiveRequests(
+        IDictionary<string, object> account,
+        IDictionary<string, object> reservation)
+    {
+        var activeLive = Math.Min(
+            Long(account, "activeRequests"),
+            Long(account, "activeLiveRequests"));
+        return IsLiveActivity(String(reservation, "activityType", ""))
+            ? Math.Max(0, activeLive - 1)
+            : activeLive;
     }
 
     private DocumentReference Account(string userId) =>

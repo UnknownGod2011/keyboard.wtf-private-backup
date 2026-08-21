@@ -6,6 +6,9 @@ public static class DeploymentSafety
     {
         ArgumentNullException.ThrowIfNull(options);
         ValidateRazorpayKey(options.DeploymentEnvironment, razorpayKeyId);
+        if (options.MaxConcurrentRequestsPerUser < 1
+            || options.MaxConcurrentLiveSessionsPerUser < 1)
+            throw new InvalidOperationException("AI concurrency limits must remain positive.");
 
         if (options.DeploymentEnvironment == PaidDeploymentEnvironment.Production)
         {

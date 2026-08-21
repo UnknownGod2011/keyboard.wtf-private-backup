@@ -136,6 +136,7 @@ public sealed class AiUsageService
 
         VertexGenerateResult generated;
         ModelCandidateSnapshot selectedCandidate;
+        var providerDispatchMarked = false;
         var providerStarted = Stopwatch.GetTimestamp();
         double providerMs;
         try
@@ -144,6 +145,7 @@ public sealed class AiUsageService
                 caller.UserId,
                 request.RequestId,
                 cancellationToken);
+            providerDispatchMarked = true;
             generated = null!;
             selectedCandidate = null!;
             VertexRequestRejectedException? rejected = null;
@@ -195,16 +197,44 @@ public sealed class AiUsageService
         }
         catch (Exception)
         {
-            // Once a request may have reached Vertex, a timeout, disconnect, or
-            // cancellation is financially ambiguous. Preserve the reservation
-            // for reconciliation instead of issuing an unsafe automatic refund.
-            await _store.MarkReservationForReconciliationAsync(
-                caller.UserId,
-                request.RequestId,
-                cancellationToken.IsCancellationRequested
-                    ? "cancelled_after_provider_dispatch"
-                    : "provider_result_ambiguous",
-                CancellationToken.None);
+            if (!providerDispatchMarked)
+            {
+                try
+                {
+                    // No provider call is made before the durable dispatch marker.
+                    // Release the slot immediately so a failed marker write cannot
+                    // poison every later feature until maintenance runs.
+                    await _store.ReleaseReservationAsync(
+                        caller.UserId,
+                        request.RequestId,
+                        "provider_not_dispatched",
+                        CancellationToken.None);
+                }
+                catch (InvalidOperationException)
+                {
+                    // A lost Firestore acknowledgement may mean the marker did
+                    // commit. The store refuses an unsafe release in that case;
+                    // quarantine it and clear only the concurrency ownership.
+                    await _store.MarkReservationForReconciliationAsync(
+                        caller.UserId,
+                        request.RequestId,
+                        "provider_dispatch_marker_ambiguous",
+                        CancellationToken.None);
+                }
+            }
+            else
+            {
+                // Once a request may have reached Vertex, a timeout, disconnect,
+                // or cancellation is financially ambiguous. Preserve the funds
+                // for reconciliation while ending concurrency ownership now.
+                await _store.MarkReservationForReconciliationAsync(
+                    caller.UserId,
+                    request.RequestId,
+                    cancellationToken.IsCancellationRequested
+                        ? "cancelled_after_provider_dispatch"
+                        : "provider_result_ambiguous",
+                    CancellationToken.None);
+            }
             throw;
         }
 

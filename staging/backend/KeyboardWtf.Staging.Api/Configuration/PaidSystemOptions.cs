@@ -40,6 +40,7 @@ public sealed class PaidSystemOptions
     public int MaxRequestSeconds { get; init; } = 90;
     public int MaxRetries { get; init; } = 1;
     public int MaxConcurrentRequestsPerUser { get; init; } = 1;
+    public int MaxConcurrentLiveSessionsPerUser { get; init; } = 1;
     public int MaxRequestsPerMinutePerUser { get; init; } = 12;
     public long GlobalDailyCreditMicrosCap { get; init; } = 1_000_000_000;
     public long PerUserDailyCreditMicrosCap { get; init; } = 100_000_000;
