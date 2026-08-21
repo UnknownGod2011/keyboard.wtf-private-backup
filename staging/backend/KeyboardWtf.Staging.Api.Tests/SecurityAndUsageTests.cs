@@ -2479,6 +2479,15 @@ public sealed class SecurityAndUsageTests
             "projects/test/locations/test/publishers/google/models/test"));
 
     [Fact]
+    public void Live_proxy_accepts_the_keyboard_wtf_settings_tool() =>
+        Assert.Contains(
+            "open_keyboard_wtf_settings",
+            VertexLiveProxyService.RewriteSetup(
+                """{"setup":{"tools":[{"functionDeclarations":[{"name":"open_keyboard_wtf_settings"}]}]}}""",
+                "projects/test/locations/test/publishers/google/models/test"),
+            StringComparison.Ordinal);
+
+    [Fact]
     public void Live_proxy_rejects_a_non_setup_first_message() =>
         Assert.Throws<ArgumentException>(() => VertexLiveProxyService.RewriteSetup(
             """{"clientContent":{"turnComplete":true}}""",

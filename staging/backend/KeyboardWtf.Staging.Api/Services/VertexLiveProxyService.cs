@@ -41,7 +41,7 @@ public sealed class VertexLiveProxyService
     };
     private static readonly HashSet<string> AllowedToolNames = new(StringComparer.Ordinal)
     {
-        "open_app", "open_folder", "open_path", "open_url", "window_action", "browser_action",
+        "open_app", "open_keyboard_wtf_settings", "open_folder", "open_path", "open_url", "window_action", "browser_action",
         "web_search", "browser_automation", "browser_automation_status", "browser_automation_control",
         "get_desktop_context", "get_clipboard_text", "get_selected_text", "replace_selected_text",
         "type_text", "press_key", "search_files", "save_note", "add_todo", "list_todos",
