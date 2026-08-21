@@ -1531,7 +1531,9 @@ let paidLastSignInState = 'idle';
       scrollToSection(id, false, false);
     }
   });
-  new ResizeObserver(scheduleScrollSpy).observe(mainEl);
+  const layoutObserver = new ResizeObserver(scheduleScrollSpy);
+  layoutObserver.observe(mainEl);
+  sectionById.forEach(section => layoutObserver.observe(section));
   window.refreshSettingsScrollSpy = scheduleScrollSpy;
   window.syncSettingsRoute = () => {
     const id = initialRoute || resolveRoute(location.hash);

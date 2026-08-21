@@ -39,6 +39,8 @@ public sealed class FinalPolishRegressionTests : IDisposable
         Assert.Contains("let initialRoute = resolveRoute(location.hash);", html, StringComparison.Ordinal);
         Assert.Contains("if (initialRoute)", html, StringComparison.Ordinal);
         Assert.Contains("window.finishInitialSettingsRoute", html, StringComparison.Ordinal);
+        Assert.Contains("sectionById.forEach(section => layoutObserver.observe(section));", html,
+            StringComparison.Ordinal);
         Assert.Contains("loadSettings().finally(() => window.finishInitialSettingsRoute?.());", html,
             StringComparison.Ordinal);
     }
