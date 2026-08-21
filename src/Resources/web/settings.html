@@ -1449,6 +1449,7 @@ let paidLastSignInState = 'idle';
   navLinks.forEach(a => {
     a.addEventListener('click', e => {
       e.preventDefault();
+      initialRoute = undefined;
       const id = a.getAttribute('href').slice(1);
       scrollToSection(id, true, true);
     });
@@ -1469,6 +1470,13 @@ let paidLastSignInState = 'idle';
     // whichever section temporarily occupies the old scroll position.
     if (initialRoute) {
       setActive(initialRoute);
+      const target = sectionById.get(initialRoute);
+      if (target && target.offsetParent !== null) {
+        const mainTop = mainEl.getBoundingClientRect().top;
+        const delta = target.getBoundingClientRect().top - mainTop - 24;
+        if (Math.abs(delta) > 2)
+          mainEl.scrollTop += delta;
+      }
       return;
     }
     const atBottom = mainEl.scrollTop + mainEl.clientHeight >= mainEl.scrollHeight - 4;
@@ -1506,13 +1514,22 @@ let paidLastSignInState = 'idle';
   }
 
   mainEl.addEventListener('scroll', scheduleScrollSpy, { passive: true });
-  mainEl.addEventListener('wheel', () => { clickTarget = undefined; }, { passive: true });
-  mainEl.addEventListener('touchstart', () => { clickTarget = undefined; }, { passive: true });
+  const releaseExplicitRoute = () => {
+    initialRoute = undefined;
+    clickTarget = undefined;
+  };
+  mainEl.addEventListener('wheel', releaseExplicitRoute, { passive: true });
+  mainEl.addEventListener('touchstart', releaseExplicitRoute, { passive: true });
+  mainEl.addEventListener('pointerdown', releaseExplicitRoute, { passive: true });
+  mainEl.addEventListener('keydown', releaseExplicitRoute);
   if ('onscrollend' in mainEl)
     mainEl.addEventListener('scrollend', () => { clickTarget = undefined; scheduleScrollSpy(); });
   window.addEventListener('hashchange', () => {
     const id = resolveRoute(location.hash);
-    if (id) scrollToSection(id, false, false);
+    if (id) {
+      initialRoute = id;
+      scrollToSection(id, false, false);
+    }
   });
   new ResizeObserver(scheduleScrollSpy).observe(mainEl);
   window.refreshSettingsScrollSpy = scheduleScrollSpy;
@@ -1528,10 +1545,7 @@ let paidLastSignInState = 'idle';
       scrollToSection(id, false, false);
       if (location.hash !== '#' + id)
         history.replaceState(null, '', '#' + id);
-      setTimeout(() => {
-        initialRoute = undefined;
-        scheduleScrollSpy();
-      }, 200);
+      scheduleScrollSpy();
     }));
   };
   window.syncSettingsRoute();
