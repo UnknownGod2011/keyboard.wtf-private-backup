@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "channel": "stable",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "minimumVersion": "1.2.0",
-  "publishedAt": "2026-08-20T21:37:08.4069459+00:00",
-  "packageUrl": "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.4/keyboard-wtf-setup.exe",
-  "sha256": "a78a0dd7a37b2abdc2da075f74314e4dcf790be9b4af41b02af625c784cd1d17",
-  "sizeBytes": 84210395,
-  "releaseNotes": "# keyboard.wtf 1.4.4\n\nkeyboard.wtf 1.4.4 is a focused Windows overlay reliability update.\n\n- The shared Jarvis, Smart Writing, and Dictation overlay now creates and owns\n  its native window handle on the application\u0027s UI thread before background\n  account, provider, browser, or diagnostic work can publish status updates.\n- Background status updates are marshalled to that established UI handle. A\n  shutdown race now drops only the best-effort visual update instead of\n  surfacing a raw Microsoft .NET window-handle error.\n- Jarvis continuity, Smart Writing\u0027s bounded terminal states, billing,\n  authenticated usage metering, hotkeys, and Chrome Helper protocol behavior\n  are unchanged from 1.4.3.\n\nThe installer is not yet Authenticode-signed, so Windows may show an\nunknown-publisher warning. Download it only from https://keyboardwtf.com or the\nofficial keyboard.wtf GitHub Release.\n",
+  "publishedAt": "2026-08-21T01:32:39.0699403+00:00",
+  "packageUrl": "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.5/keyboard-wtf-setup.exe",
+  "sha256": "31ea683b229aec8c944ba0bbe161a903ed22cf850f4c4389dd5e320ebf0d218c",
+  "sizeBytes": 84222489,
+  "releaseNotes": "# keyboard.wtf 1.4.5\n\nkeyboard.wtf 1.4.5 is a focused writing, selection, workflow, Settings, and\nChrome Helper reliability update.\n\n- Smart Writing now sends the bounded captured speech audio through the\n  authenticated keyboard.wtf backend so Gemini can understand the original\n  words, names, terminology, pauses, and self-corrections. It returns only the\n  intended writing; Raw Dictation remains local and unmetered.\n- Explicit references to selected text force a fresh bounded capture first.\n  Only a recent selection from the same foreground window can be used when a\n  transient Windows capture fails.\n- Saved workflows now take precedence over learned aliases, and deletion\n  tombstones prevent obsolete workflow records or built-in fallbacks from\n  unexpectedly returning after restart.\n- Every supported keyboard.wtf Settings deep link now activates the matching\n  visible section. Unqualified \u201Copen Settings\u201D continues to mean Windows\n  Settings.\n- A healthy Chrome Helper command channel clears obsolete heartbeat errors.\n  The desktop remains compatible with the published 2.1.21 protocol, while the\n  2.1.23 Store package adds the same recovery cleanup in the extension.\n\nJarvis\u0027s immediate Gemini Live startup, continuous logical session, internal\nsocket rollover, user-controlled stop, provider-authoritative billing, and the\n1.4.4 UI-thread ownership fix are unchanged.\n\nThe installer is not yet Authenticode-signed, so Windows may show an\nunknown-publisher warning. Download it only from https://keyboardwtf.com or the\nofficial keyboard.wtf GitHub Release.\n",
   "keyId": "kwt-release-2026-01",
-  "signature": "InyqxD5h\u002BdHmdrk4hrU\u002BC0NAgq9fCuyVnsqwcg7KX7hT8UOkXa/dfAjL87YgTebpH/Ftf2m/gGEbUXY0QZHC1A=="
+  "signature": "QBxP8z/QNf15ptnyWNd1iK9f\u002B1dRztDIQXATJMnn\u002BlYs01d0PeKa0ogDvPXVkQ33n68alEk5bD9YKRQLkk9\u002BMQ=="
 }
