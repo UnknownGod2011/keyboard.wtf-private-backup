@@ -175,6 +175,23 @@ public sealed class LearnedMappingService
         }
     }
 
+    public int ForgetWorkflowReferences(string workflowName)
+    {
+        var normalized = FuzzyMatcher.Normalize(workflowName);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return 0;
+        lock (_lock)
+        {
+            var removed = _entries.RemoveAll(entry =>
+                entry.Kind == LearnedMappingKind.Workflow
+                && (FuzzyMatcher.Normalize(entry.Alias) == normalized
+                    || FuzzyMatcher.Normalize(entry.Target) == normalized));
+            if (removed > 0)
+                SaveLocked();
+            return removed;
+        }
+    }
+
     public int Clear(LearnedMappingKind? kind = null)
     {
         lock (_lock)

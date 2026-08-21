@@ -1389,6 +1389,19 @@ let paidLastSignInState = 'idle';
   const mainEl  = document.getElementById('main-scroll');
   const navLinks = Array.from(document.querySelectorAll('#sidebar-nav a'));
   const sectionById = new Map(Array.from(document.querySelectorAll('.main section[id]')).map(section => [section.id, section]));
+  const routeAliases = new Map([
+    ['general', 'voice-capture'],
+    ['account', 'account-billing'],
+    ['billing', 'account-billing'],
+    ['shortcuts', 'hotkeys'],
+    ['jarvis', 'assistant'],
+    ['browser-helper', 'browser-automation'],
+    ['how-to-use-jarvis', 'how-to-use'],
+    ['support', 'support-maintenance'],
+    ['maintenance', 'support-maintenance'],
+    ['text-to-speech', 'tts'],
+    ['whats-next', 'roadmap']
+  ]);
   let scrollFrame;
   let clickTarget;
   let clickReleaseTimer;
@@ -1404,23 +1417,39 @@ let paidLastSignInState = 'idle';
     navLinks.forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + id));
   }
 
+  function resolveRoute(hash) {
+    const requested = String(hash || '').replace(/^#/, '').trim().toLowerCase().replaceAll('_', '-');
+    const canonical = routeAliases.get(requested) || requested;
+    return sectionById.has(canonical) ? canonical : '';
+  }
+
+  function scrollToSection(id, smooth, writeHistory) {
+    const target = sectionById.get(id);
+    if (!target || target.offsetParent === null) return false;
+    clickTarget = id;
+    clearTimeout(clickReleaseTimer);
+    clickReleaseTimer = setTimeout(() => {
+      clickTarget = undefined;
+      scheduleScrollSpy();
+    }, smooth ? 900 : 80);
+    setActive(id);
+    if (writeHistory && location.hash !== '#' + id)
+      history.pushState(null, '', '#' + id);
+    const mainTop = mainEl.getBoundingClientRect().top;
+    const targetTop = target.getBoundingClientRect().top;
+    mainEl.scrollTo({
+      top: mainEl.scrollTop + (targetTop - mainTop) - 24,
+      behavior: smooth ? 'smooth' : 'auto'
+    });
+    return true;
+  }
+
   // Click: calculate offset relative to .main and scroll it directly
   navLinks.forEach(a => {
     a.addEventListener('click', e => {
       e.preventDefault();
       const id = a.getAttribute('href').slice(1);
-      const target = document.getElementById(id);
-      if (!target || target.offsetParent === null) return;
-      clickTarget = id;
-      clearTimeout(clickReleaseTimer);
-      clickReleaseTimer = setTimeout(() => {
-        clickTarget = undefined;
-        scheduleScrollSpy();
-      }, 900);
-      setActive(id);
-      const mainTop    = mainEl.getBoundingClientRect().top;
-      const targetTop  = target.getBoundingClientRect().top;
-      mainEl.scrollTo({ top: mainEl.scrollTop + (targetTop - mainTop) - 24, behavior: 'smooth' });
+      scrollToSection(id, true, true);
     });
   });
 
@@ -1435,7 +1464,10 @@ let paidLastSignInState = 'idle';
     const atBottom = mainEl.scrollTop + mainEl.clientHeight >= mainEl.scrollHeight - 4;
     if (atBottom) {
       clickTarget = undefined;
-      setActive(candidates[candidates.length - 1].id);
+      const activeId = candidates[candidates.length - 1].id;
+      setActive(activeId);
+      if (location.hash !== '#' + activeId)
+        history.replaceState(null, '', '#' + activeId);
       return;
     }
     if (clickTarget) {
@@ -1451,6 +1483,8 @@ let paidLastSignInState = 'idle';
       else break;
     }
     setActive(activeId);
+    if (location.hash !== '#' + activeId)
+      history.replaceState(null, '', '#' + activeId);
   }
 
   function scheduleScrollSpy() {
@@ -1466,9 +1500,18 @@ let paidLastSignInState = 'idle';
   mainEl.addEventListener('touchstart', () => { clickTarget = undefined; }, { passive: true });
   if ('onscrollend' in mainEl)
     mainEl.addEventListener('scrollend', () => { clickTarget = undefined; scheduleScrollSpy(); });
+  window.addEventListener('hashchange', () => {
+    const id = resolveRoute(location.hash);
+    if (id) scrollToSection(id, false, false);
+  });
   new ResizeObserver(scheduleScrollSpy).observe(mainEl);
   window.refreshSettingsScrollSpy = scheduleScrollSpy;
-  onScroll();
+  window.syncSettingsRoute = () => {
+    const id = resolveRoute(location.hash);
+    if (id && scrollToSection(id, false, false)) return;
+    scheduleScrollSpy();
+  };
+  window.syncSettingsRoute();
 })();
 
 // ── Settings ─────────────────────────────────────────────────────────────────
@@ -2467,7 +2510,7 @@ function renderPaidAccount(account) {
   [apiSection, aiSection, apiLink, aiLink].forEach(element => {
     if (element) element.style.display = hideByok ? 'none' : '';
   });
-  window.refreshSettingsScrollSpy?.();
+  window.syncSettingsRoute?.();
   if (!enabled) return;
 
   const browserAiHint = document.getElementById('browserAutomationAiHint');

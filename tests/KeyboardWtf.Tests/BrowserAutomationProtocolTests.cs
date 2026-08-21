@@ -678,6 +678,20 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Healthy_command_channel_does_not_surface_a_stale_bridge_error()
+    {
+        var error = BrowserHelperBridge.ResolveStatusError(
+            BrowserHelperProtocol.Version,
+            BrowserHelperProtocol.Version,
+            "https://example.test/",
+            "Keyboard.wtf native bridge heartbeat was stale.",
+            BrowserHelperProtocol.StoreExtensionId,
+            commandChannelReady: true);
+
+        Assert.Empty(error);
+    }
+
+    [Fact]
     public void Stale_content_script_is_distinguished_from_service_worker_mismatch()
     {
         Assert.Equal(

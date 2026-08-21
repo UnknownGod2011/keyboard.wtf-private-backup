@@ -87,6 +87,7 @@ internal sealed record PaidGenerateResponse(
     bool Verified);
 
 internal sealed record PaidInlineImage(string MimeType, string Data);
+internal sealed record PaidInlineAudio(string MimeType, string Data);
 
 internal sealed class PaidAccountService : IDisposable
 {
@@ -496,6 +497,42 @@ internal sealed class PaidAccountService : IDisposable
         object responseJsonSchema,
         IReadOnlyList<PaidInlineImage> images,
         string taskKind,
+        CancellationToken cancellationToken) =>
+        await GenerateCoreAsync(
+            prompt,
+            systemInstruction,
+            maxOutputTokens,
+            responseJsonSchema,
+            images,
+            null,
+            taskKind,
+            cancellationToken);
+
+    public async Task<PaidGenerateResponse> GenerateAudioAsync(
+        string prompt,
+        string systemInstruction,
+        int maxOutputTokens,
+        PaidInlineAudio audio,
+        string taskKind,
+        CancellationToken cancellationToken) =>
+        await GenerateCoreAsync(
+            prompt,
+            systemInstruction,
+            maxOutputTokens,
+            null,
+            null,
+            audio,
+            taskKind,
+            cancellationToken);
+
+    private async Task<PaidGenerateResponse> GenerateCoreAsync(
+        string prompt,
+        string systemInstruction,
+        int maxOutputTokens,
+        object responseJsonSchema,
+        IReadOnlyList<PaidInlineImage> images,
+        PaidInlineAudio audio,
+        string taskKind,
         CancellationToken cancellationToken)
     {
         EnsureEnabled();
@@ -519,6 +556,7 @@ internal sealed class PaidAccountService : IDisposable
                 taskKind,
                 responseJsonSchema,
                 images,
+                audio,
             },
             cancellationToken);
         var requestMs = (long)Stopwatch.GetElapsedTime(requestStarted).TotalMilliseconds;

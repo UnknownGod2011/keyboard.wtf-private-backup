@@ -274,7 +274,7 @@ public sealed class BrowserActionReceipt
 internal static class BrowserHelperProtocol
 {
     public const string Version = "2.1.21";
-    public const string PackageVersion = "2.1.22";
+    public const string PackageVersion = "2.1.23";
     public const string StoreExtensionId = "gojdebdikepkpapmnggeljneamjdigbh";
     public const string DevelopmentExtensionId = "gfndpohemndahmmeealkdobepjacblnf";
     public const string ExtensionId = StoreExtensionId;

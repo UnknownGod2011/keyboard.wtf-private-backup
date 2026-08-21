@@ -249,6 +249,7 @@ public interface IVertexAiClient
         int maxOutputTokens,
         JsonElement? responseJsonSchema,
         IReadOnlyList<InlineImageRequest>? images,
+        InlineAudioRequest? audio,
         CancellationToken cancellationToken);
 }
 

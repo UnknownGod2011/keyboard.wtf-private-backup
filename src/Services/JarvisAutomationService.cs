@@ -38,8 +38,10 @@ public sealed class JarvisAutomationService : IDisposable
     private readonly object _pendingLock = new();
     private readonly JarvisTimerService _timerService;
     private readonly bool _ownsTimerService;
+    private readonly object _selectionLock = new();
     private readonly string _todosPath = Path.Combine(SettingsService.AppDataDir, "jarvis-todos.json");
     private PendingJarvisAction _pending;
+    private SelectionSnapshot _lastSelection;
     private bool _executingApprovedAction;
     private bool _disposed;
 
@@ -1012,28 +1014,88 @@ public sealed class JarvisAutomationService : IDisposable
 
     private async Task<Dictionary<string, object>> GetSelectedTextAsync(CancellationToken token)
     {
-        var previous = ClipboardHelper.Capture();
-        var marker = $"keyboard-wtf-{Guid.NewGuid():N}";
-        string selected;
-        try
+        var context = CaptureSelectionContext();
+        foreach (var delayMs in SelectionCaptureRetryDelaysMs)
         {
-            ClipboardHelper.SetText(marker);
-            SendKeysOnUiThread("^c");
-            await Task.Delay(180, token);
-            selected = ClipboardHelper.GetText();
+            token.ThrowIfCancellationRequested();
+            var previous = ClipboardHelper.Capture();
+            var marker = $"keyboard-wtf-{Guid.NewGuid():N}";
+            string selected;
+            try
+            {
+                ClipboardHelper.SetText(marker);
+                SendKeysOnUiThread("^c");
+                await Task.Delay(delayMs, token);
+                selected = ClipboardHelper.GetText();
+            }
+            finally
+            {
+                ClipboardHelper.Restore(previous);
+            }
+            var currentContext = CaptureSelectionContext();
+            if (selected != marker
+                && !string.IsNullOrWhiteSpace(selected)
+                && SelectionContextsAreCompatible(context, currentContext))
+            {
+                var snapshot = new SelectionSnapshot(
+                    selected,
+                    DateTimeOffset.UtcNow,
+                    currentContext.Handle,
+                    currentContext.ProcessName,
+                    currentContext.WindowTitle);
+                lock (_selectionLock)
+                    _lastSelection = snapshot;
+                return SelectionResult(snapshot.Text, fresh: true);
+            }
         }
-        finally
-        {
-            ClipboardHelper.Restore(previous);
-        }
-        if (selected == marker || string.IsNullOrWhiteSpace(selected))
-            return Result(false, "No selected text was detected. Select text first and try again.", supported: false);
-        return Result(true, "Selected text captured.", extras: new()
-        {
-            ["text"] = Limit(selected, 6000),
-            ["truncated"] = selected.Length > 6000,
-        });
+
+        SelectionSnapshot cached;
+        lock (_selectionLock)
+            cached = _lastSelection;
+        if (CanUseCachedSelection(cached, context, DateTimeOffset.UtcNow))
+            return SelectionResult(cached.Text, fresh: false);
+
+        return Result(
+            false,
+            "I couldn't read the current selection. Reselect it and try once more.",
+            supported: false);
     }
+
+    private static Dictionary<string, object> SelectionResult(string text, bool fresh) =>
+        Result(true, fresh ? "Selected text captured." : "Used the recent selection from this same window.", extras: new()
+        {
+            ["text"] = Limit(text, 6000),
+            ["truncated"] = text.Length > 6000,
+            ["fresh"] = fresh,
+        });
+
+    private static SelectionContext CaptureSelectionContext()
+    {
+        var handle = GetForegroundWindow();
+        return new SelectionContext(handle, GetProcessName(handle), GetWindowTitle(handle));
+    }
+
+    internal static readonly int[] SelectionCaptureRetryDelaysMs = [160, 260];
+    internal static readonly TimeSpan SelectionCacheMaximumAge = TimeSpan.FromSeconds(90);
+
+    internal static bool CanUseCachedSelection(
+        SelectionSnapshot snapshot,
+        SelectionContext current,
+        DateTimeOffset now) =>
+        snapshot is not null
+        && !string.IsNullOrWhiteSpace(snapshot.Text)
+        && now - snapshot.CapturedAt <= SelectionCacheMaximumAge
+        && SelectionContextsAreCompatible(
+            new SelectionContext(snapshot.Handle, snapshot.ProcessName, snapshot.WindowTitle),
+            current);
+
+    internal static bool SelectionContextsAreCompatible(SelectionContext expected, SelectionContext current) =>
+        expected is not null
+        && current is not null
+        && expected.Handle != IntPtr.Zero
+        && expected.Handle == current.Handle
+        && string.Equals(expected.ProcessName, current.ProcessName, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(expected.WindowTitle, current.WindowTitle, StringComparison.Ordinal);
 
     private async Task<Dictionary<string, object>> ReplaceSelectedTextAsync(string text, CancellationToken token)
     {
@@ -1876,6 +1938,7 @@ public sealed class JarvisAutomationService : IDisposable
     private Dictionary<string, object> DeleteWorkflow(string name)
     {
         var removed = _settings.DeleteWorkflow(name);
+        _mappings.ForgetWorkflowReferences(name);
         return Logged("delete_workflow", name, removed, removed ? "Workflow deleted." : "Workflow not found.");
     }
 
@@ -2052,6 +2115,12 @@ public sealed class JarvisAutomationService : IDisposable
 
     private JarvisWorkflowSettings FindWorkflow(string name)
     {
+        var saved = FindSavedWorkflow(name);
+        if (saved != null)
+            return saved;
+        if (_settings.IsWorkflowDeleted(name))
+            return null;
+
         var learned = _mappings.FindExact(LearnedMappingKind.Workflow, name);
         learned ??= _mappings.Search(name, LearnedMappingKind.Workflow, 2)
             .Select(entry => new
@@ -2066,7 +2135,23 @@ public sealed class JarvisAutomationService : IDisposable
             .Select(item => item.Entry)
             .FirstOrDefault();
         if (learned != null)
+        {
+            if (_settings.IsWorkflowDeleted(learned.Alias)
+                || _settings.IsWorkflowDeleted(learned.Target))
+                return null;
             name = learned.Target;
+            saved = FindSavedWorkflow(name);
+            if (saved != null)
+                return saved;
+        }
+        var normalized = NormalizeWords(name);
+        if (_settings.IsWorkflowDeleted(normalized))
+            return null;
+        return BuiltInWorkflow(normalized);
+    }
+
+    private JarvisWorkflowSettings FindSavedWorkflow(string name)
+    {
         var normalized = NormalizeWords(name);
         var saved = _settings.Current.JarvisWorkflows?.FirstOrDefault(w =>
             string.Equals(NormalizeWords(w.Name), normalized, StringComparison.OrdinalIgnoreCase));
@@ -2085,7 +2170,11 @@ public sealed class JarvisAutomationService : IDisposable
             if (top.Score >= 0.9 || top.Score - secondScore >= 0.08)
                 return top.Workflow;
         }
-        return normalized switch
+        return null;
+    }
+
+    private static JarvisWorkflowSettings BuiltInWorkflow(string normalized) =>
+        normalized switch
         {
             "coding mode" => new JarvisWorkflowSettings
             {
@@ -2107,7 +2196,6 @@ public sealed class JarvisAutomationService : IDisposable
             },
             _ => null,
         };
-    }
 
     private Dictionary<string, object> Logged(
         string action,
@@ -2377,3 +2465,11 @@ public sealed class JarvisAutomationService : IDisposable
     [DllImport("user32.dll")] private static extern bool LockWorkStation();
     [DllImport("user32.dll")] private static extern void keybd_event(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
 }
+
+internal sealed record SelectionContext(IntPtr Handle, string ProcessName, string WindowTitle);
+internal sealed record SelectionSnapshot(
+    string Text,
+    DateTimeOffset CapturedAt,
+    IntPtr Handle,
+    string ProcessName,
+    string WindowTitle);

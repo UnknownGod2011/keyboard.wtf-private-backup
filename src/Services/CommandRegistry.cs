@@ -12,7 +12,13 @@ using KeyboardWtf.Services.BrowserAutomationV2;
 
 public sealed class CommandRegistry
 {
-    internal static readonly TimeSpan SmartWritingTimeout = TimeSpan.FromSeconds(35);
+    internal static readonly TimeSpan SmartWritingTimeout = TimeSpan.FromSeconds(40);
+    internal const string SmartWritingSystemInstruction =
+        "You are a speech-to-writing engine. Listen carefully to the attached speech and return only " +
+        "the text the user intends to type. Preserve names, terminology, meaning, wording, and tone as " +
+        "accurately as possible. Remove obvious filler words and abandoned self-corrections only where " +
+        "appropriate. Fix punctuation, capitalization, and basic grammar. Do not answer the user. Do not " +
+        "explain anything. Do not perform actions. Do not add commentary. Output only the final text to insert.";
     private readonly KeyboardWtfApp _app;
     private readonly VoiceCaptureService _capture;
     private readonly DestinationRouter _router;
@@ -341,6 +347,8 @@ public sealed class CommandRegistry
                 return await ControlBrowserAutomationAsync(args);
             if (toolName == "remember_link_alias")
                 return await RememberLinkAliasAsync(args, token);
+            if (toolName == "open_keyboard_wtf_settings")
+                return OpenKeyboardWtfSettings(GetString(args, "section"));
             if (toolName == "browser_action"
                 && _browserAutomation != null
                 && JarvisAutomationService.TryGetBrowserTabSelection(
@@ -518,7 +526,99 @@ public sealed class CommandRegistry
         }
     }
 
-    private async Task HandleSmartWritingAsync(string transcript)
+    private async Task HandleSmartWritingAsync(SmartWritingAudioCapture capture)
+    {
+        if (AiProviderRegistry.Current is not PaidCloudAiProvider paidProvider)
+        {
+            var localTranscript = await _capture.TranscribeCapturedAudioAsync(
+                capture.WavData,
+                preferFast: true,
+                _capture.CurrentOperationToken);
+            if (!string.IsNullOrWhiteSpace(localTranscript))
+                await HandleSmartWritingTranscriptAsync(localTranscript);
+            return;
+        }
+
+        ResetActionCancellation();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_actionCts.Token);
+        var timeoutLimit = SmartWritingTimeoutFor(capture.RecordingDurationMs);
+        timeout.CancelAfter(timeoutLimit);
+        var token = timeout.Token;
+        var operation = Guid.NewGuid().ToString("N")[..12];
+        var operationStarted = Stopwatch.GetTimestamp();
+        long polishMs = 0;
+        long insertionMs = 0;
+        try
+        {
+            KeyboardWtfState.IsProcessingAi = true;
+            KeyboardWtfState.SetUi(
+                VoiceUiPhase.Thinking,
+                "Polishing",
+                "Gemini is turning your speech into writing.");
+            AppLog.Info(
+                $"Smart Writing stage: operation={operation} stage=audio_ready recordingMs={capture.RecordingDurationMs} bytes={capture.WavData.Length}");
+            var polishStarted = Stopwatch.GetTimestamp();
+            var result = await paidProvider.ReformatAudioAsync(
+                capture.WavData,
+                SmartWritingSystemInstruction,
+                KeyboardWtfState.SelectedLanguage,
+                token);
+            polishMs = (long)Stopwatch.GetElapsedTime(polishStarted).TotalMilliseconds;
+            AppLog.Info(
+                $"Smart Writing stage: operation={operation} stage=audio_polish_completed elapsedMs={polishMs} characters={result?.Length ?? 0}");
+            token.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(result))
+                throw new InvalidOperationException("Gemini returned no text to insert.");
+            KeyboardWtfState.SetTranscript(result);
+            var insertionStarted = Stopwatch.GetTimestamp();
+            await DeliverTextAsync(result, token);
+            insertionMs = (long)Stopwatch.GetElapsedTime(insertionStarted).TotalMilliseconds;
+            AppLog.Info(
+                $"Smart Writing audio timing: operation={operation} recordingMs={capture.RecordingDurationMs} " +
+                $"polishMs={polishMs} insertionMs={insertionMs} totalAfterRecordingMs=" +
+                $"{(long)Stopwatch.GetElapsedTime(operationStarted).TotalMilliseconds}");
+        }
+        catch (OperationCanceledException) when (_actionCts.IsCancellationRequested)
+        {
+            AppLog.Info($"Smart Writing stage: operation={operation} stage=cancelled");
+            KeyboardWtfState.SetUi(VoiceUiPhase.Cancelled, "Cancelled", "Smart writing was stopped.");
+        }
+        catch (OperationCanceledException)
+        {
+            AppLog.Warning(
+                $"Smart Writing stage: operation={operation} stage=timeout limitMs={(long)timeoutLimit.TotalMilliseconds}");
+            KeyboardWtfState.SetUi(
+                VoiceUiPhase.Error,
+                "Smart Writing timed out",
+                "The request took too long and was stopped. Please try again.");
+            _notifications.Warning(
+                "Smart Writing timed out",
+                "The request took too long and was stopped. Please try again.");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning(ex, "Paid audio Smart Writing failed; no text was inserted");
+            KeyboardWtfState.SetUi(VoiceUiPhase.Error, "Smart Writing unavailable", ex.Message);
+            _notifications.Warning("Smart Writing unavailable", ex.Message);
+        }
+        finally
+        {
+            KeyboardWtfState.IsProcessingAi = false;
+            if (NeedsSmartWritingTerminalCleanup(KeyboardWtfState.UiPhase, KeyboardWtfState.UiTitle))
+            {
+                AppLog.Warning($"Smart Writing stage: operation={operation} stage=terminal_cleanup_recovery");
+                KeyboardWtfState.SetUi(
+                    VoiceUiPhase.Error,
+                    "Smart Writing did not finish",
+                    "The operation ended without a delivery result. Please try again.");
+            }
+        }
+    }
+
+    internal static TimeSpan SmartWritingTimeoutFor(long recordingDurationMs) =>
+        TimeSpan.FromSeconds(Math.Clamp(40d + recordingDurationMs / 20_000d, 40d, 55d));
+
+    private async Task HandleSmartWritingTranscriptAsync(string transcript)
     {
         ResetActionCancellation();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_actionCts.Token);
@@ -606,6 +706,24 @@ public sealed class CommandRegistry
     }
 
 #if KEYBOARD_WTF_PAID_PRODUCTION_CANDIDATE
+    internal async Task<object> RunSmartWritingAudioDiagnosticAsync(byte[] wavData)
+    {
+        if (wavData is null || wavData.Length is < 44 or > 10 * 1024 * 1024)
+            throw new ArgumentException("The diagnostic WAV is empty or too large.", nameof(wavData));
+        var durationMs = Math.Max(1, (long)((wavData.Length - 44L) * 1000d / 32_000d));
+        var started = Stopwatch.GetTimestamp();
+        await HandleSmartWritingAsync(new SmartWritingAudioCapture(wavData, durationMs));
+        return new
+        {
+            phase = KeyboardWtfState.UiPhase.ToString(),
+            title = KeyboardWtfState.UiTitle,
+            terminal = !NeedsSmartWritingTerminalCleanup(
+                KeyboardWtfState.UiPhase,
+                KeyboardWtfState.UiTitle),
+            elapsedMs = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+        };
+    }
+
     internal async Task<object> RunSmartWritingDiagnosticAsync(string transcript)
     {
         transcript = (transcript ?? "").Trim();
@@ -613,7 +731,7 @@ public sealed class CommandRegistry
             throw new ArgumentException("The diagnostic transcript must contain 1 to 1000 characters.", nameof(transcript));
 
         var started = Stopwatch.GetTimestamp();
-        await HandleSmartWritingAsync(transcript);
+        await HandleSmartWritingTranscriptAsync(transcript);
         return new
         {
             phase = KeyboardWtfState.UiPhase.ToString(),
@@ -688,8 +806,7 @@ public sealed class CommandRegistry
                 OpenNotepad();
                 break;
             case "open_settings":
-                _app.OpenSettings();
-                KeyboardWtfState.LastSendResult = "Opened settings";
+                OpenWindowsSettings();
                 break;
             case "open_url":
                 OpenUrl(plan.Content);
@@ -733,6 +850,27 @@ public sealed class CommandRegistry
         }
     }
 
+    private Dictionary<string, object> OpenKeyboardWtfSettings(string section)
+    {
+        var canonical = SettingsSectionRegistry.Resolve(section);
+        if (!string.IsNullOrWhiteSpace(section) && string.IsNullOrWhiteSpace(canonical))
+            return ToolResult(false, "That keyboard.wtf Settings section does not exist.", supported: false);
+        _app.OpenSettings(canonical);
+        KeyboardWtfState.LastSendResult = "Opened keyboard.wtf Settings";
+        return ToolResult(
+            true,
+            string.IsNullOrWhiteSpace(canonical)
+                ? "Opened keyboard.wtf Settings."
+                : $"Opened keyboard.wtf Settings at {canonical.Replace('-', ' ')}.");
+    }
+
+    private static Dictionary<string, object> OpenWindowsSettings()
+    {
+        Process.Start(new ProcessStartInfo { FileName = "ms-settings:", UseShellExecute = true });
+        KeyboardWtfState.LastSendResult = "Opened Windows Settings";
+        return ToolResult(true, "Opened Windows Settings.");
+    }
+
     private Dictionary<string, object> OpenAllowedApp(string appName)
     {
         var normalized = NormalizeAppName(appName);
@@ -751,9 +889,7 @@ public sealed class CommandRegistry
             case "file explorer":
                 return StartAllowedProcess("explorer.exe", "Opened File Explorer.");
             case "settings":
-                _app.OpenSettings();
-                KeyboardWtfState.LastSendResult = "Opened settings";
-                return ToolResult(true, "Opened keyboard.wtf settings.");
+                return OpenWindowsSettings();
             case "gmail":
                 return OpenSafeUrl("https://mail.google.com/mail/u/0/#inbox");
             case "whatsapp":
@@ -1364,6 +1500,7 @@ public sealed class CommandRegistry
         "get_desktop_context" => "Reading desktop context",
         "get_clipboard_text" => "Reading clipboard",
         "get_selected_text" => "Reading selected text",
+        "open_keyboard_wtf_settings" => "Opening keyboard.wtf Settings",
         "replace_selected_text" => "Replacing selected text",
         "type_text" => "Typing text",
         "press_key" => "Pressing key",

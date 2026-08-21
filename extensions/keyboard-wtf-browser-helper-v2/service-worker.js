@@ -228,6 +228,7 @@ function handleNativeResponse(message) {
     clearTimeout(pending.timer);
     lastNativeResponseAt = Date.now();
     nativeHandshakeReady = true;
+    lastError = "";
     pending.resolve(message);
   }
 }
@@ -285,6 +286,7 @@ async function collectHelperState() {
     state.controlCount = status.controlCount || 0;
     state.activeTabFresh = status.version === VERSION;
     state.commandChannelReady = state.activeTabFresh;
+    if (state.commandChannelReady) lastError = "";
     state.lastError = lastError;
   } else {
     state.lastError = lastError || "Chrome Helper content script is not ready on the active tab.";

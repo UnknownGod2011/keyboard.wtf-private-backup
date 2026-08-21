@@ -73,7 +73,7 @@ public sealed class ModelRoutingService : IModelRoutingService
             "browser-plan" or "browser-vision-recovery" => "browser_planner",
             "screen-guidance" => "screen_reasoning",
             "desktop-structured" => "agent_planner",
-            "desktop-reformat" => "selected_text",
+            "desktop-reformat" or "smart-writing-audio" => "selected_text",
             "desktop-health" => "fast_text",
             "live-audio" or "live_audio" => "live_audio",
             _ => "fast_text",

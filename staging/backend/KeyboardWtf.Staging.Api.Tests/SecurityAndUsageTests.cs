@@ -2760,6 +2760,7 @@ public sealed class SecurityAndUsageTests
             int maxOutputTokens,
             System.Text.Json.JsonElement? responseJsonSchema,
             IReadOnlyList<InlineImageRequest>? images,
+            InlineAudioRequest? audio,
             CancellationToken cancellationToken)
         {
             Calls++;

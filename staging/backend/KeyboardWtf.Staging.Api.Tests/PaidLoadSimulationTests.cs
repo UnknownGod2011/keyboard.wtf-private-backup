@@ -170,6 +170,7 @@ public sealed class PaidLoadSimulationTests(ITestOutputHelper output)
             int maxOutputTokens,
             System.Text.Json.JsonElement? responseJsonSchema,
             IReadOnlyList<InlineImageRequest>? images,
+            InlineAudioRequest? audio,
             CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref _calls);

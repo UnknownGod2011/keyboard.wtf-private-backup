@@ -44,9 +44,11 @@ public sealed record GenerateRequest(
     long? MaxCreditMicros = null,
     string? TaskKind = null,
     JsonElement? ResponseJsonSchema = null,
-    IReadOnlyList<InlineImageRequest>? Images = null);
+    IReadOnlyList<InlineImageRequest>? Images = null,
+    InlineAudioRequest? Audio = null);
 
 public sealed record InlineImageRequest(string MimeType, string Data);
+public sealed record InlineAudioRequest(string MimeType, string Data);
 
 public sealed record GenerateResponse(
     string RequestId,

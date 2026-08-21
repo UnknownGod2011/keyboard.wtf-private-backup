@@ -355,6 +355,7 @@ public sealed class BrowserHelperBridge : IDisposable
         var helperError = BrowserAutomationText.Truncate(
             String(helper, "lastError"),
             240);
+        var reportedCommandReady = heartbeatFresh && Bool(helper, "commandChannelReady");
 
         BrowserHelperStatus next;
         bool multipleHelpersDetected;
@@ -380,7 +381,8 @@ public sealed class BrowserHelperBridge : IDisposable
                     contentScriptVersion,
                     activeUrl,
                     helperError,
-                    extensionId);
+                    extensionId,
+                    reportedCommandReady);
             next = new BrowserHelperStatus
             {
                 NativeHostRegistered = true,
@@ -388,8 +390,7 @@ public sealed class BrowserHelperBridge : IDisposable
                 CommandChannelReady = extensionIdAllowed
                     && !multipleHelpersDetected
                     && versionsMatch
-                    && heartbeatFresh
-                    && Bool(helper, "commandChannelReady"),
+                    && reportedCommandReady,
                 ActiveTabFresh = heartbeatFresh,
                 MultipleHelpersDetected = multipleHelpersDetected,
                 ExpectedVersion = BrowserHelperProtocol.Version,
@@ -430,7 +431,8 @@ public sealed class BrowserHelperBridge : IDisposable
         string contentScriptVersion,
         string activeUrl,
         string helperError,
-        string extensionId = "")
+        string extensionId = "",
+        bool commandChannelReady = false)
     {
         if (!string.IsNullOrWhiteSpace(extensionId)
             && !BrowserHelperProtocol.IsAllowedExtensionId(extensionId))
@@ -465,7 +467,10 @@ public sealed class BrowserHelperBridge : IDisposable
             return $"Chrome Helper content script version mismatch. Expected {BrowserHelperProtocol.Version}.";
         }
 
-        return helperError ?? "";
+        // A prior disconnect may still be included in one heartbeat even after
+        // the native and content-script channels are demonstrably healthy.
+        // Do not surface that stale diagnostic as a current failure.
+        return commandChannelReady ? "" : helperError ?? "";
     }
 
     private static T DeserializeResult<T>(JsonElement result, string fallback)

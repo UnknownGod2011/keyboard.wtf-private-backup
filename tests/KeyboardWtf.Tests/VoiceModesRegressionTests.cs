@@ -13,6 +13,21 @@ public sealed class VoiceModesRegressionTests
         Assert.InRange(CommandRegistry.SmartWritingTimeout, TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(40));
 
     [Theory]
+    [InlineData(10_000, 40.5)]
+    [InlineData(30_000, 41.5)]
+    [InlineData(300_000, 55)]
+    public void Smart_writing_audio_timeout_is_bounded_for_short_and_long_recordings(
+        long recordingMs,
+        double expectedSeconds) =>
+        Assert.Equal(
+            TimeSpan.FromSeconds(expectedSeconds),
+            CommandRegistry.SmartWritingTimeoutFor(recordingMs));
+
+    [Fact]
+    public void Smart_writing_audio_capture_is_bounded_to_five_minutes() =>
+        Assert.Equal(300, SmartWritingAudioCapture.MaximumSeconds);
+
+    [Theory]
     [InlineData(VoiceUiPhase.Thinking, "Polishing", true)]
     [InlineData(VoiceUiPhase.Thinking, "Understanding command", false)]
     [InlineData(VoiceUiPhase.Done, "Copied instead", false)]

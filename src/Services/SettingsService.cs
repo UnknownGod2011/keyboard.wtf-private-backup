@@ -78,6 +78,7 @@ public sealed class AppSettings
     public AssistantTone AssistantTone { get; set; } = AssistantTone.Balanced;
     public string GeminiVoice { get; set; } = "Kore";
     public List<JarvisWorkflowSettings> JarvisWorkflows { get; set; } = new();
+    public List<string> DeletedJarvisWorkflowNames { get; set; } = new();
     public bool StartWithWindows { get; set; } = true;
     public JarvisPermissionMode JarvisPermissionMode { get; set; } = JarvisPermissionMode.AlwaysAsk;
     public string PreferredBrowser { get; set; } = "";
@@ -191,6 +192,7 @@ public sealed class SettingsService
             Current.AssistantName = "Jarvis";
         Current.CustomPrompts ??= new Dictionary<string, string>();
         Current.JarvisWorkflows ??= new List<JarvisWorkflowSettings>();
+        Current.DeletedJarvisWorkflowNames ??= new List<string>();
         Current.UpdateChannel = string.Equals(Current.UpdateChannel, "beta", StringComparison.OrdinalIgnoreCase)
             ? "beta"
             : "stable";
@@ -378,6 +380,9 @@ public sealed class SettingsService
             throw new InvalidOperationException("A workflow needs at least one app, website, or folder.");
 
         Current.JarvisWorkflows ??= new List<JarvisWorkflowSettings>();
+        Current.DeletedJarvisWorkflowNames ??= new List<string>();
+        Current.DeletedJarvisWorkflowNames.RemoveAll(item =>
+            string.Equals(FuzzyMatcher.Normalize(item), FuzzyMatcher.Normalize(cleanName), StringComparison.Ordinal));
         var workflow = Current.JarvisWorkflows.FirstOrDefault(w =>
             string.Equals(w.Name, cleanName, StringComparison.OrdinalIgnoreCase));
         if (workflow == null)
@@ -395,11 +400,27 @@ public sealed class SettingsService
 
     public bool DeleteWorkflow(string name)
     {
+        var normalized = FuzzyMatcher.Normalize(name);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return false;
         var removed = Current.JarvisWorkflows?.RemoveAll(w =>
-            string.Equals(w.Name, name?.Trim(), StringComparison.OrdinalIgnoreCase)) > 0;
-        if (removed)
+            string.Equals(FuzzyMatcher.Normalize(w.Name), normalized, StringComparison.Ordinal)) > 0;
+        Current.DeletedJarvisWorkflowNames ??= new List<string>();
+        var tombstoneAdded = !Current.DeletedJarvisWorkflowNames.Any(item =>
+            string.Equals(FuzzyMatcher.Normalize(item), normalized, StringComparison.Ordinal));
+        if (tombstoneAdded)
+            Current.DeletedJarvisWorkflowNames.Add(CleanInline(name, 48));
+        if (removed || tombstoneAdded)
             Save();
-        return removed;
+        return removed || tombstoneAdded;
+    }
+
+    public bool IsWorkflowDeleted(string name)
+    {
+        var normalized = FuzzyMatcher.Normalize(name);
+        return !string.IsNullOrWhiteSpace(normalized)
+            && (Current.DeletedJarvisWorkflowNames ?? []).Any(item =>
+                string.Equals(FuzzyMatcher.Normalize(item), normalized, StringComparison.Ordinal));
     }
 
     public void SaveCustomPrompt(string destinationName, string prompt)

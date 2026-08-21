@@ -1,12 +1,12 @@
 # Smart Writing and Raw Dictation
 
-This document describes the Windows 1.4.4 production implementation. It is based on the code paths that ship in the desktop build, not on planned behavior.
+This document describes the Windows 1.4.5 production implementation. It is based on the code paths that ship in the desktop build, not on planned behavior.
 
 ## The three interaction modes
 
 | Mode | Default shortcut | Speech recognition | Paid AI | Delivery |
 |---|---|---|---|---|
-| Smart Writing | `Ctrl+Alt+K` | Local Vosk fast path | Yes: authenticated keyboard.wtf Cloud AI | Active field, clipboard, or ask each time |
+| Smart Writing | `Ctrl+Alt+K` | Gemini audio understanding through the authenticated keyboard.wtf backend | Yes | Active field, clipboard, or ask each time |
 | Raw Dictation | `Ctrl+Alt+D` | Local Vosk fast path | No | Active field, clipboard, or ask each time |
 | Jarvis | `Ctrl+Alt+Q` | Direct Gemini Live audio after hotkey activation | Yes, immediately after the user invokes Jarvis | Conversational response and supported actions |
 
@@ -16,7 +16,7 @@ The displayed shortcut is the shortcut Windows actually registered. If a shortcu
 
 `HotkeyService` dispatches Smart Writing and Dictation to `CommandRegistry`, which delegates recording to `VoiceCaptureService`. `AudioRecorderService` captures 16 kHz mono PCM through NAudio/WinMM. A configured microphone index is honored; `-1` uses WinMM `WAVE_MAPPER`, so the current Windows default input is followed rather than assuming device zero.
 
-The shortcut toggles recording. Silence detection or the maximum recording duration can also stop capture. The visible states are Listening, Transcribing, Polishing (Smart Writing only), Done, Cancelled, and Error. A microphone or Windows privacy failure is surfaced as an error and is never reported as success.
+The shortcut toggles recording. Raw Dictation may use silence detection; Smart Writing deliberately waits for the user to press the shortcut again (or cancel) so pauses between sentences do not truncate a recording. Smart Writing has a five-minute safety limit. The visible states are Listening, Transcribing/Understanding, Polishing (Smart Writing only), Done, Cancelled, and Error. A microphone or Windows privacy failure is surfaced as an error and is never reported as success.
 
 Jarvis does not run a Vosk transcription or local speech gate before Live starts. Pressing the dedicated Jarvis shortcut immediately creates one logical conversation, opens the microphone, and begins the authenticated Gemini Live connection. A short PCM pre-roll prevents first-word clipping while that connection is established. Recoverable provider or Cloud Run socket rollovers replace only the physical transport: the microphone, bounded in-memory context, and single user-visible Jarvis surface remain part of the same logical session until the user stops it.
 
@@ -32,9 +32,9 @@ The desktop packages the managed Vosk and Whisper runtimes plus the native Whisp
 
 Models are not read from a repository or developer-specific path.
 
-On first run the app downloads the small English Vosk model (about 40 MB) from the official Vosk model host, validates its minimum archive size and required directory structure, then loads it immediately. Smart Writing and Dictation can work as soon as Vosk is ready while the larger Whisper model downloads in the background. The Whisper Base/Small download is obtained from the upstream whisper.cpp model repository and validated against the upstream published SHA-1 before installation. Progress is shown in the existing model status UI. Partial downloads are removed and a later launch can retry; completed models are cached and are not downloaded every launch.
+On first run the app downloads the small English Vosk model (about 40 MB) from the official Vosk model host, validates its minimum archive size and required directory structure, then loads it immediately. Raw Dictation can work as soon as Vosk is ready while the larger Whisper model downloads in the background. The Whisper Base/Small download is obtained from the upstream whisper.cpp model repository and validated against the upstream published SHA-1 before installation. Progress is shown in the existing model status UI. Partial downloads are removed and a later launch can retry; completed models are cached and are not downloaded every launch.
 
-Vosk is the fast path used by Smart Writing and Raw Dictation. Whisper remains available for accuracy-oriented speech features/settings. No Python, .NET SDK, Visual Studio, FFmpeg, environment variable, or manual model path is required on a normal customer installation. Internet access is needed only for first-time model provisioning and paid/cloud features.
+Vosk is the fast local path used by Raw Dictation. The production Smart Writing path sends the captured audio through the paid backend; the legacy/BYOK build retains its prior local-transcript fallback. Whisper remains available for accuracy-oriented speech features/settings. No Python, .NET SDK, Visual Studio, FFmpeg, environment variable, or manual model path is required on a normal customer installation. Internet access is needed only for first-time model provisioning and paid/cloud features.
 
 ## Raw Dictation
 
@@ -49,26 +49,26 @@ Raw Dictation:
 
 ## Smart Writing
 
-Smart Writing uses the same local speech capture/transcription first. It then sends the transcript and the fixed polishing instruction through `PaidCloudAiProvider` to `PaidAccountService.GenerateAsync` with task kind `desktop-reformat`.
+Smart Writing records 16 kHz mono PCM WAV and sends that bounded audio plus a fixed output-only instruction through `PaidCloudAiProvider` to `PaidAccountService.GenerateAudioAsync` with task kind `smart-writing-audio`. Local Vosk preview text is not the semantic source for the production paid result, so a local recognition mistake cannot constrain Gemini's understanding of the original speech.
 
 The paid request path is:
 
 ```text
 verified desktop session
-  -> production /v1/ai/generate
+  -> production /v1/ai/generate (validated WAV inline audio)
   -> server entitlement and allowance check
   -> bounded reservation
   -> server-selected Vertex model
   -> provider usage metadata
   -> idempotent settlement
-  -> polished text
+  -> output-only intended writing
 ```
 
-The desktop does not receive a provider credential and does not decide its own UID, model price, token count, balance, or ledger entry. Smart Writing cancellation is passed to the authenticated HTTP request. If the account is signed out, revoked, has no usable entitlement/allowance, or the paid request fails, the production build reports the failure and inserts nothing; it does not misleadingly type the raw transcript as though Smart Writing succeeded.
+The backend accepts only a valid 16 kHz mono 16-bit PCM WAV between a brief utterance and five minutes, with a 10 MiB decoded limit. It reserves conservatively before dispatch and settles from provider usage metadata, including audio modality usage. The desktop does not receive a provider credential and does not decide its own UID, model price, token count, balance, or ledger entry. Smart Writing cancellation is passed to the authenticated HTTP request. If the account is signed out, revoked, has no usable entitlement/allowance, or the paid request fails, the production build reports the failure and inserts nothing; it does not misleadingly type a raw local transcript as though Smart Writing succeeded.
 
-While the user records, Smart Writing sends a no-cost `/v1/ready` warm-up to the authenticated backend. That warm-up cannot reserve allowance or invoke Vertex, and a warm-up failure never prevents local recording. Safe stage timings (recording, transcription, authorized cloud request, polishing, and insertion) are logged without recording the transcript or generated text. The paid polishing stage has a bounded timeout and every path ends in exactly one terminal success, clipboard fallback, failure, cancellation, or timeout state; a late response cannot paste after cancellation.
+While the user records, Smart Writing sends a no-cost `/v1/ready` warm-up to the authenticated backend. That warm-up cannot reserve allowance or invoke Vertex, and a warm-up failure never prevents recording. Safe stage timings (recording, authorized cloud request, provider completion, and insertion) are logged without recording audio, transcript, or generated text. The paid audio stage has a 40–55 second bounded post-recording timeout and every path ends in exactly one terminal success, clipboard fallback, failure, cancellation, or timeout state; a late response cannot paste after cancellation.
 
-The transformation instruction removes conversational filler and false starts where appropriate, honors explicit self-corrections, improves grammar/punctuation, and preserves meaning and tone. The returned text is the only text delivered.
+The transformation instruction tells Gemini to act only as a speech-to-writing engine: preserve names, terminology, meaning, wording, and tone; remove filler and abandoned self-corrections only where appropriate; improve basic grammar/punctuation; never answer, explain, perform actions, or add commentary. The returned text is the only text delivered.
 
 ## Text delivery, clipboard, and focus safety
 

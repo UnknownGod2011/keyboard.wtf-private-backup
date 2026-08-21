@@ -5,8 +5,8 @@ export const runtimeConfig = Object.freeze({
   downloads: Object.freeze({
     windows: Object.freeze({
       available: true,
-      version: "1.4.4",
-      url: "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.4/keyboard-wtf-setup.exe",
+      version: "1.4.5",
+      url: "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.5/keyboard-wtf-setup.exe",
       sha256: "a78a0dd7a37b2abdc2da075f74314e4dcf790be9b4af41b02af625c784cd1d17",
     }),
     macos: Object.freeze({

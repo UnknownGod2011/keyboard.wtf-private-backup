@@ -95,7 +95,7 @@ public sealed class KeyboardWtfApp : IDisposable
             _settings,
             _jarvisHistory,
             _learnedMappings,
-            OpenSettings,
+            () => OpenSettings(),
             _timers,
             _paidAccount,
             _browserHelper);
@@ -202,7 +202,8 @@ public sealed class KeyboardWtfApp : IDisposable
         _startupHotkeyRetryTimer.Start();
     }
 
-    public void OpenSettings() => WebSettingsService.Instance.OpenInBrowser();
+    public void OpenSettings(string section = "") =>
+        WebSettingsService.Instance.OpenInBrowser(SettingsSectionRegistry.Resolve(section));
 
     private async Task InitializePaidAccountAsync()
     {

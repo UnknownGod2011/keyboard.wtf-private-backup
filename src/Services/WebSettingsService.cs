@@ -912,6 +912,7 @@ public sealed class WebSettingsService : IDisposable
             using var doc = JsonDocument.Parse(body);
             var name = GetJsonString(doc.RootElement, "name");
             var removed = _settings?.DeleteWorkflow(name) ?? false;
+            _learnedMappings?.ForgetWorkflowReferences(name);
             await WriteJson(resp, new
             {
                 ok = removed,
@@ -1652,9 +1653,20 @@ public sealed class WebSettingsService : IDisposable
         {
             using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
             using var document = JsonDocument.Parse(await reader.ReadToEndAsync());
-            var transcript = GetJsonString(document.RootElement, "transcript");
-            var result = await (_app?.Commands.RunSmartWritingDiagnosticAsync(transcript)
-                ?? Task.FromException<object>(new InvalidOperationException("Smart Writing is unavailable.")));
+            var audioBase64 = GetJsonString(document.RootElement, "audioBase64");
+            object result;
+            if (!string.IsNullOrWhiteSpace(audioBase64))
+            {
+                var wavData = Convert.FromBase64String(audioBase64);
+                result = await (_app?.Commands.RunSmartWritingAudioDiagnosticAsync(wavData)
+                    ?? Task.FromException<object>(new InvalidOperationException("Smart Writing is unavailable.")));
+            }
+            else
+            {
+                var transcript = GetJsonString(document.RootElement, "transcript");
+                result = await (_app?.Commands.RunSmartWritingDiagnosticAsync(transcript)
+                    ?? Task.FromException<object>(new InvalidOperationException("Smart Writing is unavailable.")));
+            }
             await WriteJson(resp, new { ok = true, result });
         }
         catch (Exception ex)

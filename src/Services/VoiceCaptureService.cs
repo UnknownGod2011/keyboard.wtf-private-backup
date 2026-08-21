@@ -18,6 +18,7 @@ public sealed class VoiceCaptureService
     private CancellationTokenSource _silenceCts;
     private CancellationTokenSource _processingCts;
     private Func<string, Task> _completionHandler;
+    private Func<SmartWritingAudioCapture, Task> _audioCompletionHandler;
     private bool _preferFastRecognition;
     private VoskStreamingSession _streamingSession;
     private DateTime _lastPreviewUtc;
@@ -110,7 +111,10 @@ public sealed class VoiceCaptureService
         _autoStopCts?.Cancel();
         _autoStopCts = new CancellationTokenSource();
         _ = AutoStopAfterLimitAsync(mode, _autoStopCts.Token);
-        StartSilenceWatcher(mode);
+        // Smart Writing is explicitly stopped by the user. A pause between
+        // sentences must not discard the rest of a long-form recording.
+        if (mode != RecordingMode.VoiceAssistant)
+            StartSilenceWatcher(mode);
 
         _notifications.Info(ModeTitle(mode), "Listening");
         return true;
@@ -195,8 +199,8 @@ public sealed class VoiceCaptureService
     public Task ToggleDictationAsync(Func<string, Task> handleTranscript) =>
         ToggleModeAsync(RecordingMode.Dictate, handleTranscript, preferFast: true);
 
-    public Task ToggleSmartModeAsync(Func<string, Task> handleTranscript) =>
-        ToggleModeAsync(RecordingMode.VoiceAssistant, handleTranscript, preferFast: true);
+    internal Task ToggleSmartModeAsync(Func<SmartWritingAudioCapture, Task> handleAudio) =>
+        ToggleAudioModeAsync(RecordingMode.VoiceAssistant, handleAudio);
 
     public Task ToggleCommandModeAsync(Func<string, Task> handleTranscript) =>
         ToggleModeAsync(RecordingMode.Command, handleTranscript, preferFast: true);
@@ -248,6 +252,8 @@ public sealed class VoiceCaptureService
         KeyboardWtfState.CurrentRecordingMode = RecordingMode.None;
         KeyboardWtfState.IsProcessing = false;
         KeyboardWtfState.IsProcessingAi = false;
+        _completionHandler = null;
+        _audioCompletionHandler = null;
         _deliveryTarget = null;
         KeyboardWtfState.LastSendResult = "Cancelled";
         KeyboardWtfState.SetUi(VoiceUiPhase.Cancelled, "Cancelled", "Nothing was typed or executed.");
@@ -291,6 +297,26 @@ public sealed class VoiceCaptureService
         }
     }
 
+    internal async Task<string> TranscribeCapturedAudioAsync(
+        byte[] wavData,
+        bool preferFast,
+        CancellationToken cancellationToken)
+    {
+        if (wavData is null || wavData.Length < 44)
+            return string.Empty;
+        var started = Stopwatch.GetTimestamp();
+        var transcript = await _speechRecognition.RecognizeFromWavAsync(
+            wavData,
+            cancellationToken,
+            preferFast);
+        transcript = await PostProcessTranscriptAsync(
+            transcript,
+            allowAiTranslation: true,
+            cancellationToken);
+        LastTranscriptionDurationMs = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        return transcript;
+    }
+
     internal static bool RecordingModeUsesAiPostProcessing(RecordingMode mode) =>
         mode != RecordingMode.Dictate;
 
@@ -330,7 +356,10 @@ public sealed class VoiceCaptureService
     {
         try
         {
-            await Task.Delay(TimeSpan.FromSeconds(KeyboardWtfState.MaxRecordingSeconds), token);
+            var maximumSeconds = mode == RecordingMode.VoiceAssistant
+                ? SmartWritingAudioCapture.MaximumSeconds
+                : KeyboardWtfState.MaxRecordingSeconds;
+            await Task.Delay(TimeSpan.FromSeconds(maximumSeconds), token);
             if (!token.IsCancellationRequested && KeyboardWtfState.IsRecording && KeyboardWtfState.CurrentRecordingMode == mode)
             {
                 _notifications.Warning("Auto-stopped", "Recording reached the configured limit.");
@@ -419,8 +448,34 @@ public sealed class VoiceCaptureService
 
         if (!KeyboardWtfState.IsRecording)
         {
+            _audioCompletionHandler = null;
             _completionHandler = handleTranscript;
             _preferFastRecognition = preferFast;
+            Start(mode);
+            return;
+        }
+
+        if (KeyboardWtfState.CurrentRecordingMode == mode)
+            await CompleteRecordingAsync();
+        else
+            _notifications.Warning("Already listening", "Finish or cancel the current voice mode first.");
+    }
+
+    private async Task ToggleAudioModeAsync(
+        RecordingMode mode,
+        Func<SmartWritingAudioCapture, Task> handleAudio)
+    {
+        if (KeyboardWtfState.IsProcessing || KeyboardWtfState.IsProcessingAi)
+        {
+            Cancel();
+            return;
+        }
+
+        if (!KeyboardWtfState.IsRecording)
+        {
+            _completionHandler = null;
+            _audioCompletionHandler = handleAudio;
+            _preferFastRecognition = false;
             Start(mode);
             return;
         }
@@ -438,13 +493,24 @@ public sealed class VoiceCaptureService
 
         try
         {
+            var mode = KeyboardWtfState.CurrentRecordingMode;
             var handler = _completionHandler;
-            var transcript = await StopAndTranscribeAsync(
-                updateTranscript: false,
-                preferFast: _preferFastRecognition,
-                keepProcessingUntilCompletionHandler: true);
-            if (!string.IsNullOrWhiteSpace(transcript) && handler != null)
-                await handler(transcript);
+            var audioHandler = _audioCompletionHandler;
+            if (mode == RecordingMode.VoiceAssistant && audioHandler != null)
+            {
+                var capture = StopAndCaptureSmartWritingAudio();
+                if (capture.WavData.Length >= 44)
+                    await audioHandler(capture);
+            }
+            else
+            {
+                var transcript = await StopAndTranscribeAsync(
+                    updateTranscript: false,
+                    preferFast: _preferFastRecognition,
+                    keepProcessingUntilCompletionHandler: true);
+                if (!string.IsNullOrWhiteSpace(transcript) && handler != null)
+                    await handler(transcript);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -459,11 +525,40 @@ public sealed class VoiceCaptureService
         finally
         {
             _completionHandler = null;
+            _audioCompletionHandler = null;
             _preferFastRecognition = false;
             _deliveryTarget = null;
             KeyboardWtfState.IsProcessing = false;
             Interlocked.Exchange(ref _autoCompleteInProgress, 0);
         }
+    }
+
+    private SmartWritingAudioCapture StopAndCaptureSmartWritingAudio()
+    {
+        if (!KeyboardWtfState.IsRecording)
+            return new SmartWritingAudioCapture([], 0);
+
+        _autoStopCts?.Cancel();
+        _silenceCts?.Cancel();
+        var wavData = _audioRecorder.StopRecording();
+        LastRecordingDurationMs = Math.Max(
+            0,
+            (long)(DateTime.UtcNow - _recordingStartUtc).TotalMilliseconds);
+        LastTranscriptionDurationMs = 0;
+        StopLivePreview();
+        KeyboardWtfState.IsRecording = false;
+        KeyboardWtfState.CurrentRecordingMode = RecordingMode.None;
+        KeyboardWtfState.ActiveQuickSendTarget = null;
+        KeyboardWtfState.IsProcessing = true;
+        Interlocked.Increment(ref _operationId);
+        _processingCts?.Cancel();
+        _processingCts?.Dispose();
+        _processingCts = new CancellationTokenSource();
+        KeyboardWtfState.SetUi(
+            VoiceUiPhase.Transcribing,
+            "Understanding speech",
+            "Gemini is listening to the recording.");
+        return new SmartWritingAudioCapture(wavData, LastRecordingDurationMs);
     }
 
     private static string ModeTitle(RecordingMode mode) => mode switch
@@ -559,4 +654,9 @@ public sealed class VoiceCaptureService
         reason = null;
         return true;
     }
+}
+
+internal sealed record SmartWritingAudioCapture(byte[] WavData, long RecordingDurationMs)
+{
+    public const int MaximumSeconds = 300;
 }

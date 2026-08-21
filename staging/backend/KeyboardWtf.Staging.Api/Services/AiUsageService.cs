@@ -5,6 +5,8 @@ using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Diagnostics;
 using System.Text.Json;
+using System.Buffers.Binary;
+using System.Text;
 
 namespace KeyboardWtf.Staging.Api.Services;
 
@@ -62,6 +64,7 @@ public sealed class AiUsageService
             && JsonSerializer.SerializeToUtf8Bytes(schema).Length > 50_000)
             throw new ArgumentException("The response schema is too large.");
         ValidateImages(request.Images);
+        var audio = ValidateAudio(request.Audio);
 
         var configurationStarted = Stopwatch.GetTimestamp();
         var catalogTask = _catalog.GetAsync(cancellationToken);
@@ -84,6 +87,26 @@ public sealed class AiUsageService
         // A modified client-controlled budget would either weaken accounting
         // or turn normal requests into confusing artificial failures.
         var taskCap = _options.DefaultTaskCreditMicrosCap;
+        if (audio.EstimatedTokens > 0)
+        {
+            var assumedAudioUsage = new ProviderUsage(
+                Math.Max(1, request.Prompt.Length + audio.EstimatedTokens),
+                request.MaxOutputTokens,
+                0,
+                0,
+                audio.EstimatedTokens,
+                audio.EstimatedTokens,
+                Math.Max(1, request.Prompt.Length + audio.EstimatedTokens) + request.MaxOutputTokens,
+                null,
+                InputAudioTokens: audio.EstimatedTokens);
+            var (_, estimatedAudioCharge) = _catalog.CalculateActualCost(
+                route.Candidates[0].Pricing,
+                assumedAudioUsage);
+            var estimatedWithMargin = checked(
+                estimatedAudioCharge + Math.Max(10_000, estimatedAudioCharge / 4));
+            if (estimatedWithMargin > taskCap)
+                throw new InvalidOperationException("The audio request exceeds the approved task budget.");
+        }
         // Reserve conservatively for visual inputs without persisting or logging image bytes.
         // 16K synthetic characters per image approximates a 4K-token visual observation.
         var reservationPrompt = request.Images is { Count: > 0 }
@@ -140,6 +163,7 @@ public sealed class AiUsageService
                         request.MaxOutputTokens,
                         request.ResponseJsonSchema,
                         request.Images,
+                        request.Audio,
                         timeout.Token);
                     selectedCandidate = candidate;
                     rejected = null;
@@ -319,4 +343,68 @@ public sealed class AiUsageService
         if (totalBytes > 8 * 1024 * 1024)
             throw new ArgumentException("Task images exceed the 8 MB request limit.");
     }
+
+    internal static ValidatedAudio ValidateAudio(InlineAudioRequest? audio)
+    {
+        if (audio is null)
+            return default;
+        if (!string.Equals(audio.MimeType, "audio/wav", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Smart Writing accepts only 16 kHz mono PCM WAV audio.");
+        if (string.IsNullOrWhiteSpace(audio.Data) || audio.Data.Length > 14_000_000)
+            throw new ArgumentException("Smart Writing audio is empty or too large.");
+
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromBase64String(audio.Data);
+        }
+        catch (FormatException)
+        {
+            throw new ArgumentException("Smart Writing audio is not valid base64.");
+        }
+        if (bytes.Length is < 44 or > 10 * 1024 * 1024)
+            throw new ArgumentException("Smart Writing audio is empty or exceeds the five-minute limit.");
+        if (!bytes.AsSpan(0, 4).SequenceEqual("RIFF"u8)
+            || !bytes.AsSpan(8, 4).SequenceEqual("WAVE"u8))
+            throw new ArgumentException("Smart Writing audio is not a valid WAV file.");
+
+        ushort format = 0;
+        ushort channels = 0;
+        ushort bitsPerSample = 0;
+        uint sampleRate = 0;
+        uint dataBytes = 0;
+        for (var offset = 12; offset + 8 <= bytes.Length;)
+        {
+            var chunkSize = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(offset + 4, 4));
+            var payloadOffset = offset + 8;
+            if (chunkSize > int.MaxValue || payloadOffset + (long)chunkSize > bytes.Length)
+                throw new ArgumentException("Smart Writing audio has a malformed WAV chunk.");
+            var chunk = Encoding.ASCII.GetString(bytes, offset, 4);
+            if (chunk == "fmt " && chunkSize >= 16)
+            {
+                format = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(payloadOffset, 2));
+                channels = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(payloadOffset + 2, 2));
+                sampleRate = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(payloadOffset + 4, 4));
+                bitsPerSample = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(payloadOffset + 14, 2));
+            }
+            else if (chunk == "data")
+            {
+                dataBytes = chunkSize;
+            }
+            var paddedSize = checked((int)chunkSize + ((int)chunkSize & 1));
+            offset = checked(payloadOffset + paddedSize);
+        }
+        if (format != 1 || channels != 1 || sampleRate != 16_000 || bitsPerSample != 16 || dataBytes == 0)
+            throw new ArgumentException("Smart Writing audio must be 16 kHz mono 16-bit PCM WAV.");
+
+        var seconds = dataBytes / (16_000d * 2d);
+        if (seconds <= 0.05 || seconds > 300.5)
+            throw new ArgumentException("Smart Writing audio must be between a brief utterance and five minutes.");
+        // Gemini audio tokenization is currently about 32 tokens/second. Forty
+        // is a server-side reservation estimate only; provider usageMetadata
+        // remains authoritative for settlement.
+        return new ValidatedAudio(seconds, checked((long)Math.Ceiling(seconds * 40d)));
+    }
+
+    internal readonly record struct ValidatedAudio(double Seconds, long EstimatedTokens);
 }

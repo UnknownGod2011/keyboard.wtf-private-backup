@@ -32,6 +32,7 @@ public sealed class VertexAiClient : IVertexAiClient
         int maxOutputTokens,
         JsonElement? responseJsonSchema,
         IReadOnlyList<InlineImageRequest>? images,
+        InlineAudioRequest? audio,
         CancellationToken cancellationToken)
     {
         var endpoint = BuildGenerateContentEndpoint(
@@ -45,6 +46,13 @@ public sealed class VertexAiClient : IVertexAiClient
             {
                 inlineData = new { mimeType = image.MimeType, data = image.Data },
             }));
+        }
+        if (audio is not null)
+        {
+            parts.Add(new
+            {
+                inlineData = new { mimeType = audio.MimeType, data = audio.Data },
+            });
         }
         var generationConfig = new Dictionary<string, object>
         {

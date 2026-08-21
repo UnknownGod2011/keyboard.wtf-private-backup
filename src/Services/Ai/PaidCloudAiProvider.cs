@@ -36,6 +36,24 @@ internal sealed class PaidCloudAiProvider : IStructuredAiProvider
         return response.Text;
     }
 
+    internal async Task<string> ReformatAudioAsync(
+        byte[] wavAudio,
+        string destinationPrompt,
+        string language,
+        CancellationToken cancellationToken = default)
+    {
+        if (wavAudio is null || wavAudio.Length < 44)
+            throw new ArgumentException("Smart Writing audio is empty.", nameof(wavAudio));
+        var response = await _account.GenerateAudioAsync(
+            "Convert the attached speech into the exact user-ready writing requested by the system instruction.",
+            $"{destinationPrompt}\nOutput in {(language == "auto" ? "the spoken language" : language)}.",
+            2048,
+            new PaidInlineAudio("audio/wav", Convert.ToBase64String(wavAudio)),
+            "smart-writing-audio",
+            cancellationToken);
+        return response.Text;
+    }
+
     public async Task<T> GenerateStructuredAsync<T>(
         string prompt,
         object responseSchema,
