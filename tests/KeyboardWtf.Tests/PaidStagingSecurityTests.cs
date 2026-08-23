@@ -647,6 +647,8 @@ public sealed class PaidStagingSecurityTests
             var handler = new DesktopLoginHandler();
             var browserLaunches = 0;
             string launchedUrl = null;
+            var callbackCompleted = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
             using var account = new PaidAccountService(
                 new PaidStagingConfiguration(
                     true,
@@ -661,18 +663,27 @@ public sealed class PaidStagingSecurityTests
                     Interlocked.Increment(ref browserLaunches);
                     _ = Task.Run(async () =>
                     {
-                        var request = await handler.LoginStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-                        var callback = new UriBuilder(request.CallbackUri);
-                        callback.Query = $"attempt=attempt-1&state={Uri.EscapeDataString(request.State)}&code={new string('a', 43)}";
-                        using var client = new HttpClient();
-                        using var response = await client.GetAsync(callback.Uri);
-                        response.EnsureSuccessStatusCode();
-                        handler.CallbackHtml = await response.Content.ReadAsStringAsync();
+                        try
+                        {
+                            var request = await handler.LoginStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                            var callback = new UriBuilder(request.CallbackUri);
+                            callback.Query = $"attempt=attempt-1&state={Uri.EscapeDataString(request.State)}&code={new string('a', 43)}";
+                            using var client = new HttpClient();
+                            using var response = await client.GetAsync(callback.Uri);
+                            response.EnsureSuccessStatusCode();
+                            handler.CallbackHtml = await response.Content.ReadAsStringAsync();
+                            callbackCompleted.TrySetResult(true);
+                        }
+                        catch (Exception ex)
+                        {
+                            callbackCompleted.TrySetException(ex);
+                        }
                     });
                 });
             await account.InitializeAsync();
 
             var result = await account.SwitchAccountAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            await callbackCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal("uid-1", result.UserId);
             Assert.Equal(1, handler.LogoutCalls);
