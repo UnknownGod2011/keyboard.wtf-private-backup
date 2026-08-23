@@ -180,7 +180,7 @@ public sealed class BrowserHelperBridge : IDisposable
     {
         var commandTimeout = timeout ?? TimeSpan.FromSeconds(35);
         await WaitForCommandChannelAsync(
-            action.Type == "activate_existing_tab",
+            IsServiceWorkerCommand(action.Type),
             token,
             commandTimeout < TimeSpan.FromSeconds(10)
                 ? commandTimeout
@@ -203,6 +203,10 @@ public sealed class BrowserHelperBridge : IDisposable
 
         return await completion.Task;
     }
+
+    internal static bool IsServiceWorkerCommand(string actionType) =>
+        actionType is "activate_existing_tab" or "begin_task" or "navigate"
+            or "open_tab" or "end_task" or "cancel_task";
 
     private async Task WaitForCommandChannelAsync(
         bool serviceWorkerOnly,

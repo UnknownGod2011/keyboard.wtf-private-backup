@@ -109,7 +109,9 @@ public sealed class JarvisAutomationService : IDisposable
         token.ThrowIfCancellationRequested();
         return toolName switch
         {
-            "open_app" => OpenApp(GetString(args, "app_name")),
+            "open_app" => OpenApp(
+                GetString(args, "app_name"),
+                GetString(args, "target_kind")),
             "open_url" => OpenUrl(GetString(args, "url"), GetString(args, "browser")),
             "open_folder" => await OpenFolderAsync(GetString(args, "folder"), token),
             "open_path" => await OpenPathAsync(GetString(args, "path"), token),
@@ -329,16 +331,37 @@ public sealed class JarvisAutomationService : IDisposable
         }
     }
 
-    private Dictionary<string, object> OpenApp(string appName)
+    private Dictionary<string, object> OpenApp(string appName, string targetKind = "")
     {
-        var name = NormalizeWords(appName);
+        var nativeOnly = IsExplicitNativeTarget(targetKind);
+        var resolverQuery = nativeOnly ? NormalizeNativeAppQuery(appName) : appName;
+        var name = NormalizeWords(resolverQuery);
         if (string.IsNullOrWhiteSpace(name))
             return Result(false, "Which app should I open?", needsClarification: true);
 
-        var learnedLink = _mappings.FindExact(LearnedMappingKind.Link, appName)
-            ?? _mappings.FindExact(LearnedMappingKind.Link, name);
-        if (learnedLink != null)
-            return OpenUrl(learnedLink.Target, "");
+        if (IsWindowsSettingsTarget(name))
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "ms-settings:",
+                UseShellExecute = true,
+            });
+            return Logged("open_app", "Windows Settings", true, "Opened Windows Settings.");
+        }
+
+        if (IsKeyboardWtfSettingsTarget(name))
+        {
+            _openSettings();
+            return Logged("open_app", "keyboard.wtf settings", true, "Opened keyboard.wtf settings.");
+        }
+
+        if (!nativeOnly)
+        {
+            var learnedLink = _mappings.FindExact(LearnedMappingKind.Link, appName)
+                ?? _mappings.FindExact(LearnedMappingKind.Link, name);
+            if (learnedLink != null)
+                return OpenUrl(learnedLink.Target, "");
+        }
 
         if (name is "downloads" or "download folder" or "downloads folder"
             or "documents" or "documents folder" or "pictures" or "pictures folder")
@@ -361,23 +384,17 @@ public sealed class JarvisAutomationService : IDisposable
             ["vercel"] = "https://vercel.com/",
             ["whatsapp"] = "https://web.whatsapp.com/",
         };
-        if (webApps.TryGetValue(name, out var webUrl))
+        if (!nativeOnly && webApps.TryGetValue(name, out var webUrl))
             return OpenUrl(webUrl, "");
-
-        if (name is "settings" or "keyboard settings" or "keyboard.wtf settings")
-        {
-            _openSettings();
-            return Logged("open_app", "keyboard.wtf settings", true, "Opened keyboard.wtf settings.");
-        }
         if (name is "camera" or "windows camera")
             return OpenCamera();
-        var resolution = _apps.Resolve(appName);
+        var resolution = _apps.Resolve(resolverQuery);
         if (resolution.Status == AppResolutionStatus.Found)
         {
             if (_apps.TryLaunch(resolution.Best, out var error))
                 return Logged(
                     "open_app",
-                    $"{appName} -> {resolution.Best.Name} ({resolution.Best.Source})",
+                    $"{resolverQuery} -> {resolution.Best.Name} ({resolution.Best.Source})",
                     true,
                     $"Opened {resolution.Best.Name}.",
                     extras: new()
@@ -386,14 +403,14 @@ public sealed class JarvisAutomationService : IDisposable
                         ["match_score"] = Math.Round(resolution.Best.Score, 3),
                         ["source"] = resolution.Best.Source,
                     });
-            return Logged("open_app", appName, false, $"I found {resolution.Best.Name}, but Windows could not open it: {error}", supported: false);
+            return Logged("open_app", resolverQuery, false, $"I found {resolution.Best.Name}, but Windows could not open it: {error}", supported: false);
         }
 
         if (resolution.Status == AppResolutionStatus.Ambiguous)
         {
             return Result(
                 false,
-                $"I found several possible apps for {appName}. Ask the user to choose one by name.",
+                $"I found several possible apps for {resolverQuery}. Ask the user to choose one by name.",
                 needsClarification: true,
                 extras: new()
                 {
@@ -407,8 +424,8 @@ public sealed class JarvisAutomationService : IDisposable
                 });
         }
 
-        if (string.Equals(
-            AppResolverService.CanonicalizeNaturalName(appName),
+        if (!nativeOnly && string.Equals(
+            AppResolverService.CanonicalizeNaturalName(resolverQuery),
             "Apple Music",
             StringComparison.OrdinalIgnoreCase))
         {
@@ -421,10 +438,36 @@ public sealed class JarvisAutomationService : IDisposable
             "open_app",
             name,
             false,
-            $"I could not find {appName}. I searched {resolution.SearchSummary}.",
+            nativeOnly
+                ? $"I could not find an installed {resolverQuery} application. I searched {resolution.SearchSummary}."
+                : $"I could not find {resolverQuery}. I searched {resolution.SearchSummary}.",
             supported: false,
             extras: new() { ["searched"] = resolution.SearchSummary });
     }
+
+    internal static bool IsExplicitNativeTarget(string targetKind) =>
+        NormalizeWords(targetKind) is "native" or "native app" or "app" or "application";
+
+    internal static string NormalizeNativeAppQuery(string value)
+    {
+        var query = Regex.Replace(
+            (value ?? "").Trim(),
+            @"^(?:open|launch|start)\s+",
+            "",
+            RegexOptions.IgnoreCase);
+        return Regex.Replace(
+            query,
+            @"\s+(?:native\s+)?(?:app|application)$",
+            "",
+            RegexOptions.IgnoreCase).Trim();
+    }
+
+    internal static bool IsWindowsSettingsTarget(string value) =>
+        NormalizeWords(value) is "settings" or "windows settings";
+
+    internal static bool IsKeyboardWtfSettingsTarget(string value) =>
+        NormalizeWords(value) is "keyboard.wtf settings" or "keyboard wtf settings"
+            or "jarvis settings" or "your settings";
 
     private Dictionary<string, object> OpenKnownFolder(string folder)
     {

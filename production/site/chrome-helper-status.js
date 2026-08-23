@@ -1,7 +1,7 @@
 const STORE_EXTENSION_ID = "gojdebdikepkpapmnggeljneamjdigbh";
 const FALLBACK_EXTENSION_ID = "gfndpohemndahmmeealkdobepjacblnf";
-const LATEST_PACKAGE_VERSION = "2.1.23";
-const SUPPORTED_PACKAGE_VERSIONS = new Set(["2.1.21", "2.1.23"]);
+const LATEST_PACKAGE_VERSION = "2.1.24";
+const SUPPORTED_PACKAGE_VERSIONS = new Set(["2.1.21", "2.1.24"]);
 const state = document.getElementById("chromeHelperState");
 const detail = document.getElementById("chromeHelperDetail");
 const check = document.getElementById("checkChromeHelper");

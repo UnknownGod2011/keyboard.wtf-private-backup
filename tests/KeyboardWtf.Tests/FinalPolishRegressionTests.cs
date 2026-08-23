@@ -45,6 +45,74 @@ public sealed class FinalPolishRegressionTests : IDisposable
             StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("settings", true, false)]
+    [InlineData("Windows Settings", true, false)]
+    [InlineData("keyboard.wtf settings", false, true)]
+    [InlineData("Jarvis settings", false, true)]
+    [InlineData("your settings", false, true)]
+    public void Settings_intent_keeps_windows_and_keyboard_wtf_targets_distinct(
+        string request,
+        bool windows,
+        bool keyboardWtf)
+    {
+        Assert.Equal(windows, JarvisAutomationService.IsWindowsSettingsTarget(request));
+        Assert.Equal(keyboardWtf, JarvisAutomationService.IsKeyboardWtfSettingsTarget(request));
+    }
+
+    [Theory]
+    [InlineData("native", true)]
+    [InlineData("app", true)]
+    [InlineData("application", true)]
+    [InlineData("auto", false)]
+    [InlineData("website", false)]
+    public void Explicit_app_intent_can_require_a_real_native_application(
+        string targetKind,
+        bool expected) =>
+        Assert.Equal(expected, JarvisAutomationService.IsExplicitNativeTarget(targetKind));
+
+    [Theory]
+    [InlineData("ChatGPT app", "ChatGPT")]
+    [InlineData("launch Visual Studio Code application", "Visual Studio Code")]
+    [InlineData("start Discord native app", "Discord")]
+    [InlineData("Calculator", "Calculator")]
+    public void Explicit_native_app_wording_is_removed_before_installed_app_resolution(
+        string request,
+        string expected) =>
+        Assert.Equal(expected, JarvisAutomationService.NormalizeNativeAppQuery(request));
+
+    [Theory]
+    [InlineData("close tab", false)]
+    [InlineData("close Chrome", false)]
+    [InlineData("thanks", false)]
+    [InlineData("thank you", false)]
+    [InlineData("goodbye", true)]
+    [InlineData("stop Jarvis", true)]
+    [InlineData("end chat", true)]
+    [InlineData("fuck off", true)]
+    public void Only_explicit_conversation_dismissal_ends_Jarvis(
+        string transcript,
+        bool expected) =>
+        Assert.Equal(expected, GeminiLiveConversationService.ShouldAutoEnd(transcript));
+
+    [Fact]
+    public void Live_prompt_routes_natural_current_screen_questions_to_fresh_vision()
+    {
+        var root = FindRepositoryRoot();
+        var source = File.ReadAllText(Path.Combine(
+            root,
+            "src",
+            "Services",
+            "GeminiLiveConversationService.cs"));
+
+        Assert.Contains("what the user is looking at", source, StringComparison.Ordinal);
+        Assert.Contains("must call inspect_screen", source, StringComparison.Ordinal);
+        Assert.Contains("Every new explicit current-screen request captures a fresh image", source,
+            StringComparison.Ordinal);
+        Assert.Contains("the foreground app name alone is not screen analysis", source,
+            StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Deleted_workflow_tombstone_survives_restart_and_is_cleared_by_explicit_resave()
     {

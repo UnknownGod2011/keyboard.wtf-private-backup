@@ -330,14 +330,35 @@ async function executeCommand(command) {
 
 async function beginTask(command) {
   const [current] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  if (!current?.id || !isNormalPage(current.url)) {
-    throw new Error("The active Chrome tab is not a normal http/https page.");
-  }
+  if (!current?.id) throw new Error("Chrome has no active tab.");
 
   ownTab(command.taskId, current.id);
   taskActiveTab.set(command.taskId, current.id);
+  if (!isNormalPage(current.url)) {
+    return protectedPageSnapshot(command.taskId, current);
+  }
   await beginTaskFrames(command.taskId, current.id, "Planning task");
   return await scanTab(command.taskId, current.id);
+}
+
+function protectedPageSnapshot(taskId, tab) {
+  return {
+    taskId,
+    windowId: tab.windowId,
+    tabId: tab.id,
+    url: tab.url || "",
+    title: tab.title || "New tab",
+    graphVersion: 0,
+    domEpoch: "protected",
+    fingerprint: "protected",
+    pageText: "The active tab is a protected or blank browser surface with no page controls. Choose navigate with a safe absolute http/https destination appropriate to the user's request; the existing blank tab can then become the task page.",
+    selectedText: "",
+    activeEditable: false,
+    activeEditorId: "",
+    activeEditorRole: "",
+    activeEditorName: "",
+    controls: []
+  };
 }
 
 async function observe(command) {

@@ -35,6 +35,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         public HashSet<int> ControlledTabs { get; } = new();
         public bool CurrentPageIntent { get; init; }
         public int InitialTabId { get; set; }
+        public bool InitialTabWasProtectedOrBlank { get; set; }
         public bool InitialTabIsEditableDestination { get; set; }
         public bool DestinationTabOpened { get; set; }
         public BrowserTaskState State { get; set; } = BrowserTaskState.Queued;
@@ -361,6 +362,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             // opens one task-owned tab from this known same-window context.
             runtime.Page = await _bridge.BeginTaskAsync(runtime.TaskId, useCurrentTab: true, token);
             runtime.InitialTabId = runtime.Page.TabId;
+            runtime.InitialTabWasProtectedOrBlank = IsProtectedOrBlankUrl(runtime.Page.Url);
             runtime.InitialTabIsEditableDestination = currentPageIntent
                 && runtime.Page.ActiveEditable
                 && RequiresDestinationEditorTransfer(runtime.Request);
@@ -1995,10 +1997,15 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 Error = "The requested destination is not one of this task's live owned tabs.",
             };
         }
-        if (!runtime.CurrentPageIntent
-            && !runtime.DestinationTabOpened
-            && action.Type == "navigate"
-            && !SameHost(runtime.Page.Url, action.Url))
+        if (ShouldOpenDestinationInNewTab(
+                runtime.CurrentPageIntent,
+                runtime.DestinationTabOpened,
+                runtime.InitialTabWasProtectedOrBlank,
+                runtime.InitialTabId,
+                runtime.Page.TabId,
+                action.Type,
+                runtime.Page.Url,
+                action.Url))
         {
             effectiveActionType = "open_tab";
             runtime.History.Add("Opened the first requested website in one same-window task tab instead of replacing the user's starting tab.");
@@ -2360,6 +2367,29 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         AttachExpectedState(receipt, action);
         return receipt;
     }
+
+    internal static bool IsProtectedOrBlankUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return true;
+        return !Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps);
+    }
+
+    internal static bool ShouldOpenDestinationInNewTab(
+        bool currentPageIntent,
+        bool destinationTabOpened,
+        bool initialTabWasProtectedOrBlank,
+        int initialTabId,
+        int currentTabId,
+        string actionType,
+        string currentUrl,
+        string destinationUrl) =>
+        !currentPageIntent
+        && !destinationTabOpened
+        && actionType == "navigate"
+        && !(initialTabWasProtectedOrBlank && currentTabId == initialTabId)
+        && !SameHost(currentUrl, destinationUrl);
 
     internal static void AttachExpectedState(
         BrowserActionReceipt receipt,

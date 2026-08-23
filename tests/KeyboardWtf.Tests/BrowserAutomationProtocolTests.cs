@@ -677,6 +677,71 @@ public sealed class BrowserAutomationProtocolTests
             error);
     }
 
+    [Theory]
+    [InlineData("chrome://newtab", true)]
+    [InlineData("edge://newtab", true)]
+    [InlineData("about:blank", true)]
+    [InlineData("", true)]
+    [InlineData("https://example.test/", false)]
+    [InlineData("http://localhost:8090/", false)]
+    public void Protected_or_blank_tabs_are_identified_without_affecting_normal_pages(
+        string url,
+        bool expected) =>
+        Assert.Equal(expected, BrowserAutomationCoordinator.IsProtectedOrBlankUrl(url));
+
+    [Theory]
+    [InlineData("begin_task", true)]
+    [InlineData("navigate", true)]
+    [InlineData("open_tab", true)]
+    [InlineData("click", false)]
+    [InlineData("type", false)]
+    public void Only_service_worker_safe_commands_bypass_content_script_readiness(
+        string action,
+        bool expected) =>
+        Assert.Equal(expected, BrowserHelperBridge.IsServiceWorkerCommand(action));
+
+    [Fact]
+    public void Upcoming_helper_leases_a_protected_tab_then_requires_safe_https_navigation()
+    {
+        var root = FindRepositoryRoot();
+        var worker = File.ReadAllText(Path.Combine(
+            root,
+            "extensions",
+            "keyboard-wtf-browser-helper-v2",
+            "service-worker.js"));
+
+        Assert.Contains("return protectedPageSnapshot(command.taskId, current)", worker,
+            StringComparison.Ordinal);
+        Assert.Contains("Choose navigate with a safe absolute http/https destination", worker,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("chrome.tabs.update(current.id, { url: \"https://", worker,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Protected_blank_tab_is_reused_but_an_unrelated_normal_page_is_preserved()
+    {
+        Assert.False(BrowserAutomationCoordinator.ShouldOpenDestinationInNewTab(
+            currentPageIntent: false,
+            destinationTabOpened: false,
+            initialTabWasProtectedOrBlank: true,
+            initialTabId: 7,
+            currentTabId: 7,
+            actionType: "navigate",
+            currentUrl: "chrome://newtab",
+            destinationUrl: "https://www.youtube.com/"));
+
+        Assert.True(BrowserAutomationCoordinator.ShouldOpenDestinationInNewTab(
+            currentPageIntent: false,
+            destinationTabOpened: false,
+            initialTabWasProtectedOrBlank: false,
+            initialTabId: 7,
+            currentTabId: 7,
+            actionType: "navigate",
+            currentUrl: "https://devpost.com/",
+            destinationUrl: "https://www.youtube.com/"));
+    }
+
     [Fact]
     public void Healthy_command_channel_does_not_surface_a_stale_bridge_error()
     {
@@ -1556,7 +1621,8 @@ public sealed class BrowserAutomationProtocolTests
             "Services",
             "BrowserAutomationV2",
             "BrowserHelperBridge.cs"));
-        Assert.Contains("action.Type == \"activate_existing_tab\"", bridge);
+        Assert.Contains("IsServiceWorkerCommand(action.Type)", bridge);
+        Assert.Contains("actionType is \"activate_existing_tab\"", bridge);
         Assert.Contains("status.Connected", bridge);
         Assert.Contains(
             "Service-worker-only commands such as exact tab activation remain safe",
