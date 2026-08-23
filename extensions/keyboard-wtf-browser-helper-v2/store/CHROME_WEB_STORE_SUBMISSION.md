@@ -18,7 +18,7 @@ key so the unpacked fallback keeps its stable development identity.
 ## Local deliverables
 
 - Store ZIP:
-  `dist/chrome-web-store/keyboard-wtf-chrome-helper-2.1.22.zip`
+  `dist/chrome-web-store/keyboard-wtf-chrome-helper-2.1.23.zip`
 - Store listing: `store/STORE_LISTING.md`
 - Dashboard fields: `store/STORE_DASHBOARD_FIELDS.md`
 - Privacy disclosures: `store/PRIVACY_DISCLOSURES.md`
@@ -31,10 +31,10 @@ key so the unpacked fallback keeps its stable development identity.
 
 ## Approval boundary
 
-Do not upload the final package, submit it for review, publish it, change its
-visibility, or distribute it until the user explicitly approves that action.
+The owner has authorized uploading this package to the existing Store item and
+submitting the update for review. Do not create a new listing or change the
+existing item identity.
 
-Before submission, the privacy-policy and support URLs listed in the dashboard
-fields must be publicly reachable, and the reviewer must have access to the
-matching Windows companion build. Those website/installer changes are outside
-this checkpoint and remain intentionally unperformed.
+Before submission, verify the privacy-policy and support URLs listed in the
+dashboard fields are publicly reachable and use the matching Windows 1.4.5
+companion build.

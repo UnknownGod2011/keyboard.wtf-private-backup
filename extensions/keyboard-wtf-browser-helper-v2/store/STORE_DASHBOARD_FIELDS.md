@@ -5,9 +5,9 @@ Enter these values field by field. Do not submit at the end of this checklist.
 ## Package
 
 - Item ID: `gojdebdikepkpapmnggeljneamjdigbh`
-- ZIP: `dist/chrome-web-store/keyboard-wtf-chrome-helper-2.1.22.zip`
+- ZIP: `dist/chrome-web-store/keyboard-wtf-chrome-helper-2.1.23.zip`
 - Manifest version: 3
-- Extension version: 2.1.22
+- Extension version: 2.1.23
 
 ## Store listing
 
@@ -16,8 +16,8 @@ Enter these values field by field. Do not submit at the end of this checklist.
 - Summary: copy **Summary** from `STORE_LISTING.md`
 - Detailed description: copy **Detailed description** from `STORE_LISTING.md`
 - Category: Productivity
-- Homepage URL: `https://keyboard-wtf.vercel.app/`
-- Support URL: `https://keyboard-wtf.vercel.app/support`
+- Homepage URL: `https://keyboardwtf.com/`
+- Support URL: `https://keyboardwtf.com/support`
 - Icon: `store/assets/icon-128.png`
 - Screenshots:
   1. `store/assets/screenshot-01-connection-1280x800.png`
@@ -36,7 +36,7 @@ content, credentials, API keys, usernames, or personal notifications.
 - Remote code: No
 - Data categories: select the categories listed under **Data categories to
   disclose**
-- Privacy policy URL: `https://keyboard-wtf.vercel.app/privacy`
+- Privacy policy URL: `https://keyboardwtf.com/privacy`
 - Limited Use and data-use attestations: select only after comparing each
   dashboard statement with `PRIVACY_DISCLOSURES.md`
 

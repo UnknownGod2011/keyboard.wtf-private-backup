@@ -6,13 +6,15 @@ host.
 
 ## Prerequisite
 
-Install and launch keyboard.wtf 1.3.0 for Windows from:
+Install and launch keyboard.wtf 1.4.5 for Windows from:
 
-`https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.3.0/keyboard-wtf-setup.exe`
+`https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.5/keyboard-wtf-setup.exe`
 
-The Store package is Chrome Helper 2.1.22 and uses the backward-compatible 2.1.21 native/content protocol shown in Jarvis Settings.
+The Store package is Chrome Helper 2.1.23 and uses the backward-compatible 2.1.21 native/content protocol shown in keyboard.wtf Settings.
 
-No account or test credentials are required for the safe review flow.
+No extension account or test credentials are required for the connection test.
+AI-driven browser tasks require a signed-in keyboard.wtf account with an active
+app entitlement.
 
 ## Connect
 
@@ -28,7 +30,7 @@ No account or test credentials are required for the safe review flow.
    - Helper protocol: 2.1.21 / 2.1.21
    - Current tab: Available
 
-## Safe functional test
+## Optional entitled-app functional test
 
 1. Open `https://en.wikipedia.org/wiki/Alan_Turing`.
 2. Start Jarvis and ask: “What is on this page?”

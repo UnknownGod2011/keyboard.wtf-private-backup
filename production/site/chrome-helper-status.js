@@ -1,6 +1,7 @@
 const STORE_EXTENSION_ID = "gojdebdikepkpapmnggeljneamjdigbh";
 const FALLBACK_EXTENSION_ID = "gfndpohemndahmmeealkdobepjacblnf";
-const EXPECTED_VERSION = "2.1.22";
+const LATEST_PACKAGE_VERSION = "2.1.23";
+const SUPPORTED_PACKAGE_VERSIONS = new Set(["2.1.21", "2.1.23"]);
 const state = document.getElementById("chromeHelperState");
 const detail = document.getElementById("chromeHelperDetail");
 const check = document.getElementById("checkChromeHelper");
@@ -55,9 +56,9 @@ async function refreshChromeHelperStatus() {
       if (!installed) {
         state.textContent = "Not installed / Not connected";
         detail.textContent = "Install the helper, keep Jarvis running, then check again. Chrome may require one page refresh after installation.";
-      } else if (installed.version !== EXPECTED_VERSION) {
+      } else if (!SUPPORTED_PACKAGE_VERSIONS.has(installed.version)) {
         state.textContent = "Update required";
-        detail.textContent = `Helper ${installed.version || "unknown"} is installed; ${EXPECTED_VERSION} is required for website verification.`;
+        detail.textContent = `Helper ${installed.version || "unknown"} is installed; update to ${LATEST_PACKAGE_VERSION}.`;
       } else {
         state.textContent = "Not connected";
         detail.textContent = "The helper is installed but did not complete a live handshake. Start Jarvis, then use Retry/reconnect in Settings.";

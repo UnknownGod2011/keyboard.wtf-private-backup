@@ -1,7 +1,7 @@
 # keyboard.wtf Chrome Helper privacy policy
 
 Public preview source: `site/privacy.html`
-Planned URL: https://keyboard-wtf.vercel.app/privacy
+Production URL: https://keyboardwtf.com/privacy
 Last updated: July 29, 2026
 
 ## Scope and single purpose
