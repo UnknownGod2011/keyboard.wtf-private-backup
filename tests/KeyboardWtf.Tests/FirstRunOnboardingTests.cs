@@ -10,6 +10,25 @@ public sealed class FirstRunOnboardingTests : IDisposable
         $"keyboard-wtf-first-run-{Guid.NewGuid():N}");
 
     [Fact]
+    public void Repeated_startup_hotkey_failure_notifies_only_once()
+    {
+        var reported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        Assert.True(KeyboardWtfApp.MarkHotkeyFailureNotified(
+            reported,
+            "OpenSettings",
+            "Ctrl+Alt+, is already in use by Windows or another app."));
+        Assert.False(KeyboardWtfApp.MarkHotkeyFailureNotified(
+            reported,
+            "OpenSettings",
+            "Ctrl+Alt+, is already in use by Windows or another app."));
+        Assert.True(KeyboardWtfApp.MarkHotkeyFailureNotified(
+            reported,
+            "Jarvis",
+            "Ctrl+Alt+Q is already in use by Windows or another app."));
+    }
+
+    [Fact]
     public void Fresh_settings_are_first_run_but_saved_settings_are_not()
     {
         Directory.CreateDirectory(_root);

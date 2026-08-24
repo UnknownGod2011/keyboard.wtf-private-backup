@@ -21,6 +21,7 @@ public sealed class KeyboardWtfApp : IDisposable
     private readonly JarvisActionHistoryService _jarvisHistory = new();
     private readonly LearnedMappingService _learnedMappings = new();
     private readonly BrowserNativeHostInstaller _browserNativeHostInstaller = new();
+    private readonly HashSet<string> _reportedHotkeyFailures = new(StringComparer.OrdinalIgnoreCase);
 
     private NotificationService _notifications;
     private VoiceCaptureService _capture;
@@ -130,7 +131,13 @@ public sealed class KeyboardWtfApp : IDisposable
         if (_paidAccount.Enabled)
             _ = InitializePaidAccountAsync();
 
-        _hotkeys.RegistrationFailed += (name, reason) => _notifications.Warning("Hotkey unavailable", $"{name}: {reason}");
+        _hotkeys.RegistrationFailed += (name, reason) =>
+        {
+            if (MarkHotkeyFailureNotified(_reportedHotkeyFailures, name, reason))
+                _notifications.Warning("Hotkey unavailable", $"{name}: {reason}");
+            else
+                AppLog.Info($"Hotkey remains unavailable during bounded startup retry: {name}");
+        };
         _hotkeys.RegistrationFallbackUsed += (name, requested, fallback) =>
             _notifications.Warning(
                 "Hotkey conflict handled",
@@ -200,6 +207,15 @@ public sealed class KeyboardWtfApp : IDisposable
             }
         };
         _startupHotkeyRetryTimer.Start();
+    }
+
+    internal static bool MarkHotkeyFailureNotified(
+        ISet<string> reportedFailures,
+        string name,
+        string reason)
+    {
+        ArgumentNullException.ThrowIfNull(reportedFailures);
+        return reportedFailures.Add($"{name ?? ""}\u001f{reason ?? ""}");
     }
 
     public void OpenSettings(string section = "") =>

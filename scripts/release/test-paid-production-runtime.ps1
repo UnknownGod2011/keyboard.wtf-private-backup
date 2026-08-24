@@ -15,6 +15,16 @@ $localAppData = [IO.Path]::GetFullPath(
 $validationData = Join-Path $localAppData (
     "keyboard.wtf-release-validation-" + [Guid]::NewGuid().ToString("N"))
 $process = $null
+$nativeHostRegistry = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\wtf.keyboard.browser"
+$startupRegistry = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$priorNativeHostKeyExists = Test-Path -LiteralPath $nativeHostRegistry
+$priorNativeHostManifest = if ($priorNativeHostKeyExists) {
+    (Get-Item -LiteralPath $nativeHostRegistry).GetValue("")
+} else {
+    $null
+}
+$priorNativeHostExists = -not [string]::IsNullOrWhiteSpace($priorNativeHostManifest)
+$priorStartupCommand = (Get-Item -LiteralPath $startupRegistry).GetValue("keyboard.wtf")
 
 try {
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
@@ -31,11 +41,20 @@ try {
     $settingsPort = 0
     while ($null -eq $settings -and [DateTimeOffset]::UtcNow -lt $deadline) {
         Start-Sleep -Milliseconds 250
-        foreach ($port in 8090..8092) {
+        foreach ($port in 8090..8094) {
             try {
-                $settings = Invoke-RestMethod `
+                $candidateSettings = Invoke-RestMethod `
                     -Uri "http://localhost:$port/api/settings" `
                     -TimeoutSec 2
+                $reportedExecutable = [IO.Path]::GetFullPath(
+                    [string]$candidateSettings.startupExecutablePath)
+                if (-not [string]::Equals(
+                    $reportedExecutable,
+                    $executablePath,
+                    [StringComparison]::OrdinalIgnoreCase)) {
+                    continue
+                }
+                $settings = $candidateSettings
                 $settingsPort = $port
                 break
             }
@@ -57,6 +76,9 @@ try {
     if ($settings.paidAccount.emergencyByokEnabled -eq $true) {
         throw "Release flavor check failed: emergency BYOK is visible by default."
     }
+    if ($settings.browserAutomation.nativeHostRegistered -ne $true) {
+        throw "Release setup check failed: the Native Messaging host is not registered."
+    }
 
     [ordered]@{
         executable = $executablePath
@@ -64,6 +86,7 @@ try {
         paidAccountEnabled = $true
         signedIn = $false
         emergencyByokEnabled = $false
+        nativeHostRegistered = $true
         cleanDataCreated = Test-Path -LiteralPath $validationData
     } | ConvertTo-Json
 }
@@ -72,6 +95,30 @@ finally {
         $process.Kill($true)
         $process.WaitForExit(5000)
     }
+    Get-CimInstance Win32_Process -Filter "Name = 'keyboard.wtf.exe'" |
+        Where-Object {
+            $_.ExecutablePath -and
+            [string]::Equals(
+                [IO.Path]::GetFullPath($_.ExecutablePath),
+                $executablePath,
+                [StringComparison]::OrdinalIgnoreCase)
+        } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+
+    if ($priorNativeHostExists) {
+        New-Item -ItemType Directory -Path $nativeHostRegistry -Force | Out-Null
+        (Get-Item -LiteralPath $nativeHostRegistry).SetValue("", $priorNativeHostManifest)
+    }
+    elseif (Test-Path -LiteralPath $nativeHostRegistry) {
+        Remove-Item -LiteralPath $nativeHostRegistry -Force
+    }
+    if ($null -ne $priorStartupCommand) {
+        Set-ItemProperty -LiteralPath $startupRegistry -Name "keyboard.wtf" -Value $priorStartupCommand
+    }
+    else {
+        Remove-ItemProperty -LiteralPath $startupRegistry -Name "keyboard.wtf" -ErrorAction SilentlyContinue
+    }
+
     if (Test-Path -LiteralPath $validationData) {
         $resolved = [IO.Path]::GetFullPath($validationData)
         $insideLocalAppData = $resolved.StartsWith(
