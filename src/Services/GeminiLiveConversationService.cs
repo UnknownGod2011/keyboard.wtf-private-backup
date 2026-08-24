@@ -951,7 +951,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             MarkTurnStarted();
             KeyboardWtfState.SetUi(VoiceUiPhase.Listening, "You", text);
             _userTranscriptObserver?.Invoke(text);
-            if (ShouldAutoEnd(text))
+            if (ShouldAutoEnd(CurrentUserTranscript()))
                 ScheduleAutoEnd("Heard that you are done.");
         }
 

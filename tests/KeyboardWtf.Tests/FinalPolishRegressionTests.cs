@@ -87,6 +87,8 @@ public sealed class FinalPolishRegressionTests : IDisposable
     [InlineData("thanks", false)]
     [InlineData("thank you", false)]
     [InlineData("goodbye", true)]
+    [InlineData("good bye", true)]
+    [InlineData("go away", true)]
     [InlineData("stop Jarvis", true)]
     [InlineData("end chat", true)]
     [InlineData("fuck off", true)]
