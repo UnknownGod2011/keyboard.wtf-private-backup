@@ -36,6 +36,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         public bool CurrentPageIntent { get; init; }
         public int InitialTabId { get; set; }
         public bool InitialTabWasProtectedOrBlank { get; set; }
+        public bool BootstrapNavigationStabilized { get; set; }
         public bool InitialTabIsEditableDestination { get; set; }
         public bool DestinationTabOpened { get; set; }
         public BrowserTaskState State { get; set; } = BrowserTaskState.Queued;
@@ -1186,6 +1187,19 @@ public sealed class BrowserAutomationCoordinator : IDisposable
 
                 token.ThrowIfCancellationRequested();
                 SetState(runtime, BrowserTaskState.WaitingForPage, "Reading the updated page");
+                if (ShouldStabilizeProtectedBootstrapNavigation(
+                    runtime.InitialTabWasProtectedOrBlank,
+                    runtime.BootstrapNavigationStabilized,
+                    lastDecision.Action.Type,
+                    receipt))
+                {
+                    runtime.BootstrapNavigationStabilized = true;
+                    SetState(
+                        runtime,
+                        BrowserTaskState.WaitingForPage,
+                        "Waiting for the new web page to become ready");
+                    await Task.Delay(TimeSpan.FromSeconds(2), token);
+                }
                 runtime.Page = await _bridge.ObserveAsync(
                     runtime.TaskId,
                     receipt.TabId ?? runtime.Page.TabId,
@@ -2377,6 +2391,17 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         return !Uri.TryCreate(url, UriKind.Absolute, out var uri)
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps);
     }
+
+    internal static bool ShouldStabilizeProtectedBootstrapNavigation(
+        bool initialTabWasProtectedOrBlank,
+        bool alreadyStabilized,
+        string actionType,
+        BrowserActionReceipt receipt) =>
+        initialTabWasProtectedOrBlank
+        && !alreadyStabilized
+        && string.Equals(actionType, "navigate", StringComparison.Ordinal)
+        && receipt?.Ok == true
+        && receipt.Navigation;
 
     internal static bool ShouldOpenDestinationInNewTab(
         bool currentPageIntent,
