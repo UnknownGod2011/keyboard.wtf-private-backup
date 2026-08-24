@@ -29,6 +29,7 @@ $priorStartupCommand = (Get-Item -LiteralPath $startupRegistry).GetValue("keyboa
 try {
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $executablePath
+    $startInfo.WorkingDirectory = [IO.Path]::GetDirectoryName($executablePath)
     $startInfo.UseShellExecute = $false
     $startInfo.Environment["KEYBOARD_WTF_APPDATA_DIR"] = $validationData
     $process = [Diagnostics.Process]::Start($startInfo)
@@ -39,27 +40,28 @@ try {
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
     $settings = $null
     $settingsPort = 0
+    $settingsLog = Join-Path $validationData "logs\keyboard.wtf.log"
     while ($null -eq $settings -and [DateTimeOffset]::UtcNow -lt $deadline) {
         Start-Sleep -Milliseconds 250
-        foreach ($port in 8090..8094) {
+        if ($process.HasExited) {
+            throw "The paid-production executable exited before Settings became ready (exit code $($process.ExitCode))."
+        }
+        if ($settingsPort -eq 0 -and (Test-Path -LiteralPath $settingsLog)) {
+            $portLine = Get-Content -LiteralPath $settingsLog -Tail 80 |
+                Select-String -Pattern "WebSettingsService started on port ([0-9]+)" |
+                Select-Object -Last 1
+            if ($portLine -and $portLine.Matches.Count -gt 0) {
+                $settingsPort = [int]$portLine.Matches[0].Groups[1].Value
+            }
+        }
+        if ($settingsPort -gt 0) {
             try {
-                $candidateSettings = Invoke-RestMethod `
-                    -Uri "http://localhost:$port/api/settings" `
+                $settings = Invoke-RestMethod `
+                    -Uri "http://localhost:$settingsPort/api/settings" `
                     -TimeoutSec 2
-                $reportedExecutable = [IO.Path]::GetFullPath(
-                    [string]$candidateSettings.startupExecutablePath)
-                if (-not [string]::Equals(
-                    $reportedExecutable,
-                    $executablePath,
-                    [StringComparison]::OrdinalIgnoreCase)) {
-                    continue
-                }
-                $settings = $candidateSettings
-                $settingsPort = $port
-                break
             }
             catch {
-                # The service is still starting or this port belongs to no app.
+                # The exact process reported its port but is still starting.
             }
         }
     }
@@ -107,7 +109,7 @@ finally {
 
     if ($priorNativeHostExists) {
         New-Item -ItemType Directory -Path $nativeHostRegistry -Force | Out-Null
-        (Get-Item -LiteralPath $nativeHostRegistry).SetValue("", $priorNativeHostManifest)
+        Set-Item -LiteralPath $nativeHostRegistry -Value $priorNativeHostManifest
     }
     elseif (Test-Path -LiteralPath $nativeHostRegistry) {
         Remove-Item -LiteralPath $nativeHostRegistry -Force
