@@ -690,6 +690,57 @@ public sealed class BrowserAutomationProtocolTests
         Assert.Equal(expected, BrowserAutomationCoordinator.IsProtectedOrBlankUrl(url));
 
     [Theory]
+    [InlineData("chrome://newtab", true)]
+    [InlineData("chrome://newtab/", true)]
+    [InlineData("chrome://new-tab-page", true)]
+    [InlineData("edge://newtab/", true)]
+    [InlineData("about:blank", true)]
+    [InlineData("chrome://extensions", false)]
+    [InlineData("chrome://settings", false)]
+    [InlineData("https://example.test/", false)]
+    [InlineData("", false)]
+    public void Only_disposable_protected_tabs_are_eligible_for_service_worker_bootstrap(
+        string url,
+        bool expected) =>
+        Assert.Equal(expected, BrowserHelperBridge.IsDisposableProtectedOrBlankUrl(url));
+
+    [Fact]
+    public void Real_start_gate_allows_only_a_fresh_supported_helper_on_a_disposable_tab()
+    {
+        static BrowserHelperStatus Status(
+            bool connected = true,
+            bool disposable = true,
+            string extensionId = BrowserHelperProtocol.StoreExtensionId,
+            string serviceWorkerVersion = BrowserHelperProtocol.Version,
+            bool multipleHelpers = false,
+            int? windowId = 4,
+            int? tabId = 12) => new()
+        {
+            Connected = connected,
+            ActiveTabIsDisposableProtectedOrBlank = disposable,
+            ExtensionId = extensionId,
+            ServiceWorkerVersion = serviceWorkerVersion,
+            MultipleHelpersDetected = multipleHelpers,
+            WindowId = windowId,
+            TabId = tabId,
+        };
+
+        Assert.True(BrowserHelperBridge.CanBootstrapDisposableProtectedTab(Status()));
+        Assert.False(BrowserHelperBridge.CanBootstrapDisposableProtectedTab(
+            Status(connected: false)));
+        Assert.False(BrowserHelperBridge.CanBootstrapDisposableProtectedTab(
+            Status(disposable: false)));
+        Assert.False(BrowserHelperBridge.CanBootstrapDisposableProtectedTab(
+            Status(extensionId: "forged-extension-id")));
+        Assert.False(BrowserHelperBridge.CanBootstrapDisposableProtectedTab(
+            Status(serviceWorkerVersion: "0.0.0")));
+        Assert.False(BrowserHelperBridge.CanBootstrapDisposableProtectedTab(
+            Status(multipleHelpers: true)));
+        Assert.False(BrowserHelperBridge.CanBootstrapDisposableProtectedTab(
+            Status(tabId: null)));
+    }
+
+    [Theory]
     [InlineData("begin_task", true)]
     [InlineData("navigate", true)]
     [InlineData("open_tab", true)]

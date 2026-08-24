@@ -43,6 +43,7 @@ public sealed class BrowserHelperBridge : IDisposable
                     Connected = false,
                     CommandChannelReady = false,
                     ActiveTabFresh = false,
+                    ActiveTabIsDisposableProtectedOrBlank = false,
                     MultipleHelpersDetected = _status.MultipleHelpersDetected,
                     ExpectedVersion = _status.ExpectedVersion,
                     ServiceWorkerVersion = _status.ServiceWorkerVersion,
@@ -396,6 +397,8 @@ public sealed class BrowserHelperBridge : IDisposable
                     && versionsMatch
                     && reportedCommandReady,
                 ActiveTabFresh = heartbeatFresh,
+                ActiveTabIsDisposableProtectedOrBlank =
+                    IsDisposableProtectedOrBlankUrl(activeUrl),
                 MultipleHelpersDetected = multipleHelpersDetected,
                 ExpectedVersion = BrowserHelperProtocol.Version,
                 ServiceWorkerVersion = serviceWorkerVersion,
@@ -429,6 +432,28 @@ public sealed class BrowserHelperBridge : IDisposable
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(2)
             .Count() > 1;
+
+    internal static bool IsDisposableProtectedOrBlankUrl(string url)
+    {
+        var normalized = (url ?? "").Trim().TrimEnd('/').ToLowerInvariant();
+        return normalized is "about:blank"
+            or "chrome://newtab"
+            or "chrome://new-tab-page"
+            or "edge://newtab"
+            or "edge://new-tab-page";
+    }
+
+    internal static bool CanBootstrapDisposableProtectedTab(BrowserHelperStatus status) =>
+        status.Connected
+        && status.ActiveTabIsDisposableProtectedOrBlank
+        && !status.MultipleHelpersDetected
+        && BrowserHelperProtocol.IsAllowedExtensionId(status.ExtensionId)
+        && string.Equals(
+            status.ServiceWorkerVersion,
+            BrowserHelperProtocol.Version,
+            StringComparison.Ordinal)
+        && status.WindowId.HasValue
+        && status.TabId.HasValue;
 
     internal static string ResolveStatusError(
         string serviceWorkerVersion,

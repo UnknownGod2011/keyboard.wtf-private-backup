@@ -228,11 +228,13 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             }
         }
 
-        if (!_bridge.Status.CommandChannelReady)
+        var helperStatus = _bridge.Status;
+        if (!helperStatus.CommandChannelReady
+            && !BrowserHelperBridge.CanBootstrapDisposableProtectedTab(helperStatus))
         {
-            var error = string.IsNullOrWhiteSpace(_bridge.Status.LastError)
+            var error = string.IsNullOrWhiteSpace(helperStatus.LastError)
                 ? "Existing Chrome Helper is not connected. Open a normal Chrome page, then use Reconnect Helper in Settings."
-                : _bridge.Status.LastError;
+                : helperStatus.LastError;
             return new BrowserAutomationStartResult
             {
                 Message = error,

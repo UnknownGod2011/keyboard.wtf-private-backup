@@ -76,6 +76,7 @@ public sealed class BrowserHelperStatus
     public bool Connected { get; init; }
     public bool CommandChannelReady { get; init; }
     public bool ActiveTabFresh { get; init; }
+    public bool ActiveTabIsDisposableProtectedOrBlank { get; init; }
     public bool MultipleHelpersDetected { get; init; }
     public string ExpectedVersion { get; init; } = BrowserHelperProtocol.Version;
     public string ServiceWorkerVersion { get; init; } = "";
