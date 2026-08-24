@@ -54,6 +54,7 @@ public sealed class FinalPolishRegressionTests : IDisposable
         Assert.Contains("id=\"main-scroll\"", html, StringComparison.Ordinal);
         Assert.Contains("document.getElementById('main-scroll')", html, StringComparison.Ordinal);
         Assert.Contains("settingsScroller.scrollTop = refreshScrollTop;", html, StringComparison.Ordinal);
+        Assert.Contains("window.refreshSettingsScrollSpy?.();", html, StringComparison.Ordinal);
         Assert.DoesNotContain("document.querySelector('main')", html, StringComparison.Ordinal);
     }
 
