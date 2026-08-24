@@ -1361,6 +1361,8 @@ public sealed class CommandRegistry
             ["can_resume"] = status.CanResume,
             ["can_cancel"] = status.CanCancel,
             ["vision_recovery"] = status.VisionRecovery,
+            ["intervention_kind"] = status.InterventionKind,
+            ["intervention_reason"] = status.InterventionReason,
             ["result"] = status.ResultSummary,
             ["last_error"] = status.LastError,
             ["helper_connected"] = helper.CommandChannelReady,
@@ -1394,7 +1396,7 @@ public sealed class CommandRegistry
         {
             "pause" => _browserAutomation.Pause(),
             "resume" => _browserAutomation.Resume(),
-            "cancel" => await _browserAutomation.CancelAsync(),
+            "cancel" => await _browserAutomation.CancelAsync(announceOutcome: false),
             "guide" => AddGuidance(guidance),
             _ => false,
         };

@@ -1450,6 +1450,8 @@ public sealed class WebSettingsService : IDisposable
                 canResume = task.CanResume,
                 canCancel = task.CanCancel,
                 visionRecovery = task.VisionRecovery,
+                interventionKind = task.InterventionKind,
+                interventionReason = task.InterventionReason,
                 lastError = task.LastError,
                 outcome = task.Outcome?.ToString(),
                 resultSummary = task.ResultSummary,

@@ -55,6 +55,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         public bool UserPaused { get; set; }
         public string CancellationReason { get; set; } = "";
         public BrowserTaskState? LastAnnouncedState { get; set; }
+        public bool SuppressCancellationAnnouncement { get; set; }
+        public bool MissingTabRecoveryAttempted { get; set; }
         public Task Execution { get; set; }
     }
 
@@ -318,7 +320,9 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         }
     }
 
-    public async Task<bool> CancelAsync(string reason = "Cancelled by user")
+    public async Task<bool> CancelAsync(
+        string reason = "Cancelled by user",
+        bool announceOutcome = true)
     {
         Runtime runtime;
         lock (_sync)
@@ -328,6 +332,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 return false;
             runtime.UserPaused = false;
             runtime.CancellationReason = reason;
+            runtime.SuppressCancellationAnnouncement = !announceOutcome;
             SetState(runtime, BrowserTaskState.Cancelling, reason);
             runtime.Cancellation.Cancel();
             runtime.PauseGate.Resume();
@@ -2056,6 +2061,36 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 && SupportsSafeActionCapture(_bridge.Status.ServiceWorkerVersion),
         };
         var receipt = await _bridge.ExecuteAsync(request, token);
+        if (!receipt.Ok
+            && ShouldRecoverMissingTaskTab(
+                effectiveActionType,
+                receipt.Error,
+                runtime.MissingTabRecoveryAttempted))
+        {
+            runtime.MissingTabRecoveryAttempted = true;
+            runtime.History.Add(
+                "The controlled tab disappeared. Re-leasing the current Chrome window once and opening the requested destination without replacing its active page.");
+            SetState(runtime, BrowserTaskState.ReadingPage, "Recovering the closed browser task tab");
+
+            var recoveryAnchor = await _bridge.BeginTaskAsync(
+                runtime.TaskId,
+                useCurrentTab: true,
+                token);
+            runtime.Page = recoveryAnchor;
+            AddControlledTab(runtime, recoveryAnchor);
+            effectiveActionType = "open_tab";
+            request = new BrowserActionRequest
+            {
+                TaskId = runtime.TaskId,
+                Type = effectiveActionType,
+                WindowId = recoveryAnchor.WindowId,
+                TabId = recoveryAnchor.TabId,
+                GraphVersion = recoveryAnchor.GraphVersion,
+                DomEpoch = recoveryAnchor.DomEpoch,
+                Url = action.Url,
+            };
+            receipt = await _bridge.ExecuteAsync(request, token);
+        }
         LogActionReceipt(runtime.TaskId, receipt);
         if (effectiveActionType == "open_tab"
             && receipt.Ok
@@ -3620,13 +3655,17 @@ public sealed class BrowserAutomationCoordinator : IDisposable
     {
         if (runtime.LastAnnouncedState == state)
             return;
+        if (!ShouldAnnounceOutcome(state, runtime.SuppressCancellationAnnouncement))
+        {
+            runtime.LastAnnouncedState = state;
+            return;
+        }
 
         var spoken = state switch
         {
             BrowserTaskState.Completed or BrowserTaskState.CompletedWithNote =>
                 "Okay, the browser task is complete. The result should now be visible in Chrome.",
-            BrowserTaskState.NeedsUserAction =>
-                "Browser automation is paused and needs your help. Complete the required step in Chrome, then tell me to continue.",
+            BrowserTaskState.NeedsUserAction => BuildInterventionSpeech(runtime.CurrentAction),
             BrowserTaskState.Partial =>
                 "I completed part of the browser task, but stopped before the full result. Chrome is left at the useful stopping point.",
             BrowserTaskState.Blocked =>
@@ -3641,9 +3680,12 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             return;
 
         runtime.LastAnnouncedState = state;
-        var detail = state is BrowserTaskState.Completed or BrowserTaskState.CompletedWithNote
-            ? runtime.ResultSummary
-            : runtime.LastError;
+        var detail = state switch
+        {
+            BrowserTaskState.Completed or BrowserTaskState.CompletedWithNote => runtime.ResultSummary,
+            BrowserTaskState.NeedsUserAction => runtime.CurrentAction,
+            _ => runtime.LastError,
+        };
         var announcement = new JarvisLifecycleAnnouncement
         {
             Source = "browser_automation",
@@ -3744,6 +3786,12 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 || runtime.State == BrowserTaskState.NeedsUserAction,
             CanCancel = !IsTerminal(runtime.State),
             VisionRecovery = runtime.VisionRecovery,
+            InterventionKind = runtime.State == BrowserTaskState.NeedsUserAction
+                ? ClassifyIntervention(runtime.CurrentAction)
+                : "",
+            InterventionReason = runtime.State == BrowserTaskState.NeedsUserAction
+                ? runtime.CurrentAction
+                : "",
             LastError = runtime.LastError,
             Outcome = runtime.Outcome,
             ResultSummary = runtime.ResultSummary,
@@ -3757,6 +3805,52 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             or BrowserTaskState.Blocked
             or BrowserTaskState.Cancelled
             or BrowserTaskState.Failed;
+
+    internal static bool ShouldAnnounceOutcome(
+        BrowserTaskState state,
+        bool suppressCancellationAnnouncement) =>
+        state != BrowserTaskState.Cancelled || !suppressCancellationAnnouncement;
+
+    internal static bool IsMissingTaskTabError(string error) =>
+        !string.IsNullOrWhiteSpace(error)
+        && (error.Contains("No tab with id", StringComparison.OrdinalIgnoreCase)
+            || error.Contains(
+                "tab is not owned by this browser task",
+                StringComparison.OrdinalIgnoreCase));
+
+    internal static bool ShouldRecoverMissingTaskTab(
+        string actionType,
+        string error,
+        bool recoveryAlreadyAttempted) =>
+        !recoveryAlreadyAttempted
+        && actionType is "navigate" or "open_tab"
+        && IsMissingTaskTabError(error);
+
+    internal static string ClassifyIntervention(string reason)
+    {
+        var value = reason ?? "";
+        if (Regex.IsMatch(value, @"\b(?:captcha|verification challenge)\b", RegexOptions.IgnoreCase))
+            return "captcha_required";
+        if (Regex.IsMatch(value, @"\b(?:sign[- ]?in|log[- ]?in|login|authenticated?)\b", RegexOptions.IgnoreCase))
+            return "login_required";
+        if (Regex.IsMatch(value, @"\b(?:confirm|confirmation|approve|approval)\b", RegexOptions.IgnoreCase))
+            return "confirmation_required";
+        if (Regex.IsMatch(value, @"\b(?:permission|allow access|grant access)\b", RegexOptions.IgnoreCase))
+            return "permission_required";
+        if (Regex.IsMatch(value, @"\b(?:which|choose|ambiguous|specify|provide the (?:url|target))\b", RegexOptions.IgnoreCase))
+            return "ambiguous_target";
+        if (Regex.IsMatch(value, @"\b(?:unsupported|not supported|cannot automate)\b", RegexOptions.IgnoreCase))
+            return "unsupported_interaction";
+        return "manual_step";
+    }
+
+    internal static string BuildInterventionSpeech(string reason)
+    {
+        var step = string.IsNullOrWhiteSpace(reason)
+            ? "Complete the required step in Chrome."
+            : Short(reason.Trim(), 320);
+        return $"Browser automation is paused. {step} Then say continue to resume the same task, or say cancel browser automation.";
+    }
 
     internal static bool ShouldForceVisualRecovery(
         string request,

@@ -224,6 +224,22 @@ public sealed class JarvisRoutingAndTtsRegressionTests
     }
 
     [Fact]
+    public void Needs_user_action_lifecycle_keeps_the_exact_intervention_and_same_task_contract()
+    {
+        var text = GeminiLiveConversationService.BuildLifecycleEventText(
+            new JarvisLifecycleAnnouncement
+            {
+                Source = "browser_automation",
+                State = "NeedsUserAction",
+                Detail = "Please sign in to Gmail in the controlled tab.",
+            });
+
+        Assert.Contains("Please sign in to Gmail", text);
+        Assert.Contains("same browser task remains paused", text);
+        Assert.Contains("say continue", text);
+    }
+
+    [Fact]
     public void Zero_control_form_completion_uses_one_bounded_visual_recovery()
     {
         var decision = new BrowserPlannerDecision

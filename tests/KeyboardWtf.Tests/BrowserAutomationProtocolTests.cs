@@ -8,6 +8,59 @@ namespace KeyboardWtf.Tests;
 
 public sealed class BrowserAutomationProtocolTests
 {
+    [Theory]
+    [InlineData("No tab with id: 42.")]
+    [InlineData("The requested tab is not owned by this browser task.")]
+    public void Missing_task_tab_failures_get_one_bounded_recovery(string error)
+    {
+        Assert.True(BrowserAutomationCoordinator.IsMissingTaskTabError(error));
+        Assert.False(BrowserAutomationCoordinator.IsMissingTaskTabError("The page control is stale."));
+        Assert.True(BrowserAutomationCoordinator.ShouldRecoverMissingTaskTab(
+            "navigate",
+            error,
+            recoveryAlreadyAttempted: false));
+        Assert.False(BrowserAutomationCoordinator.ShouldRecoverMissingTaskTab(
+            "navigate",
+            error,
+            recoveryAlreadyAttempted: true));
+        Assert.False(BrowserAutomationCoordinator.ShouldRecoverMissingTaskTab(
+            "click",
+            error,
+            recoveryAlreadyAttempted: false));
+    }
+
+    [Theory]
+    [InlineData("Please sign in to Gmail.", "login_required")]
+    [InlineData("Complete the CAPTCHA manually.", "captcha_required")]
+    [InlineData("Confirm the destructive delete.", "confirmation_required")]
+    [InlineData("Grant browser permission.", "permission_required")]
+    [InlineData("Provide the URL of the target service.", "ambiguous_target")]
+    [InlineData("Complete this step in Chrome.", "manual_step")]
+    public void Intervention_reason_is_structured_without_losing_the_exact_instruction(
+        string reason,
+        string expectedKind)
+    {
+        Assert.Equal(expectedKind, BrowserAutomationCoordinator.ClassifyIntervention(reason));
+        var speech = BrowserAutomationCoordinator.BuildInterventionSpeech(reason);
+        Assert.Contains(reason, speech);
+        Assert.Contains("same task", speech, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cancel browser automation", speech, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Voice_tool_cancellation_suppresses_only_the_duplicate_lifecycle_announcement()
+    {
+        Assert.False(BrowserAutomationCoordinator.ShouldAnnounceOutcome(
+            BrowserTaskState.Cancelled,
+            suppressCancellationAnnouncement: true));
+        Assert.True(BrowserAutomationCoordinator.ShouldAnnounceOutcome(
+            BrowserTaskState.Cancelled,
+            suppressCancellationAnnouncement: false));
+        Assert.True(BrowserAutomationCoordinator.ShouldAnnounceOutcome(
+            BrowserTaskState.NeedsUserAction,
+            suppressCancellationAnnouncement: true));
+    }
+
     [Fact]
     public void Native_message_frames_round_trip_without_truncation()
     {
