@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "channel": "stable",
-  "version": "1.4.8",
+  "version": "1.4.9",
   "minimumVersion": "1.2.0",
-  "publishedAt": "2026-08-24T09:42:34.8257649+00:00",
-  "packageUrl": "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.8/keyboard-wtf-setup.exe",
-  "sha256": "fe4b245b7416b2da86db3fcb942afec86a1dae94ce849d5dd01692c87609f65a",
-  "sizeBytes": 84223986,
-  "releaseNotes": "# keyboard.wtf 1.4.8\n\nkeyboard.wtf 1.4.8 is a focused browser-automation reliability update.\n\n- Jarvis browser tasks may now bootstrap from a disposable Chrome or Edge New\n  Tab through the authenticated Helper service worker, navigate that same tab\n  to a safe HTTPS destination, and continue without asking the user to repeat\n  the command.\n- Meaningful browser-internal pages, stale Helper heartbeats, incompatible\n  protocols, unrecognized extension identities, and multiple competing Helpers\n  remain blocked.\n- Existing target selection for normal websites is unchanged, so an unrelated\n  meaningful page is preserved and an already-open target remains reusable.\n- Explicit dismissal phrases are evaluated across the complete current speech\n  turn, so split Live transcription fragments such as \u201Cgood bye\u201D or \u201Cgo away\u201D\n  still end Jarvis once while browser close commands remain ordinary actions.\n\nJarvis Live, Smart Writing, Screen Reasoning, account authentication, billing,\nprovider routing, and usage settlement are unchanged.\n\nThe installer is not yet Authenticode-signed, so Windows may show an\nunknown-publisher warning. Download it only from https://keyboardwtf.com or the\nofficial keyboard.wtf GitHub Release.\n",
+  "publishedAt": "2026-08-24T12:41:17.1572239+00:00",
+  "packageUrl": "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.9/keyboard-wtf-setup.exe",
+  "sha256": "88d2d7f0718ec426296eb280ca99a17c07efb1244879f1854be8aded0188f963",
+  "sizeBytes": 84226980,
+  "releaseNotes": "# keyboard.wtf 1.4.9\n\nkeyboard.wtf 1.4.9 is a narrow browser-task lifecycle reliability update.\n\n- A task paused for login, CAPTCHA, confirmation, permission, ambiguity, or\n  another manual step now retains and reports the exact intervention reason.\n  The user can complete the step and say continue to resume the same task, or\n  cancel it cleanly.\n- If the one task-owned tab disappears during navigation, the desktop performs\n  one bounded recovery through the existing published Helper and opens the\n  intended safe HTTPS destination without replacing an unrelated active page.\n- A spoken browser-task cancellation now has one user-visible acknowledgement:\n  the tool result remains authoritative and the duplicate background terminal\n  announcement is suppressed for that same cancellation only.\n\nThe existing New Tab bootstrap, normal-tab target selection, Jarvis Live,\nSmart Writing, Screen Reasoning, authentication, billing, provider routing, and\nusage settlement are unchanged.\n\nThe installer is not yet Authenticode-signed, so Windows may show an\nunknown-publisher warning. Download it only from https://keyboardwtf.com or the\nofficial keyboard.wtf GitHub Release.\n",
   "keyId": "kwt-release-2026-01",
-  "signature": "qBah9mnkIK7Z9bb9BOpYPaLGy767IxTd4Hnbc411WdBj0h4IrwOvcH/e1Zyg17iH7bGdC9NxTCgLBz\u002BTJ/Va8g=="
+  "signature": "WosC1TKWQMsQ/toelRecdNiaLEdsdj1x16RNpEVkbAUtq70EDZIlKPhtHg0EGzsePkWwbttoSsNhv84VC9tfxw=="
 }
