@@ -136,7 +136,11 @@ function wakeBridge() {
   if (nativePort && !pollBusy) schedulePoll(0);
 }
 
-function resetNativePort(reason) {
+function resetNativePort(reason, expectedPort = null) {
+  // A stale send can fail synchronously before Chrome emits onDisconnect.
+  // Clear only the port that actually failed so an old callback cannot tear
+  // down a newer connection that has already completed its handshake.
+  if (expectedPort && nativePort !== expectedPort) return;
   const stalePort = nativePort;
   nativePort = null;
   nativeHandshakeReady = false;
@@ -197,6 +201,7 @@ async function pollOnce() {
 
 function sendNative(message) {
   if (!nativePort) return Promise.reject(new Error(lastError || "Native bridge is not connected."));
+  const port = nativePort;
   return new Promise((resolve, reject) => {
     const pending = {
       resolve,
@@ -204,19 +209,24 @@ function sendNative(message) {
       timer: setTimeout(() => {
         const index = pendingNative.indexOf(pending);
         if (index >= 0) pendingNative.splice(index, 1);
-        reject(new Error("Keyboard.wtf native bridge response timed out."));
-        // Force the regular disconnect/reconnect path rather than allowing a
-        // permanently pending poll to make the worker look healthy.
-        try { nativePort?.disconnect(); } catch (_) {}
+        const error = new Error("Keyboard.wtf native bridge response timed out.");
+        reject(error);
+        // Force the regular reconnect path rather than allowing a permanently
+        // pending poll to make the worker look healthy. Scope the reset to the
+        // port used for this request so a late timeout cannot drop a new port.
+        resetNativePort(error.message, port);
+        scheduleReconnect();
       }, NATIVE_RESPONSE_TIMEOUT_MS)
     };
     pendingNative.push(pending);
     try {
-      nativePort.postMessage(message);
+      port.postMessage(message);
     } catch (error) {
       clearTimeout(pending.timer);
       const index = pendingNative.indexOf(pending);
       if (index >= 0) pendingNative.splice(index, 1);
+      resetNativePort(String(error?.message || error), port);
+      scheduleReconnect();
       reject(error);
     }
   });

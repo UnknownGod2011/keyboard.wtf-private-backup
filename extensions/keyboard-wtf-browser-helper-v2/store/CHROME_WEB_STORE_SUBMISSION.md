@@ -18,7 +18,7 @@ key so the unpacked fallback keeps its stable development identity.
 ## Local deliverables
 
 - Store ZIP:
-  `dist/chrome-web-store/keyboard-wtf-chrome-helper-2.1.24.zip`
+  `dist/chrome-web-store/keyboard-wtf-chrome-helper-2.1.25.zip`
 - Store listing: `store/STORE_LISTING.md`
 - Dashboard fields: `store/STORE_DASHBOARD_FIELDS.md`
 - Privacy disclosures: `store/PRIVACY_DISCLOSURES.md`
@@ -36,5 +36,5 @@ submitting the update for review. Do not create a new listing or change the
 existing item identity.
 
 Before submission, verify the privacy-policy and support URLs listed in the
-dashboard fields are publicly reachable and use the matching Windows 1.4.6
+dashboard fields are publicly reachable and use the matching Windows 1.4.9
 companion build.

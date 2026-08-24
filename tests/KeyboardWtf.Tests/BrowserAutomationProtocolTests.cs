@@ -192,10 +192,28 @@ public sealed class BrowserAutomationProtocolTests
         Assert.Contains("chrome.alarms.onAlarm.addListener", worker);
         Assert.Contains("ensureBridgeAlarm", worker);
         Assert.Contains("NATIVE_RESPONSE_TIMEOUT_MS", worker);
-        Assert.Contains("nativePort?.disconnect", worker);
+        Assert.Contains("stalePort?.disconnect", worker);
         Assert.Contains("pollBusy = false", worker);
         Assert.Contains("clearTimeout(pending.timer)", worker);
         Assert.Contains("lastNativeResponseAt", worker);
+    }
+
+    [Fact]
+    public void Native_bridge_discards_a_port_that_rejects_post_message_synchronously()
+    {
+        var root = FindRepositoryRoot();
+        var worker = File.ReadAllText(Path.Combine(
+            root,
+            "extensions",
+            "keyboard-wtf-browser-helper-v2",
+            "service-worker.js"));
+
+        Assert.Contains("const port = nativePort;", worker);
+        Assert.Contains("port.postMessage(message);", worker);
+        Assert.Contains("resetNativePort(String(error?.message || error), port);", worker);
+        Assert.Contains("resetNativePort(error.message, port);", worker);
+        Assert.Contains("if (expectedPort && nativePort !== expectedPort) return;", worker);
+        Assert.DoesNotContain("nativePort.postMessage(message);", worker);
     }
 
     [Fact]

@@ -6,11 +6,11 @@ host.
 
 ## Prerequisite
 
-Install and launch keyboard.wtf 1.4.6 for Windows from:
+Install and launch keyboard.wtf 1.4.9 for Windows from:
 
-`https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.6/keyboard-wtf-setup.exe`
+`https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.9/keyboard-wtf-setup.exe`
 
-The Store package is Chrome Helper 2.1.24 and uses the backward-compatible 2.1.21 native/content protocol shown in keyboard.wtf Settings.
+The Store package is Chrome Helper 2.1.25 and uses the backward-compatible 2.1.21 native/content protocol shown in keyboard.wtf Settings.
 
 No extension account or test credentials are required for the connection test.
 AI-driven browser tasks require a signed-in keyboard.wtf account with an active

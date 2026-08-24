@@ -2,7 +2,7 @@
 
 ## Package
 
-- [ ] Store package is 2.1.24; its native/content protocol remains backward-compatible at 2.1.21 in the service worker, content script, and app.
+- [ ] Store package is 2.1.25; its native/content protocol remains backward-compatible at 2.1.21 in the service worker, content script, and app.
 - [ ] ZIP contains no manifest key.
 - [ ] ZIP contains no API key, token, log, browser data, or user data.
 - [ ] JavaScript syntax validation passes.
