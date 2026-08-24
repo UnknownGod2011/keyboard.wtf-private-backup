@@ -65,9 +65,13 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
-      - name: Package exact tested source
+      - name: Package exact paid-production source
         shell: pwsh
-        run: scripts/build-windows-release.ps1 -PaidProductionCandidate -SkipSiteHashUpdate
+        run: scripts/build-windows-release.ps1 -PaidProductionRelease -SkipSiteHashUpdate
+
+      - name: Prove clean-user paid-production runtime
+        shell: pwsh
+        run: scripts/release/test-paid-production-runtime.ps1 -Executable dist/release/keyboard-wtf-win-x64/keyboard.wtf.exe
 
       - name: Generate SBOM
         shell: pwsh
@@ -75,7 +79,7 @@ jobs:
           [xml]$project = Get-Content src/KeyboardWtf.csproj
           $version = @($project.Project.PropertyGroup.Version | Where-Object { $_ })[0]
           if ([string]::IsNullOrWhiteSpace($version)) { throw 'Could not read the desktop version.' }
-          scripts/release/generate-sbom.ps1 -BuildDirectory dist/release/keyboard-wtf-paid-production-candidate-win-x64 -Version $version
+          scripts/release/generate-sbom.ps1 -BuildDirectory dist/release/keyboard-wtf-win-x64 -Version $version
 
       - name: Record provenance
         shell: pwsh
@@ -83,7 +87,7 @@ jobs:
           [xml]$project = Get-Content src/KeyboardWtf.csproj
           $version = @($project.Project.PropertyGroup.Version | Where-Object { $_ })[0]
           if ([string]::IsNullOrWhiteSpace($version)) { throw 'Could not read the desktop version.' }
-          $installer = Get-Item dist/installer/keyboard-wtf-paid-production-candidate-setup.exe
+          $installer = Get-Item dist/installer/keyboard-wtf-setup.exe
           $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           [ordered]@{
             sourceCommit = $env:GITHUB_SHA
@@ -94,7 +98,7 @@ jobs:
             signingKeyId = 'kwt-release-2026-01'
           } | ConvertTo-Json | Set-Content -Encoding utf8 dist/release-provenance.json
 
-      - name: Upload verified candidate artifacts (manual runs only)
+      - name: Upload verified production artifacts (manual runs only)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -106,7 +110,7 @@ jobs:
           # remain in GitHub Releases.
           retention-days: 1
           path: |
-            dist/installer/keyboard-wtf-paid-production-candidate-setup.exe
+            dist/installer/keyboard-wtf-setup.exe
             dist/release-provenance.json
             dist/sbom/**
             **/release-tests.trx

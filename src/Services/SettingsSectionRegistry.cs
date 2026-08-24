@@ -5,6 +5,9 @@ public static class SettingsSectionRegistry
     private static readonly IReadOnlyDictionary<string, string> Aliases =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
+            ["getting-started"] = "getting-started",
+            ["getting started"] = "getting-started",
+            ["onboarding"] = "getting-started",
             ["voice-capture"] = "voice-capture",
             ["voice capture"] = "voice-capture",
             ["general"] = "voice-capture",

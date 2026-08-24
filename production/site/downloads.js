@@ -1,12 +1,14 @@
 import { runtimeConfig } from "./config.js";
 
 const windows = runtimeConfig.downloads.windows;
-const windowsButton = document.getElementById("windowsDownload");
+const windowsButtons = document.querySelectorAll("[data-windows-download]");
 const windowsRelease = document.getElementById("windowsRelease");
 if (windows.available && windows.url) {
-  windowsButton.href = windows.url;
-  windowsButton.textContent = "Download for Windows";
-  windowsButton.removeAttribute("aria-disabled");
+  windowsButtons.forEach((button) => {
+    button.href = windows.url;
+    button.textContent = "Download for Windows";
+    button.removeAttribute("aria-disabled");
+  });
   windowsRelease.textContent = `Version ${windows.version} for Windows 10 and 11 x64. The initial release is not Authenticode-signed, so Windows may show an unknown-publisher warning.`;
 }
 

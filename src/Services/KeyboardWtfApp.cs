@@ -335,11 +335,11 @@ public sealed class KeyboardWtfApp : IDisposable
     {
         if (_paidAccount?.Enabled == true)
         {
-            if (!_paidAccount.IsSignedIn)
+            if (_settings.IsFirstRun)
                 _ = Task.Run(async () =>
                 {
                     await Task.Delay(900);
-                    WebSettingsService.Instance.OpenInBrowser("#account-billing");
+                    WebSettingsService.Instance.OpenInBrowser("#getting-started");
                 });
             return;
         }

@@ -345,17 +345,11 @@ public sealed class GeminiLiveConversationService : IDisposable
                     _paidAccount?.IsSignedIn == true,
                     hadProviderSocket))
             {
-                try
-                {
-                    // The backend settles Live usage only after the provider socket
-                    // closes. Refresh from that authoritative account instead of
-                    // leaving a stale desktop balance until the next restart.
-                    await _paidAccount.RefreshAccountAsync(CancellationToken.None);
-                }
-                catch (Exception ex)
-                {
-                    AppLog.Warning(ex, "Paid account refresh after Jarvis session settlement failed");
-                }
+                // The backend settles Live usage only after the provider socket
+                // closes. Refresh the authoritative balance in the background:
+                // a slow or contended account read must never hold the Jarvis
+                // stop lock or serialize later hotkey presses behind HTTP timeout.
+                _ = RefreshAccountAfterStopAsync();
             }
 
         }
@@ -534,6 +528,18 @@ public sealed class GeminiLiveConversationService : IDisposable
         bool signedIn,
         bool hadProviderSocket) =>
         usesPaidBackend && signedIn && hadProviderSocket;
+
+    private async Task RefreshAccountAfterStopAsync()
+    {
+        try
+        {
+            await _paidAccount.RefreshAccountAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning(ex, "Paid account refresh after Jarvis session settlement failed");
+        }
+    }
 
     private Task EnsurePaidLiveActivatedAsync(
         bool includeBufferedAudio,

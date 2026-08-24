@@ -459,8 +459,9 @@
       <p>Stop typing. Say it.</p>
     </div>
     <nav id="sidebar-nav">
-      <a href="#voice-capture">Voice Capture</a>
+      <a href="#getting-started" class="paid-only" style="display:none">Getting Started</a>
       <a href="#account-billing" class="paid-only" style="display:none">Account &amp; Billing</a>
+      <a href="#voice-capture">Voice Capture</a>
       <a href="#hotkeys">Hotkeys</a>
       <a href="#assistant">Assistant</a>
       <a href="#browser-automation">Browser Automation</a>
@@ -478,6 +479,36 @@
 
   <!-- Main content -->
   <div class="main" id="main-scroll">
+
+    <!-- First-install guidance -->
+    <section id="getting-started" class="paid-only" style="display:none">
+      <h2>Getting Started</h2>
+      <p class="section-hint">Connect your account, review the shortcuts, then use keyboard.wtf from any normal Windows app.</p>
+
+      <div class="field">
+        <label>1. Connect your keyboard.wtf account</label>
+        <div class="hint">Sign in with Google. A new account starts with no active plan and paid AI remains blocked until a verified subscription is active.</div>
+        <div class="btn-row" style="margin-top:10px">
+          <a class="button-link" href="#account-billing">Open Account &amp; Billing</a>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>2. Review your shortcuts</label>
+        <div class="status-row"><span class="dot ok"></span><span class="name">Smart Writing</span><span class="value mono" id="onboardingSmartWriting">Ctrl+Alt+K</span></div>
+        <div class="status-row"><span class="dot ok"></span><span class="name">Dictation</span><span class="value mono" id="onboardingDictation">Ctrl+Alt+D</span></div>
+        <div class="status-row"><span class="dot ok"></span><span class="name">Jarvis</span><span class="value mono" id="onboardingJarvis">Ctrl+Alt+Q</span></div>
+        <div class="hint">These are the configured defaults. Windows will report a conflict here if another app already owns one.</div>
+        <div class="btn-row" style="margin-top:10px">
+          <a class="button-link" href="#hotkeys">Review or change shortcuts</a>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>3. Start in the app where you are working</label>
+        <div class="hint">Raw Dictation types local transcription. Smart Writing sends recorded speech through your authenticated account for polished output. Jarvis starts the live assistant.</div>
+      </div>
+    </section>
 
     <!-- Voice Capture -->
     <section id="voice-capture">
@@ -1574,6 +1605,9 @@ async function loadSettings() {
       Cancel: hotkeys.Cancel || hotkeys.cancel || 'Ctrl+Alt+X',
       OpenSettings: hotkeys.OpenSettings || hotkeys.openSettings || 'Ctrl+Alt+,'
     };
+    document.getElementById('onboardingSmartWriting').textContent = configuredHotkeys.PushToTalk;
+    document.getElementById('onboardingDictation').textContent = configuredHotkeys.Dictation;
+    document.getElementById('onboardingJarvis').textContent = configuredHotkeys.Jarvis;
     renderActiveHotkeys(configuredHotkeys, settings.activeHotkeys || {});
     document.getElementById('defaultDestination').value = settings.defaultDestination || 'Clipboard';
     document.getElementById('textDeliveryMode').value = settings.textDeliveryMode || 'TypeIntoActiveApp';

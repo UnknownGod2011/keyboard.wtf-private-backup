@@ -25,7 +25,16 @@ public sealed class FirestoreAccountStore : IAccountStore
     public async Task EnsureAccountAsync(CallerIdentity caller, CancellationToken cancellationToken)
     {
         var accountRef = Account(caller.UserId);
-        await _db.RunTransactionAsync(async transaction =>
+        var email = caller.Email.Trim().ToLowerInvariant();
+        var displayName = caller.DisplayName ?? "";
+        var existing = await accountRef.GetSnapshotAsync(cancellationToken);
+        if (existing.Exists
+            && !AccountIdentityNeedsUpdate(existing.ToDictionary(), email, displayName))
+        {
+            return;
+        }
+
+        async Task ExecuteAccountIdentityTransactionAsync() => await _db.RunTransactionAsync(async transaction =>
         {
             var snapshot = await transaction.GetSnapshotAsync(accountRef, cancellationToken);
             var now = Ts(_clock.UtcNow);
@@ -34,8 +43,8 @@ public sealed class FirestoreAccountStore : IAccountStore
                 transaction.Create(accountRef, new Dictionary<string, object>
                 {
                     ["uid"] = caller.UserId,
-                    ["email"] = caller.Email.Trim().ToLowerInvariant(),
-                    ["displayName"] = caller.DisplayName,
+                    ["email"] = email,
+                    ["displayName"] = displayName,
                     ["status"] = "active",
                     ["planId"] = "none",
                     ["subscriptionStatus"] = "none",
@@ -53,18 +62,50 @@ public sealed class FirestoreAccountStore : IAccountStore
                     ["updatedAt"] = now,
                 });
             }
-            else
+            else if (AccountIdentityNeedsUpdate(snapshot.ToDictionary(), email, displayName))
             {
                 transaction.Update(accountRef, new Dictionary<string, object>
                 {
-                    ["email"] = caller.Email.Trim().ToLowerInvariant(),
-                    ["displayName"] = caller.DisplayName,
+                    ["email"] = email,
+                    ["displayName"] = displayName,
                     ["updatedAt"] = now,
                 });
             }
             return 0;
         }, cancellationToken: cancellationToken);
+
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await ExecuteAccountIdentityTransactionAsync();
+                return;
+            }
+            catch (RpcException exception) when (
+                exception.StatusCode == StatusCode.Aborted
+                && attempt < _options.MaxRetries)
+            {
+                // The transaction was fully rolled back. Retry from the fresh
+                // identity snapshot so concurrent first-logins remain safe.
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(40 * (attempt + 1)),
+                    cancellationToken);
+            }
+        }
     }
+
+    internal static bool AccountIdentityNeedsUpdate(
+        IDictionary<string, object> account,
+        string normalizedEmail,
+        string displayName) =>
+        !string.Equals(
+            String(account, "email", ""),
+            normalizedEmail ?? "",
+            StringComparison.Ordinal)
+        || !string.Equals(
+            String(account, "displayName", ""),
+            displayName ?? "",
+            StringComparison.Ordinal);
 
     public async Task<AccountSnapshot> GetAccountAsync(string userId, CancellationToken cancellationToken)
     {
@@ -910,7 +951,7 @@ public sealed class FirestoreAccountStore : IAccountStore
             .Document(Crypto.Sha256($"usage-release:{userId}:{requestId}"));
         var now = _clock.UtcNow;
 
-        await _db.RunTransactionAsync(async transaction =>
+        async Task ExecuteReleaseTransactionAsync() => await _db.RunTransactionAsync(async transaction =>
         {
             var accountSnapshot = await transaction.GetSnapshotAsync(accountRef, cancellationToken);
             var reservationSnapshot = await transaction.GetSnapshotAsync(reservationRef, cancellationToken);
@@ -1002,6 +1043,26 @@ public sealed class FirestoreAccountStore : IAccountStore
             }, SetOptions.MergeAll);
             return 0;
         }, cancellationToken: cancellationToken);
+
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await ExecuteReleaseTransactionAsync();
+                return;
+            }
+            catch (RpcException exception) when (
+                exception.StatusCode == StatusCode.Aborted
+                && attempt < _options.MaxRetries)
+            {
+                // All release writes are protected by the deterministic
+                // release idempotency record and ledger event. Retry only the
+                // fully rolled-back Firestore transaction after contention.
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(40 * (attempt + 1)),
+                    cancellationToken);
+            }
+        }
     }
 
     public async Task MarkReservationForReconciliationAsync(

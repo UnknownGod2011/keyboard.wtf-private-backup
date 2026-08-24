@@ -161,6 +161,8 @@ public sealed class SettingsService
 
     public string SettingsPath { get; }
 
+    public bool IsFirstRun { get; private set; }
+
     public AppSettings Current { get; private set; } = new();
 
     public bool HasBrowserAutomationConsent =>
@@ -171,6 +173,7 @@ public sealed class SettingsService
     {
         Directory.CreateDirectory(AppDataDir);
         var hadSettingsFile = File.Exists(SettingsPath);
+        IsFirstRun = !hadSettingsFile;
         var settingsJson = "";
         if (File.Exists(SettingsPath))
         {
