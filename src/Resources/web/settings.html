@@ -2863,6 +2863,8 @@ function formatPaidCredits(micros) {
 
 async function paidAccountAction(action, payload = null) {
   const beginsSignIn = action === 'sign-in' || action === 'switch-account';
+  const settingsScroller = document.querySelector('main');
+  const refreshScrollTop = action === 'refresh' ? settingsScroller?.scrollTop : null;
   if (beginsSignIn && paidSignInRequestPending) return;
   if (action === 'sign-out-all'
       && !confirm('Sign out every keyboard.wtf device and session for this account?')) return;
@@ -2900,9 +2902,21 @@ async function paidAccountAction(action, payload = null) {
         ? 'Sign-in cancelled'
         : 'Account updated');
     await loadSettings();
+    if (refreshScrollTop !== null && settingsScroller) {
+      requestAnimationFrame(() => {
+        settingsScroller.scrollTop = refreshScrollTop;
+        scheduleScrollSpy();
+      });
+    }
   } catch (error) {
     showToast(error.message || 'Account action failed');
     await loadSettings();
+    if (refreshScrollTop !== null && settingsScroller) {
+      requestAnimationFrame(() => {
+        settingsScroller.scrollTop = refreshScrollTop;
+        scheduleScrollSpy();
+      });
+    }
   } finally {
     if (beginsSignIn) paidSignInRequestPending = false;
     if (action !== 'cancel-sign-in') buttons.forEach(button => button.disabled = false);

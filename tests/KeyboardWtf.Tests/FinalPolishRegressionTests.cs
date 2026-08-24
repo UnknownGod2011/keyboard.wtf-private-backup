@@ -98,6 +98,16 @@ public sealed class FinalPolishRegressionTests : IDisposable
         Assert.Equal(expected, GeminiLiveConversationService.ShouldAutoEnd(transcript));
 
     [Fact]
+    public void Fresh_goodbye_fragment_is_detected_even_if_the_accumulated_turn_is_saturated()
+    {
+        var saturatedTurn = new string('x', 4096);
+
+        Assert.True(GeminiLiveConversationService.ShouldAutoEnd("goodbye", saturatedTurn));
+        Assert.True(GeminiLiveConversationService.ShouldAutoEnd("go away", saturatedTurn));
+        Assert.False(GeminiLiveConversationService.ShouldAutoEnd("close tab", saturatedTurn));
+    }
+
+    [Fact]
     public void Live_prompt_routes_natural_current_screen_questions_to_fresh_vision()
     {
         var root = FindRepositoryRoot();

@@ -952,7 +952,11 @@ public sealed class GeminiLiveConversationService : IDisposable
             MarkTurnStarted();
             KeyboardWtfState.SetUi(VoiceUiPhase.Listening, "You", text);
             _userTranscriptObserver?.Invoke(text);
-            if (ShouldAutoEnd(CurrentUserTranscript()))
+            // Check the fresh provider fragment as well as the accumulated
+            // turn. If a provider turn-complete is delayed or omitted, the
+            // bounded cumulative buffer can already be full; a later explicit
+            // "goodbye" must still end this logical Jarvis session once.
+            if (ShouldAutoEnd(text, CurrentUserTranscript()))
                 ScheduleAutoEnd("Heard that you are done.");
         }
 
@@ -1979,6 +1983,9 @@ public sealed class GeminiLiveConversationService : IDisposable
             || normalized.Contains(" f off ")
             || normalized.Contains(" go away ");
     }
+
+    internal static bool ShouldAutoEnd(string transcriptFragment, string accumulatedTranscript) =>
+        ShouldAutoEnd(transcriptFragment) || ShouldAutoEnd(accumulatedTranscript);
 
     private string CurrentUserTranscript()
     {
