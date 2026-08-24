@@ -2874,11 +2874,31 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         if (request.Length == 0 || answer.Length == 0)
             return false;
 
-        return Regex.IsMatch(
+        if (Regex.IsMatch(
                 request,
                 @"\b(?:date|departure|depart|return|arrival|arrive|check[- ]?in|check[- ]?out|calendar)\b",
                 RegexOptions.IgnoreCase)
-            && HasUsableDateConstraint(answer);
+            && HasUsableDateConstraint(answer))
+        {
+            return true;
+        }
+
+        // A paused task may ask for a missing non-sensitive field value. A
+        // direct "use/enter/choose X" answer is task guidance, not a new
+        // browser command. Keep this bounded to an explicit request for input
+        // and reject tab/window/navigation commands.
+        return Regex.IsMatch(
+                request,
+                @"\b(?:provide|enter|type|fill|specify|choose|select)\b",
+                RegexOptions.IgnoreCase)
+            && Regex.IsMatch(
+                answer,
+                @"^(?:please\s+)?(?:use|enter|type|choose|select)\s+\S.{0,240}$",
+                RegexOptions.IgnoreCase)
+            && !Regex.IsMatch(
+                answer,
+                @"\b(?:new|close|next|previous|reopen|switch|change)\s+(?:browser\s+)?(?:tab|window)\b",
+                RegexOptions.IgnoreCase);
     }
 
     internal static bool IsExplicitSingleControlActionRequest(string request)

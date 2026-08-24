@@ -266,8 +266,37 @@ public sealed class CommandRegistry
         var active = _browserAutomation.Snapshot();
         if (active.CanCancel)
         {
+            // The coordinator already owns the paused task and validates that
+            // guidance is relevant to it. Accept that guidance locally so a
+            // short answer such as "continue" or "use Test User" resumes the
+            // same execution even if Live elects to answer conversationally
+            // instead of issuing browser_automation_control. Explicit
+            // pause/cancel/stop commands must remain control-tool actions.
+            var isStopOrPause = IsExplicitBrowserTaskStopOrPause(userTurn);
+            var guidanceReason = isStopOrPause
+                ? "explicit pause/cancel/stop control"
+                : "";
+            if (!isStopOrPause
+                && _browserAutomation.TryAddTaskGuidance(userTurn, out guidanceReason))
+            {
+                lock (_browserPreRouteLock)
+                {
+                    _browserPreRouteReceipt = new BrowserPreRouteReceipt
+                    {
+                        UserTurn = userTurn,
+                        ToolName = "browser_automation_control",
+                        Ok = true,
+                        TaskId = active.TaskId,
+                        Message = "Guidance accepted; the same browser task is continuing.",
+                    };
+                    _browserPreRouteOwnsCurrentTurn = true;
+                }
+                AppLog.Info($"Browser task guidance accepted by pre-route: task={active.TaskId}");
+                return true;
+            }
+
             AppLog.Info(
-                $"Browser pre-route skipped while task={active.TaskId}: the live conversation decides normal commands; only explicit browser-task guidance is accepted by the coordinator.");
+                $"Browser pre-route skipped while task={active.TaskId}: the live conversation decides normal commands; guidanceRejected={BrowserAutomationText.Truncate(guidanceReason, 120)}");
             return false;
         }
 
@@ -296,6 +325,12 @@ public sealed class CommandRegistry
             $"Browser pre-route: task={result.TaskId} started={result.Started} current={classification.RefersToCurrentPage}");
         return true;
     }
+
+    internal static bool IsExplicitBrowserTaskStopOrPause(string text) =>
+        Regex.IsMatch(
+            (text ?? "").Trim(),
+            @"^(?:please\s+)?(?:pause|cancel|stop)(?:\s+(?:the\s+)?(?:browser\s+automation|browser\s+task|task))?[.!?]*$",
+            RegexOptions.IgnoreCase);
 
     private async Task TogglePushToTalkAsync()
     {

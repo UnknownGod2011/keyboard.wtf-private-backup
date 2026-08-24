@@ -1546,6 +1546,35 @@ public sealed class BrowserAutomationProtocolTests
         Assert.Equal(expected, accepted);
     }
 
+    [Theory]
+    [InlineData("Use Test User as the customer name and continue.", true)]
+    [InlineData("Enter Tanush in the first-name field.", true)]
+    [InlineData("Open a new tab.", false)]
+    [InlineData("Switch to the second browser tab.", false)]
+    public void Missing_field_answers_resume_only_the_paused_task(
+        string utterance,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            BrowserAutomationCoordinator.IsRelevantManualAnswer(
+                "Please provide the customer name to fill in the form.",
+                utterance));
+    }
+
+    [Theory]
+    [InlineData("cancel browser automation", true)]
+    [InlineData("Please pause the browser task.", true)]
+    [InlineData("stop", true)]
+    [InlineData("continue", false)]
+    [InlineData("Use the second result.", false)]
+    public void Browser_stop_controls_are_not_misrouted_as_task_guidance(
+        string utterance,
+        bool expected)
+    {
+        Assert.Equal(expected, CommandRegistry.IsExplicitBrowserTaskStopOrPause(utterance));
+    }
+
     [Fact]
     public void Planner_provider_health_is_scoped_to_one_browser_task()
     {
