@@ -102,7 +102,7 @@ jobs:
           } | ConvertTo-Json | Set-Content -Encoding utf8 dist/release-provenance.json
 
       - name: Upload verified production artifacts (manual runs only)
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && github.repository == 'UnknownGod2011/keyboard.wtf-private-backup'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: keyboard-wtf-${{ github.sha }}
