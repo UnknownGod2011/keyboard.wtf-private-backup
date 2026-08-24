@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "channel": "stable",
-  "version": "1.4.7",
+  "version": "1.4.8",
   "minimumVersion": "1.2.0",
-  "publishedAt": "2026-08-24T07:39:21.4372182+00:00",
-  "packageUrl": "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.7/keyboard-wtf-setup.exe",
-  "sha256": "b2d31db923622449b555a46780701b071184afaa2dfca64ede5cb1542778c40c",
-  "sizeBytes": 84216072,
-  "releaseNotes": "# keyboard.wtf 1.4.7\n\nkeyboard.wtf 1.4.7 is a focused clean-install and Jarvis start/stop reliability\nupdate. It preserves the established Gemini Live conversation, Smart Writing,\nscreen, browser, authentication, and billing behavior.\n\n- Public release packaging now proves that the distributable is the normal\n  paid-production product, with Account \u0026 Billing enabled and emergency BYOK\n  hidden for a fresh user.\n- A first installation opens a concise Getting Started page with the actual\n  Smart Writing, Raw Dictation, and Jarvis shortcuts from the user\u0027s settings.\n  Ordinary restarts no longer reopen onboarding.\n- The website\u0027s primary Windows buttons share one canonical release URL and\n  start the installer download directly; the navigation Download link still\n  scrolls to the platform section.\n- Ending Jarvis no longer holds the Live lifecycle lock while a post-settlement\n  account refresh waits on the network. Later shortcut presses therefore cannot\n  queue behind an unrelated account timeout.\n- Read-only account requests no longer rewrite unchanged Firebase profile data.\n  Bounded Firestore contention retries preserve existing transaction and\n  idempotency guarantees for account identity and reservation release.\n\nJarvis still connects to Gemini Live immediately when invoked, keeps one logical\nsession across recoverable physical socket rollover, and ends only through the\nexisting user-controlled paths. Provider-authoritative accounting, pricing,\nallowances, and payment behavior are unchanged.\n\nThe installer is not yet Authenticode-signed, so Windows may show an\nunknown-publisher warning. Download it only from https://keyboardwtf.com or the\nofficial keyboard.wtf GitHub Release.\n",
+  "publishedAt": "2026-08-24T09:42:34.8257649+00:00",
+  "packageUrl": "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.8/keyboard-wtf-setup.exe",
+  "sha256": "fe4b245b7416b2da86db3fcb942afec86a1dae94ce849d5dd01692c87609f65a",
+  "sizeBytes": 84223986,
+  "releaseNotes": "# keyboard.wtf 1.4.8\n\nkeyboard.wtf 1.4.8 is a focused browser-automation reliability update.\n\n- Jarvis browser tasks may now bootstrap from a disposable Chrome or Edge New\n  Tab through the authenticated Helper service worker, navigate that same tab\n  to a safe HTTPS destination, and continue without asking the user to repeat\n  the command.\n- Meaningful browser-internal pages, stale Helper heartbeats, incompatible\n  protocols, unrecognized extension identities, and multiple competing Helpers\n  remain blocked.\n- Existing target selection for normal websites is unchanged, so an unrelated\n  meaningful page is preserved and an already-open target remains reusable.\n- Explicit dismissal phrases are evaluated across the complete current speech\n  turn, so split Live transcription fragments such as \u201Cgood bye\u201D or \u201Cgo away\u201D\n  still end Jarvis once while browser close commands remain ordinary actions.\n\nJarvis Live, Smart Writing, Screen Reasoning, account authentication, billing,\nprovider routing, and usage settlement are unchanged.\n\nThe installer is not yet Authenticode-signed, so Windows may show an\nunknown-publisher warning. Download it only from https://keyboardwtf.com or the\nofficial keyboard.wtf GitHub Release.\n",
   "keyId": "kwt-release-2026-01",
-  "signature": "u37b/Tx/58vdz2GC9MVqsiS7VCaFDkIo4x9OhW4J6LgVw31t1vwq594egal0vdLZjcWkD39pjtHARpN6YJv6lQ=="
+  "signature": "qBah9mnkIK7Z9bb9BOpYPaLGy767IxTd4Hnbc411WdBj0h4IrwOvcH/e1Zyg17iH7bGdC9NxTCgLBz\u002BTJ/Va8g=="
 }
