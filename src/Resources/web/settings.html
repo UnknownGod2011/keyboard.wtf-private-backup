@@ -2863,7 +2863,7 @@ function formatPaidCredits(micros) {
 
 async function paidAccountAction(action, payload = null) {
   const beginsSignIn = action === 'sign-in' || action === 'switch-account';
-  const settingsScroller = document.querySelector('main');
+  const settingsScroller = document.getElementById('main-scroll');
   const refreshScrollTop = action === 'refresh' ? settingsScroller?.scrollTop : null;
   if (beginsSignIn && paidSignInRequestPending) return;
   if (action === 'sign-out-all'

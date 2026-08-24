@@ -45,6 +45,18 @@ public sealed class FinalPolishRegressionTests : IDisposable
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Refresh_account_preserves_the_actual_settings_scroll_container()
+    {
+        var root = FindRepositoryRoot();
+        var html = File.ReadAllText(Path.Combine(root, "src", "Resources", "web", "settings.html"));
+
+        Assert.Contains("id=\"main-scroll\"", html, StringComparison.Ordinal);
+        Assert.Contains("document.getElementById('main-scroll')", html, StringComparison.Ordinal);
+        Assert.Contains("settingsScroller.scrollTop = refreshScrollTop;", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("document.querySelector('main')", html, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("settings", true, false)]
     [InlineData("Windows Settings", true, false)]
