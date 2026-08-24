@@ -24,7 +24,11 @@ $priorNativeHostManifest = if ($priorNativeHostKeyExists) {
     $null
 }
 $priorNativeHostExists = -not [string]::IsNullOrWhiteSpace($priorNativeHostManifest)
-$priorStartupCommand = (Get-Item -LiteralPath $startupRegistry).GetValue("keyboard.wtf")
+$priorStartupCommand = if (Test-Path -LiteralPath $startupRegistry) {
+    (Get-Item -LiteralPath $startupRegistry).GetValue("keyboard.wtf")
+} else {
+    $null
+}
 
 try {
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
@@ -115,6 +119,7 @@ finally {
         Remove-Item -LiteralPath $nativeHostRegistry -Force
     }
     if ($null -ne $priorStartupCommand) {
+        New-Item -ItemType Directory -Path $startupRegistry -Force | Out-Null
         Set-ItemProperty -LiteralPath $startupRegistry -Name "keyboard.wtf" -Value $priorStartupCommand
     }
     else {
