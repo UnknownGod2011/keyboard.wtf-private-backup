@@ -139,6 +139,22 @@ public sealed class FinalPolishRegressionTests : IDisposable
     }
 
     [Fact]
+    public void Live_prompt_keeps_transient_actions_separate_from_explicit_persistent_memory()
+    {
+        var root = FindRepositoryRoot();
+        var source = File.ReadAllText(Path.Combine(
+            root,
+            "src",
+            "Services",
+            "GeminiLiveConversationService.cs"));
+
+        Assert.Contains("Ordinary one-time commands", source, StringComparison.Ordinal);
+        Assert.Contains("Never call remember_routine", source, StringComparison.Ordinal);
+        Assert.Contains("explicitly asks to remember or save a reusable trigger", source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Deleted_workflow_tombstone_survives_restart_and_is_cleared_by_explicit_resave()
     {
         Directory.CreateDirectory(_root);

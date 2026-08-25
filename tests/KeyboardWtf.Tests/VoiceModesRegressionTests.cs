@@ -27,6 +27,28 @@ public sealed class VoiceModesRegressionTests
     public void Smart_writing_audio_capture_is_bounded_to_five_minutes() =>
         Assert.Equal(300, SmartWritingAudioCapture.MaximumSeconds);
 
+    [Fact]
+    public void Smart_writing_waits_for_explicit_stop_instead_of_ending_on_a_thinking_pause()
+    {
+        Assert.False(VoiceCaptureService.UsesSilenceAutoStop(RecordingMode.VoiceAssistant));
+        Assert.True(VoiceCaptureService.UsesSilenceAutoStop(RecordingMode.Dictate));
+    }
+
+    [Fact]
+    public void Smart_writing_can_retain_the_final_result_on_clipboard_after_insertion()
+    {
+        var retained = "";
+
+        Assert.True(CommandRegistry.RetainFinalTextOnClipboard(
+            "final Gemini text",
+            value =>
+            {
+                retained = value;
+                return true;
+            }));
+        Assert.Equal("final Gemini text", retained);
+    }
+
     [Theory]
     [InlineData(VoiceUiPhase.Thinking, "Polishing", true)]
     [InlineData(VoiceUiPhase.Thinking, "Understanding command", false)]

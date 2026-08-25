@@ -113,7 +113,7 @@ public sealed class VoiceCaptureService
         _ = AutoStopAfterLimitAsync(mode, _autoStopCts.Token);
         // Smart Writing is explicitly stopped by the user. A pause between
         // sentences must not discard the rest of a long-form recording.
-        if (mode != RecordingMode.VoiceAssistant)
+        if (UsesSilenceAutoStop(mode))
             StartSilenceWatcher(mode);
 
         _notifications.Info(ModeTitle(mode), "Listening");
@@ -319,6 +319,9 @@ public sealed class VoiceCaptureService
 
     internal static bool RecordingModeUsesAiPostProcessing(RecordingMode mode) =>
         mode != RecordingMode.Dictate;
+
+    internal static bool UsesSilenceAutoStop(RecordingMode mode) =>
+        mode != RecordingMode.VoiceAssistant;
 
     private async Task<string> PostProcessTranscriptAsync(
         string transcript,

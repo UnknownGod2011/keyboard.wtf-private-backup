@@ -1,6 +1,7 @@
 namespace KeyboardWtf.Services;
 
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 
 public enum FileResolutionStatus
 {
@@ -228,6 +229,33 @@ public sealed class SmartFileSearchService
         }
     }
 
+    public static bool TryOpenContainingFolder(string path, out string error)
+    {
+        error = "";
+        var expanded = Environment.ExpandEnvironmentVariables((path ?? "").Trim().Trim('"'));
+        var folder = Directory.Exists(expanded)
+            ? expanded
+            : File.Exists(expanded)
+                ? Path.GetDirectoryName(expanded)
+                : "";
+        if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+        {
+            error = "That file or folder no longer exists.";
+            return false;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo { FileName = folder, UseShellExecute = true });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
     public IReadOnlyList<string> SearchRootPaths() => BuildRoots("").Select(root => root.Path).ToArray();
 
     private FileSearchResult SearchCore(
@@ -410,17 +438,31 @@ public sealed class SmartFileSearchService
         bool wantsLatest)
     {
         var name = Path.GetFileNameWithoutExtension(path);
-        var fuzzy = Math.Max(FuzzyMatcher.Score(query, name), FuzzyMatcher.Score(query, Path.GetFileName(path)));
+        var searchNeedle = SearchNeedle(query);
+        var fuzzy = new[]
+        {
+            FuzzyMatcher.Score(query, name),
+            FuzzyMatcher.Score(query, Path.GetFileName(path)),
+            FuzzyMatcher.Score(searchNeedle, name),
+            FuzzyMatcher.Score(searchNeedle, Path.GetFileName(path)),
+        }.Max();
         var modified = GetModifiedAt(path, isDirectory);
         var ageDays = Math.Max(0, (DateTimeOffset.Now - modified).TotalDays);
         var recency = Math.Exp(-ageDays / 45);
         var type = TypeScore(path, isDirectory, typeHint);
         var root = Math.Clamp(rootPriority / 10.0, 0, 1);
-        var exactPartial = FuzzyMatcher.Normalize(name).Contains(FuzzyMatcher.Normalize(RemoveSearchWords(query)), StringComparison.Ordinal)
-            ? 1
-            : 0;
+        var normalizedName = FuzzyMatcher.Normalize(name);
+        var normalizedNeedle = FuzzyMatcher.Normalize(searchNeedle);
+        var exactPartial = normalizedNeedle.Length > 0
+            && normalizedName.Contains(normalizedNeedle, StringComparison.Ordinal)
+                ? 1
+                : 0;
+        var exactName = normalizedNeedle.Length > 0
+            && string.Equals(normalizedName, normalizedNeedle, StringComparison.Ordinal)
+                ? 1
+                : 0;
 
-        var score = fuzzy * 0.62 + type * 0.12 + root * 0.08 + exactPartial * 0.08;
+        var score = fuzzy * 0.60 + type * 0.10 + root * 0.07 + exactPartial * 0.08 + exactName * 0.08;
         score += recency * (wantsLatest ? 0.25 : 0.1);
         return Math.Clamp(score, 0, 1);
     }
@@ -461,17 +503,25 @@ public sealed class SmartFileSearchService
         return "";
     }
 
-    private static string RemoveSearchWords(string query)
+    internal static string SearchNeedle(string query)
     {
+        var normalized = Regex.Replace(
+            FuzzyMatcher.Normalize(query),
+            @"\bone drive\b",
+            " ",
+            RegexOptions.CultureInvariant);
         var ignored = new HashSet<string>(StringComparer.Ordinal)
         {
-            "open", "find", "search", "for", "the", "my", "latest", "recent", "last", "file",
-            "folder", "image", "photo", "picture", "video", "document", "inside", "from",
-            "downloaded", "used", "recently", "called", "named",
+            "open", "find", "search", "look", "locate", "show", "for", "the", "a", "an", "my",
+            "me", "please", "to", "on", "in", "at", "under", "within", "latest", "recent", "last",
+            "file", "folder", "directory", "image", "photo", "picture", "video", "document", "inside",
+            "from", "downloaded", "used", "recently", "called", "named", "desktop", "downloads",
+            "documents", "pictures", "videos", "music", "onedrive",
         };
-        return string.Join(" ", FuzzyMatcher.Normalize(query)
+        var needle = string.Join(" ", normalized
             .Split(' ', StringSplitOptions.RemoveEmptyEntries)
             .Where(word => !ignored.Contains(word)));
+        return string.IsNullOrWhiteSpace(needle) ? normalized : needle;
     }
 
     private static string CleanQuery(string query) =>

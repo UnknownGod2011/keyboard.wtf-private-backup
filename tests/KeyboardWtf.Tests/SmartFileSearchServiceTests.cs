@@ -35,6 +35,44 @@ public sealed class SmartFileSearchServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Natural_desktop_file_request_uses_the_name_instead_of_location_words()
+    {
+        var target = Path.Combine(_root, "Tanush_oppo.txt");
+        File.WriteAllText(target, "test");
+        var service = new SmartFileSearchService(_mappings, [(_root, "Desktop", 10)]);
+
+        var result = await service.SearchAsync(
+            "Find the file on my Desktop called tanush-oppo",
+            "",
+            includeFiles: true,
+            includeFolders: true,
+            CancellationToken.None);
+
+        Assert.NotEqual(FileResolutionStatus.NotFound, result.Status);
+        Assert.Equal(target, result.Best.Path);
+        Assert.Equal("tanush oppo", SmartFileSearchService.SearchNeedle(
+            "Find the file on my Desktop called tanush-oppo"));
+    }
+
+    [Fact]
+    public async Task Natural_desktop_folder_request_handles_spaces_underscores_and_case()
+    {
+        var target = Path.Combine(_root, "Keyboard_WTF Project");
+        Directory.CreateDirectory(target);
+        var service = new SmartFileSearchService(_mappings, [(_root, "Desktop", 10)]);
+
+        var result = await service.SearchAsync(
+            "Find the keyboard-wtf project folder on my desktop",
+            "",
+            includeFiles: false,
+            includeFolders: true,
+            CancellationToken.None);
+
+        Assert.NotEqual(FileResolutionStatus.NotFound, result.Status);
+        Assert.Equal(target, result.Best.Path);
+    }
+
+    [Fact]
     public void BlocksDangerousFileTypes()
     {
         Assert.True(SmartFileSearchService.IsRiskyFile(Path.Combine(_root, "dangerous-installer.exe")));

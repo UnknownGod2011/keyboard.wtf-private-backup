@@ -16,6 +16,10 @@ public sealed class BrowserAutomationTaskClassifier
         @"^\s*(?:please\s+)?(?:(?:set|start|create|make|cancel|stop|pause|resume|list|show|check)\s+)?(?:an?\s+|the\s+|my\s+|active\s+|all\s+)?(?:\w+\s+){0,8}\b(?:timer|timers|alarm|alarms|reminder|reminders)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex DirectCommunicationDraft = new(
+        @"\b(?:draft|compose|write|prepare|send)\b.{0,120}\b(?:e-?mail|gmail)\b|\b(?:e-?mail|gmail)\b.{0,120}\b(?:draft|compose|write|prepare|send)\b|\b(?:prepare|send)\b.{0,120}\b(?:whatsapp\s+)?message\b.{0,80}\bon\s+whatsapp\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly Regex DirectCurrentControl = new(
         @"^\s*(?:please\s+)?(?:(?:continue|resume)\s+)?(?:click|press|choose|select|unselect|check|uncheck|fill(?:ing)?|type|enter|paste|write|insert|place|put|scroll|dismiss|close\s+(?:the\s+)?(?:popup|banner|modal))\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -91,6 +95,15 @@ public sealed class BrowserAutomationTaskClassifier
             return Result(
                 BrowserAutomationDecision.SimpleTool,
                 "Timers, alarms, and reminders are handled by normal Jarvis rather than webpage automation.");
+        }
+
+        if (DirectCommunicationDraft.IsMatch(text)
+            && !ExplicitAutomation.IsMatch(text)
+            && !CurrentContext.IsMatch(text))
+        {
+            return Result(
+                BrowserAutomationDecision.SimpleTool,
+                "A deterministic draft/message capability should prepare this for review without starting browser automation.");
         }
 
         var current = CurrentContext.IsMatch(text)

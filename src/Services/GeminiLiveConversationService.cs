@@ -1242,6 +1242,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             "When the user explicitly says app, application, launch, or start for a named product, call open_app with target_kind native so an installed Windows application is preferred and a website is not substituted. When the user explicitly says website, browser, or a domain, use open_url or web_search. For an ambiguous open X request, keep target_kind auto and let the existing resolver choose. " +
             "Use tools only for allowed actions; never claim an action finished until the tool response says it did. " +
             "For the same user request, never repeat an identical action after a deterministic failure. A transient failure may receive at most one silent identical retry. Do not narrate internal retries or repeat the same failure aloud; use one genuinely different capability if available, otherwise explain the final limitation once. " +
+            "Treat successful tool receipts as authoritative. If an earlier capability fails but a later fallback succeeds for the requested outcome, report the final success and keep the superseded failure internal. Never claim success without a successful receipt. " +
             "App names and file names do not need to be exact. Use open_app, open_folder, open_path, or search_files with the user's natural approximate wording; the local resolver performs fuzzy matching and returns choices when confidence is low. " +
             "If the local resolver returns multiple candidates, read only the short names, ask the user to choose, and then retry with the chosen name or path. Do not guess between ambiguous matches. " +
             "If the user corrects an app, file, folder, link, or browser choice, ask whether they want that correction remembered. Call a remember tool only after they explicitly approve it. " +
@@ -1258,16 +1259,19 @@ public sealed class GeminiLiveConversationService : IDisposable
             "Camera opening and take-photo requests must be explicit. Ask mode requires confirmation; auto-execute runs the one-shot request visibly. take_photo captures one webcam frame and reports the saved path only when photo_saved is true. " +
             "Virtual desktop create/next/previous actions use Windows shortcuts. Closing the current virtual desktop requires confirmation. A successful tool response means the shortcut was sent, not that desktop state was independently verified. " +
             "For Windows recording requests, call windows_recording_action. Win+Alt+R is a toggle controlled by Xbox Game Bar, so report only that the shortcut was sent unless Windows state is independently verified. " +
-            "When the user says whenever I say PHRASE do ACTIONS, call remember_routine once with the trigger phrase and the requested apps, URLs, and folder. When the user later says that phrase or a close fuzzy variant, call run_workflow using exactly what they said; the local resolver performs fuzzy trigger matching. " +
+            "When the user explicitly asks to remember or save a reusable trigger, for example whenever/when I say PHRASE do ACTIONS, call remember_routine once with the trigger phrase and the requested apps, URLs, and folder. When the user later says that phrase or a close fuzzy variant, call run_workflow using exactly what they said; the local resolver performs fuzzy trigger matching. " +
+            "Ordinary one-time commands such as open an app, open these apps, or visit a site are transient. Never call remember_routine, create_workflow, remember_intent, or another remember tool unless the user explicitly asks to remember, save, learn, or reuse the behavior later. " +
             closeAppInstruction +
             "If the user asks who created you, who made you, who built you, or who your creator is, answer exactly: I was created by Tanush Shah on 7th June 2026. Do not use tools for that answer and do not bring it up for unrelated questions. " +
             "Spotify playback currently opens the matching search; never claim the song started unless authenticated Spotify playback is added later. take_screenshot captures the desktop, not the webcam. " +
             "Smart browser automation may perform explicitly requested ordinary page interaction and add-to-cart, but it must pause at password, OTP, CAPTCHA, payment, checkout, order placement, banking, or account-security boundaries. Final form submit, public send/post/delete/register/apply actions must be explicitly requested. " +
             "Never send an email or message automatically. Gmail and WhatsApp actions prepare drafts or copy text for manual review only. " +
+            "For an email/Gmail draft or a WhatsApp message, prefer the dedicated safe draft tool and do not start browser automation in parallel. Use browser automation only when the requested outcome actually depends on live inbox/page state. " +
             "If a request is unsupported, say that clearly and briefly. " +
             "For WhatsApp requests with only a contact name, call prepare_whatsapp_message with the contact name and message; the tool will explain the current limitation. " +
             "Only save intent memory when the user explicitly asks you to remember something. Keep saved memory short and useful. " +
             "Use saved intent memory only when it helps the current request. " +
+            "In casual conversation only, you may occasionally ask one genuinely useful follow-up or show brief curiosity. Do not append a question to every answer, and never add conversational follow-ups while executing a task or when the user asked for a direct answer. " +
             "End the conversation only when the user clearly dismisses Jarvis or explicitly ends the chat/conversation, for example goodbye, stop Jarvis, end chat, or go away. Thanks and thank you are normal conversational acknowledgements and must not end Jarvis. Browser/window commands such as close, close tab, close window, or close Chrome must never end Jarvis. " +
             "Saved intent memory:\n" + _memory.BuildPromptDigest();
     }
@@ -1436,7 +1440,7 @@ public sealed class GeminiLiveConversationService : IDisposable
                     }),
                 FunctionDeclaration(
                     "open_folder",
-                    "Open a known, learned, or approximately named folder. The local resolver searches common user locations safely and asks for a choice when results are ambiguous.",
+                    "Open a known, learned, or approximately named folder. A concrete file path opens its containing folder. The local resolver searches common user locations safely and asks for a choice when results are ambiguous.",
                     new()
                     {
                         ["folder"] = Schema("string", "Known folder name or existing folder path."),
@@ -1710,7 +1714,7 @@ public sealed class GeminiLiveConversationService : IDisposable
                     "name"),
                 FunctionDeclaration(
                     "remember_routine",
-                    "Atomically save a user-requested trigger phrase and its reusable routine. Use when the user says whenever I say a phrase, do these actions.",
+                    "Atomically save an explicitly user-requested reusable trigger and routine. Use when the user says remember/save this, whenever I say, or when I say a phrase, do these actions. Never use for an ordinary one-time command.",
                     new()
                     {
                         ["trigger"] = Schema("string", "The exact phrase the user wants to say later, without the words whenever I say."),

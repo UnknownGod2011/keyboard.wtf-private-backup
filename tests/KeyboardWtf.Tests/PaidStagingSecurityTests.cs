@@ -276,6 +276,7 @@ public sealed class PaidStagingSecurityTests
     [InlineData(401, true)]
     [InlineData(403, true)]
     [InlineData(400, false)]
+    [InlineData(409, false)]
     [InlineData(429, false)]
     [InlineData(500, false)]
     public void Live_authentication_retry_is_limited_to_auth_rejections(
@@ -285,6 +286,29 @@ public sealed class PaidStagingSecurityTests
             expected,
             PaidAccountService.IsLiveAuthenticationRejection(
                 (System.Net.HttpStatusCode)statusCode));
+
+    [Theory]
+    [InlineData(409, true)]
+    [InlineData(401, false)]
+    [InlineData(403, false)]
+    [InlineData(429, false)]
+    [InlineData(500, false)]
+    public void Live_slot_conflict_recovery_is_limited_to_conflict(
+        int statusCode,
+        bool expected) =>
+        Assert.Equal(
+            expected,
+            PaidAccountService.IsLiveSlotConflict((System.Net.HttpStatusCode)statusCode));
+
+    [Fact]
+    public void Live_slot_conflict_recovery_is_bounded()
+    {
+        Assert.Equal(7, PaidAccountService.LiveSlotConflictRetryDelays.Count);
+        Assert.Equal(
+            TimeSpan.FromSeconds(62),
+            TimeSpan.FromMilliseconds(
+                PaidAccountService.LiveSlotConflictRetryDelays.Sum(delay => delay.TotalMilliseconds)));
+    }
 
     [Fact]
     public async Task Sign_out_all_devices_is_server_authoritative_and_clears_the_local_session()

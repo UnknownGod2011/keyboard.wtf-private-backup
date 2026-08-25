@@ -140,6 +140,28 @@ public sealed class BrowserAutomationV2ClassifierTests
     }
 
     [Theory]
+    [InlineData("Draft a Gmail to Yaksh saying I am sick.")]
+    [InlineData("Write an email to Pat about tomorrow's report.")]
+    [InlineData("Prepare a WhatsApp message for Alex saying I will be late on WhatsApp.")]
+    public void Safe_direct_communication_drafts_do_not_start_browser_automation(string request)
+    {
+        var result = _classifier.Classify(request);
+
+        Assert.Equal(BrowserAutomationDecision.SimpleTool, result.Decision);
+        Assert.Contains("draft", result.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("Delete all promotional emails from Gmail using browser automation.")]
+    [InlineData("Read the newest email on this Gmail page.")]
+    public void Live_inbox_work_still_uses_browser_automation(string request)
+    {
+        var result = _classifier.Classify(request);
+
+        Assert.Equal(BrowserAutomationDecision.BrowserAutomation, result.Decision);
+    }
+
+    [Theory]
     [InlineData("browser_automation")]
     [InlineData("browser_automation_status")]
     [InlineData("browser_automation_control")]

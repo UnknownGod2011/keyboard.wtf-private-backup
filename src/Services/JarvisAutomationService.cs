@@ -502,6 +502,18 @@ public sealed class JarvisAutomationService : IDisposable
             return known;
 
         var expanded = ExpandPath(folder);
+        if (File.Exists(expanded))
+        {
+            if (SmartFileSearchService.TryOpenContainingFolder(expanded, out var containingError))
+            {
+                return Logged(
+                    "open_folder",
+                    expanded,
+                    true,
+                    $"Opened the folder containing {Path.GetFileName(expanded)}.");
+            }
+            return Logged("open_folder", expanded, false, containingError, supported: false);
+        }
         if (Directory.Exists(expanded))
         {
             if (SmartFileSearchService.TryOpenSafe(expanded, out var error))
@@ -1226,6 +1238,9 @@ public sealed class JarvisAutomationService : IDisposable
                 {
                     candidate.Name,
                     candidate.Path,
+                    containing_folder = candidate.IsDirectory
+                        ? candidate.Path
+                        : Path.GetDirectoryName(candidate.Path),
                     type = candidate.IsDirectory ? "folder" : "file",
                     modified_at = candidate.ModifiedAt,
                     score = Math.Round(candidate.Score, 3),
@@ -1980,7 +1995,18 @@ public sealed class JarvisAutomationService : IDisposable
 
     private Dictionary<string, object> DeleteWorkflow(string name)
     {
-        var removed = _settings.DeleteWorkflow(name);
+        var learned = _mappings.FindExact(LearnedMappingKind.Workflow, name);
+        var saved = FindSavedWorkflow(learned?.Target ?? name);
+        var canonicalName = saved?.Name ?? learned?.Target ?? name;
+        var removed = _settings.DeleteWorkflow(canonicalName);
+        if (!string.Equals(
+                FuzzyMatcher.Normalize(canonicalName),
+                FuzzyMatcher.Normalize(name),
+                StringComparison.Ordinal))
+        {
+            _settings.DeleteWorkflow(name);
+        }
+        _mappings.ForgetWorkflowReferences(canonicalName);
         _mappings.ForgetWorkflowReferences(name);
         return Logged("delete_workflow", name, removed, removed ? "Workflow deleted." : "Workflow not found.");
     }

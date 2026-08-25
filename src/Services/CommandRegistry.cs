@@ -37,6 +37,7 @@ public sealed class CommandRegistry
     private bool _browserPreRouteOwnsCurrentTurn;
     private string _latestJarvisUserTurn = "";
     private DateTime _latestJarvisUserTurnUtc;
+    private int _smartWritingOperationId;
 
     public CommandRegistry(
         KeyboardWtfApp app,
@@ -575,10 +576,12 @@ public sealed class CommandRegistry
         }
 
         ResetActionCancellation();
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_actionCts.Token);
+        var actionToken = _actionCts.Token;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(actionToken);
         var timeoutLimit = SmartWritingTimeoutFor(capture.RecordingDurationMs);
         timeout.CancelAfter(timeoutLimit);
         var token = timeout.Token;
+        var ownedOperationId = Interlocked.Increment(ref _smartWritingOperationId);
         var operation = Guid.NewGuid().ToString("N")[..12];
         var operationStarted = Stopwatch.GetTimestamp();
         long polishMs = 0;
@@ -602,50 +605,62 @@ public sealed class CommandRegistry
             AppLog.Info(
                 $"Smart Writing stage: operation={operation} stage=audio_polish_completed elapsedMs={polishMs} characters={result?.Length ?? 0}");
             token.ThrowIfCancellationRequested();
+            ThrowIfSmartWritingOperationWasReplaced(ownedOperationId, token);
             if (string.IsNullOrWhiteSpace(result))
                 throw new InvalidOperationException("Gemini returned no text to insert.");
             KeyboardWtfState.SetTranscript(result);
             var insertionStarted = Stopwatch.GetTimestamp();
-            await DeliverTextAsync(result, token);
+            await DeliverTextAsync(result, token, retainFinalTextOnClipboard: true);
             insertionMs = (long)Stopwatch.GetElapsedTime(insertionStarted).TotalMilliseconds;
             AppLog.Info(
                 $"Smart Writing audio timing: operation={operation} recordingMs={capture.RecordingDurationMs} " +
                 $"polishMs={polishMs} insertionMs={insertionMs} totalAfterRecordingMs=" +
                 $"{(long)Stopwatch.GetElapsedTime(operationStarted).TotalMilliseconds}");
         }
-        catch (OperationCanceledException) when (_actionCts.IsCancellationRequested)
+        catch (OperationCanceledException) when (
+            actionToken.IsCancellationRequested || !IsCurrentSmartWritingOperation(ownedOperationId))
         {
             AppLog.Info($"Smart Writing stage: operation={operation} stage=cancelled");
-            KeyboardWtfState.SetUi(VoiceUiPhase.Cancelled, "Cancelled", "Smart writing was stopped.");
+            if (IsCurrentSmartWritingOperation(ownedOperationId))
+                KeyboardWtfState.SetUi(VoiceUiPhase.Cancelled, "Cancelled", "Smart writing was stopped.");
         }
         catch (OperationCanceledException)
         {
             AppLog.Warning(
                 $"Smart Writing stage: operation={operation} stage=timeout limitMs={(long)timeoutLimit.TotalMilliseconds}");
-            KeyboardWtfState.SetUi(
-                VoiceUiPhase.Error,
-                "Smart Writing timed out",
-                "The request took too long and was stopped. Please try again.");
-            _notifications.Warning(
-                "Smart Writing timed out",
-                "The request took too long and was stopped. Please try again.");
+            if (IsCurrentSmartWritingOperation(ownedOperationId))
+            {
+                KeyboardWtfState.SetUi(
+                    VoiceUiPhase.Error,
+                    "Smart Writing timed out",
+                    "The request took too long and was stopped. Please try again.");
+                _notifications.Warning(
+                    "Smart Writing timed out",
+                    "The request took too long and was stopped. Please try again.");
+            }
         }
         catch (Exception ex)
         {
             AppLog.Warning(ex, "Paid audio Smart Writing failed; no text was inserted");
-            KeyboardWtfState.SetUi(VoiceUiPhase.Error, "Smart Writing unavailable", ex.Message);
-            _notifications.Warning("Smart Writing unavailable", ex.Message);
+            if (IsCurrentSmartWritingOperation(ownedOperationId))
+            {
+                KeyboardWtfState.SetUi(VoiceUiPhase.Error, "Smart Writing unavailable", ex.Message);
+                _notifications.Warning("Smart Writing unavailable", ex.Message);
+            }
         }
         finally
         {
-            KeyboardWtfState.IsProcessingAi = false;
-            if (NeedsSmartWritingTerminalCleanup(KeyboardWtfState.UiPhase, KeyboardWtfState.UiTitle))
+            if (IsCurrentSmartWritingOperation(ownedOperationId))
             {
-                AppLog.Warning($"Smart Writing stage: operation={operation} stage=terminal_cleanup_recovery");
-                KeyboardWtfState.SetUi(
-                    VoiceUiPhase.Error,
-                    "Smart Writing did not finish",
-                    "The operation ended without a delivery result. Please try again.");
+                KeyboardWtfState.IsProcessingAi = false;
+                if (NeedsSmartWritingTerminalCleanup(KeyboardWtfState.UiPhase, KeyboardWtfState.UiTitle))
+                {
+                    AppLog.Warning($"Smart Writing stage: operation={operation} stage=terminal_cleanup_recovery");
+                    KeyboardWtfState.SetUi(
+                        VoiceUiPhase.Error,
+                        "Smart Writing did not finish",
+                        "The operation ended without a delivery result. Please try again.");
+                }
             }
         }
     }
@@ -656,9 +671,11 @@ public sealed class CommandRegistry
     private async Task HandleSmartWritingTranscriptAsync(string transcript)
     {
         ResetActionCancellation();
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_actionCts.Token);
+        var actionToken = _actionCts.Token;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(actionToken);
         timeout.CancelAfter(SmartWritingTimeout);
         var token = timeout.Token;
+        var ownedOperationId = Interlocked.Increment(ref _smartWritingOperationId);
         var operation = Guid.NewGuid().ToString("N")[..12];
         var operationStarted = Stopwatch.GetTimestamp();
         long polishMs = 0;
@@ -678,9 +695,13 @@ public sealed class CommandRegistry
             AppLog.Info(
                 $"Smart Writing stage: operation={operation} stage=polish_completed elapsedMs={polishMs}");
             token.ThrowIfCancellationRequested();
+            ThrowIfSmartWritingOperationWasReplaced(ownedOperationId, token);
             var insertionStarted = Stopwatch.GetTimestamp();
             AppLog.Info($"Smart Writing stage: operation={operation} stage=insertion_started");
-            await DeliverTextAsync(string.IsNullOrWhiteSpace(result) ? transcript : result, token);
+            await DeliverTextAsync(
+                string.IsNullOrWhiteSpace(result) ? transcript : result,
+                token,
+                retainFinalTextOnClipboard: true);
             insertionMs = (long)Stopwatch.GetElapsedTime(insertionStarted).TotalMilliseconds;
             AppLog.Info(
                 $"Smart Writing timing: operation={operation} recordingMs={_capture.LastRecordingDurationMs} " +
@@ -688,45 +709,54 @@ public sealed class CommandRegistry
                 $"insertionMs={insertionMs} totalAfterTranscriptMs=" +
                 $"{(long)Stopwatch.GetElapsedTime(operationStarted).TotalMilliseconds}");
         }
-        catch (OperationCanceledException) when (_actionCts.IsCancellationRequested)
+        catch (OperationCanceledException) when (
+            actionToken.IsCancellationRequested || !IsCurrentSmartWritingOperation(ownedOperationId))
         {
             AppLog.Info($"Smart Writing stage: operation={operation} stage=cancelled");
-            KeyboardWtfState.SetUi(VoiceUiPhase.Cancelled, "Cancelled", "Smart writing was stopped.");
+            if (IsCurrentSmartWritingOperation(ownedOperationId))
+                KeyboardWtfState.SetUi(VoiceUiPhase.Cancelled, "Cancelled", "Smart writing was stopped.");
         }
         catch (OperationCanceledException)
         {
             AppLog.Warning(
                 $"Smart Writing stage: operation={operation} stage=timeout limitMs={(long)SmartWritingTimeout.TotalMilliseconds}");
-            KeyboardWtfState.SetUi(
-                VoiceUiPhase.Error,
-                "Smart Writing timed out",
-                "The request took too long and was stopped. Please try again.");
-            _notifications.Warning(
-                "Smart Writing timed out",
-                "The request took too long and was stopped. Please try again.");
+            if (IsCurrentSmartWritingOperation(ownedOperationId))
+            {
+                KeyboardWtfState.SetUi(
+                    VoiceUiPhase.Error,
+                    "Smart Writing timed out",
+                    "The request took too long and was stopped. Please try again.");
+                _notifications.Warning(
+                    "Smart Writing timed out",
+                    "The request took too long and was stopped. Please try again.");
+            }
         }
         catch (Exception ex)
         {
             if (AiProviderRegistry.Current is PaidCloudAiProvider)
             {
                 AppLog.Warning(ex, "Paid Smart Writing failed; no text was inserted");
-                KeyboardWtfState.SetUi(
-                    VoiceUiPhase.Error,
-                    "Smart Writing unavailable",
-                    ex.Message);
-                _notifications.Warning("Smart Writing unavailable", ex.Message);
+                if (IsCurrentSmartWritingOperation(ownedOperationId))
+                {
+                    KeyboardWtfState.SetUi(
+                        VoiceUiPhase.Error,
+                        "Smart Writing unavailable",
+                        ex.Message);
+                    _notifications.Warning("Smart Writing unavailable", ex.Message);
+                }
                 return;
             }
             AppLog.Warning(ex, "Smart writing AI failed; delivering raw transcript");
             _notifications.Warning("AI unavailable", "Typed the raw transcript instead.");
-            await DeliverTextAsync(transcript, token);
+            await DeliverTextAsync(transcript, token, retainFinalTextOnClipboard: true);
         }
         finally
         {
             // Every Smart Writing operation owns one terminal UI transition.
             // This guards against a completed provider/delivery path leaving
             // the stopwatch overlay in Polishing indefinitely.
-            if (NeedsSmartWritingTerminalCleanup(
+            if (IsCurrentSmartWritingOperation(ownedOperationId)
+                && NeedsSmartWritingTerminalCleanup(
                     KeyboardWtfState.UiPhase,
                     KeyboardWtfState.UiTitle))
             {
@@ -825,6 +855,18 @@ public sealed class CommandRegistry
         string title) =>
         phase == VoiceUiPhase.Thinking
         && string.Equals(title, "Polishing", StringComparison.Ordinal);
+
+    private bool IsCurrentSmartWritingOperation(int operationId) =>
+        Volatile.Read(ref _smartWritingOperationId) == operationId;
+
+    private void ThrowIfSmartWritingOperationWasReplaced(
+        int operationId,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!IsCurrentSmartWritingOperation(operationId))
+            throw new OperationCanceledException("A newer Smart Writing operation replaced this result.");
+    }
 
     private async Task DeliverRawDictationAsync(string transcript)
     {
@@ -1177,7 +1219,8 @@ public sealed class CommandRegistry
 
     private async Task DeliverTextAsync(
         string text,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool retainFinalTextOnClipboard = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var destination = _settings.Current.TextDeliveryMode switch
@@ -1212,6 +1255,19 @@ public sealed class CommandRegistry
             text,
             insertionTarget,
             cancellationToken);
+        if (ok
+            && retainFinalTextOnClipboard
+            && !string.Equals(destination, "Clipboard", StringComparison.OrdinalIgnoreCase))
+        {
+            if (RetainFinalTextOnClipboard(text))
+            {
+                AppLog.Info($"Smart Writing retained {text.Length} final characters on the clipboard");
+            }
+            else
+            {
+                AppLog.Warning("Smart Writing inserted the final text but could not retain it on the clipboard");
+            }
+        }
         if (!ok && destination == "Type Out")
         {
             var copied = await _router.SendAsync("Clipboard", text);
@@ -1259,6 +1315,11 @@ public sealed class CommandRegistry
             _ => "",
         };
     }
+
+    internal static bool RetainFinalTextOnClipboard(
+        string text,
+        Func<string, bool> setter = null) =>
+        (setter ?? ClipboardHelper.SetText)(text ?? "");
 
     private async Task CancelCurrentAsync()
     {

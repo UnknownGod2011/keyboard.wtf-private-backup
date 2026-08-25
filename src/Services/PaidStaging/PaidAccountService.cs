@@ -91,6 +91,16 @@ internal sealed record PaidInlineAudio(string MimeType, string Data);
 
 internal sealed class PaidAccountService : IDisposable
 {
+    internal static readonly IReadOnlyList<TimeSpan> LiveSlotConflictRetryDelays =
+    [
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(4),
+        TimeSpan.FromSeconds(8),
+        TimeSpan.FromSeconds(12),
+        TimeSpan.FromSeconds(15),
+        TimeSpan.FromSeconds(20),
+    ];
     private const string DesktopVersionHeader = "X-Keyboard-Wtf-Desktop-Version";
     private static readonly string DesktopVersion =
         (typeof(PaidAccountService).Assembly.GetName().Version ?? new Version(0, 0, 0)).ToString(3);
@@ -590,23 +600,32 @@ internal sealed class PaidAccountService : IDisposable
             Scheme = _configuration.BackendBaseUri.Scheme == Uri.UriSchemeHttps ? "wss" : "ws",
             Query = $"requestId={Uri.EscapeDataString(requestId)}",
         };
-        for (var attempt = 0; attempt < 2; attempt++)
+        var authenticationRefreshAttempted = false;
+        var liveSlotConflictRetries = 0;
+        while (true)
         {
             var socket = CreateLiveSocket(accessToken);
             try
             {
                 await socket.ConnectAsync(builder.Uri, cancellationToken);
-                if (attempt > 0)
+                if (authenticationRefreshAttempted)
                     AppLog.Info("Jarvis Live authentication recovered after one token refresh");
+                if (liveSlotConflictRetries > 0)
+                {
+                    AppLog.Info(
+                        $"Jarvis Live recovered after a previous-session slot conflict: retries={liveSlotConflictRetries}");
+                }
                 return socket;
             }
             catch (WebSocketException)
-                when (attempt == 0 && IsLiveAuthenticationRejection(socket.HttpStatusCode))
+                when (!authenticationRefreshAttempted
+                    && IsLiveAuthenticationRejection(socket.HttpStatusCode))
             {
                 AppLog.Warning(
                     $"Jarvis Live authentication was rejected with HTTP {(int?)socket.HttpStatusCode}; refreshing once");
                 socket.Dispose();
                 accessToken = await RefreshTokensAsync(cancellationToken, forceRefresh: true);
+                authenticationRefreshAttempted = true;
             }
             catch (WebSocketException exception)
                 when (IsLiveAuthenticationRejection(socket.HttpStatusCode))
@@ -616,14 +635,30 @@ internal sealed class PaidAccountService : IDisposable
                     "This desktop session was signed out or revoked. Sign in again to use Jarvis AI.");
                 throw new InvalidOperationException(_lastError, exception);
             }
+            catch (WebSocketException)
+                when (IsLiveSlotConflict(socket.HttpStatusCode)
+                    && liveSlotConflictRetries < LiveSlotConflictRetryDelays.Count)
+            {
+                var delay = LiveSlotConflictRetryDelays[liveSlotConflictRetries++];
+                AppLog.Warning(
+                    $"Jarvis Live previous-session slot is still finishing; retry={liveSlotConflictRetries} delayMs={(long)delay.TotalMilliseconds}");
+                socket.Dispose();
+                await Task.Delay(delay, cancellationToken);
+            }
+            catch (WebSocketException exception)
+                when (IsLiveSlotConflict(socket.HttpStatusCode))
+            {
+                socket.Dispose();
+                throw new InvalidOperationException(
+                    "The previous Jarvis session is still finishing. Wait a moment and try again.",
+                    exception);
+            }
             catch
             {
                 socket.Dispose();
                 throw;
             }
         }
-
-        throw new InvalidOperationException("Jarvis Live could not establish an authenticated connection.");
     }
 
     private static ClientWebSocket CreateLiveSocket(string accessToken)
@@ -637,6 +672,9 @@ internal sealed class PaidAccountService : IDisposable
 
     internal static bool IsLiveAuthenticationRejection(HttpStatusCode? statusCode) =>
         statusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden;
+
+    internal static bool IsLiveSlotConflict(HttpStatusCode? statusCode) =>
+        statusCode == HttpStatusCode.Conflict;
 
     private async Task EnsureUsableCreditsAsync(CancellationToken cancellationToken)
     {
