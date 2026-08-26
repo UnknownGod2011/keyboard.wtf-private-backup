@@ -186,6 +186,93 @@ public sealed class RoutineMemoryTests : IDisposable
     }
 
     [Fact]
+    public void Complete_explicit_save_turn_is_persisted_without_relying_on_model_tool_choice()
+    {
+        Directory.CreateDirectory(_root);
+        var settings = new SettingsService(Path.Combine(_root, "settings.json"));
+        settings.Load();
+        var mappings = new LearnedMappingService(Path.Combine(_root, "mappings.json"));
+        mappings.Load();
+        using var automation = new JarvisAutomationService(
+            new NotificationService(null),
+            settings,
+            new JarvisActionHistoryService(Path.Combine(_root, "history.json")),
+            mappings,
+            () => { });
+
+        var handled = automation.TryRememberWorkflowFromTranscript(
+            "Whenever I say potato patato, open Gmail, Discord, Devpost, Instagram, and Excel. Remember this.",
+            completeTurn: true,
+            out var result);
+
+        Assert.True(handled);
+        Assert.True((bool)result["ok"]);
+        Assert.True((bool)result["persistence_verified"]);
+        var persisted = settings.ReadPersistedWorkflow("potato patato");
+        Assert.NotNull(persisted);
+        Assert.Collection(
+            persisted.Actions,
+            action =>
+            {
+                Assert.Equal("url", action.Kind);
+                Assert.Equal("https://mail.google.com/", action.Target);
+            },
+            action =>
+            {
+                Assert.Contains(action.Kind, new[] { "app", "auto" });
+                Assert.Equal("Discord", action.Target);
+            },
+            action =>
+            {
+                Assert.Equal("url", action.Kind);
+                Assert.Equal("https://devpost.com/", action.Target);
+            },
+            action =>
+            {
+                Assert.Equal("url", action.Kind);
+                Assert.Equal("https://www.instagram.com/", action.Target);
+            },
+            action =>
+            {
+                Assert.Contains(action.Kind, new[] { "app", "auto" });
+                Assert.Equal("Excel", action.Target);
+            });
+        Assert.Equal(
+            "potato patato",
+            mappings.FindExact(LearnedMappingKind.Workflow, "potato patato")?.Target,
+            ignoreCase: true);
+    }
+
+    [Fact]
+    public void Incremental_voice_save_waits_for_the_explicit_terminal_marker()
+    {
+        Directory.CreateDirectory(_root);
+        var settings = new SettingsService(Path.Combine(_root, "settings.json"));
+        settings.Load();
+        var mappings = new LearnedMappingService(Path.Combine(_root, "mappings.json"));
+        mappings.Load();
+        using var automation = new JarvisAutomationService(
+            new NotificationService(null),
+            settings,
+            new JarvisActionHistoryService(Path.Combine(_root, "history.json")),
+            mappings,
+            () => { });
+
+        Assert.False(automation.TryRememberWorkflowFromTranscript(
+            "Whenever I say focus mode, open Gmail",
+            completeTurn: false,
+            out _));
+        Assert.Empty(settings.Current.JarvisWorkflows);
+
+        Assert.True(automation.TryRememberWorkflowFromTranscript(
+            "Whenever I say focus mode, open Gmail and Notepad. Remember this.",
+            completeTurn: false,
+            out var result));
+        Assert.True((bool)result["persistence_verified"]);
+        Assert.Equal(2, settings.ReadPersistedWorkflow("focus mode").Actions.Count);
+    }
+
+    [Fact]
     public async Task Deleting_a_workflow_by_alias_removes_and_tombstones_the_canonical_routine()
     {
         Directory.CreateDirectory(_root);

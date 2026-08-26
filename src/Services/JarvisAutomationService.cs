@@ -23,6 +23,22 @@ public sealed class JarvisAutomationService : IDisposable
     private const byte VkVolumeDown = 0xAE;
     private const byte VkVolumeUp = 0xAF;
     private const uint KeyeventfKeyup = 0x0002;
+    private static readonly IReadOnlyDictionary<string, string> KnownWebApps =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["gmail"] = "https://mail.google.com/",
+            ["google drive"] = "https://drive.google.com/",
+            ["drive"] = "https://drive.google.com/",
+            ["google calendar"] = "https://calendar.google.com/",
+            ["calendar"] = "https://calendar.google.com/",
+            ["youtube"] = "https://www.youtube.com/",
+            ["github"] = "https://github.com/",
+            ["chatgpt"] = "https://chatgpt.com/",
+            ["devpost"] = "https://devpost.com/",
+            ["instagram"] = "https://www.instagram.com/",
+            ["vercel"] = "https://vercel.com/",
+            ["whatsapp"] = "https://web.whatsapp.com/",
+        };
 
     private readonly NotificationService _notifications;
     private readonly SettingsService _settings;
@@ -382,21 +398,7 @@ public sealed class JarvisAutomationService : IDisposable
             return OpenKnownFolder(known);
         }
 
-        var webApps = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["gmail"] = "https://mail.google.com/",
-            ["google drive"] = "https://drive.google.com/",
-            ["drive"] = "https://drive.google.com/",
-            ["google calendar"] = "https://calendar.google.com/",
-            ["calendar"] = "https://calendar.google.com/",
-            ["youtube"] = "https://www.youtube.com/",
-            ["github"] = "https://github.com/",
-            ["chatgpt"] = "https://chatgpt.com/",
-            ["devpost"] = "https://devpost.com/",
-            ["vercel"] = "https://vercel.com/",
-            ["whatsapp"] = "https://web.whatsapp.com/",
-        };
-        if (!nativeOnly && webApps.TryGetValue(name, out var webUrl))
+        if (!nativeOnly && KnownWebApps.TryGetValue(name, out var webUrl))
             return OpenUrl(webUrl, "");
         if (name is "camera" or "windows camera")
             return OpenCamera();
@@ -1956,13 +1958,36 @@ public sealed class JarvisAutomationService : IDisposable
         if (string.IsNullOrWhiteSpace(trigger))
             return Result(false, "What phrase should trigger the routine?", needsClarification: true);
 
+        return SaveVerifiedRoutine(trigger, ParseWorkflowActions(args));
+    }
+
+    internal bool TryRememberWorkflowFromTranscript(
+        string text,
+        bool completeTurn,
+        out Dictionary<string, object> result)
+    {
+        result = null;
+        if (!TryParseExplicitWorkflow(text, completeTurn, out var trigger, out var actions))
+            return false;
+        result = SaveVerifiedRoutine(trigger, actions);
+        return true;
+    }
+
+    private Dictionary<string, object> SaveVerifiedRoutine(
+        string trigger,
+        IReadOnlyList<JarvisWorkflowActionSettings> actions)
+    {
+        trigger = CleanRoutineTrigger(trigger);
+        if (string.IsNullOrWhiteSpace(trigger))
+            return Result(false, "What phrase should trigger the routine?", needsClarification: true);
+
         JarvisWorkflowSettings workflow;
         try
         {
             workflow = _settings.SaveWorkflow(
                 trigger,
                 [trigger],
-                ParseWorkflowActions(args));
+                actions);
         }
         catch (InvalidOperationException ex)
         {
@@ -2007,6 +2032,115 @@ public sealed class JarvisAutomationService : IDisposable
                 ["mapping"] = mapping == null ? null : PublicMapping(mapping),
                 ["persistence_verified"] = true,
             });
+    }
+
+    private bool TryParseExplicitWorkflow(
+        string text,
+        bool completeTurn,
+        out string trigger,
+        out IReadOnlyList<JarvisWorkflowActionSettings> actions)
+    {
+        trigger = "";
+        actions = Array.Empty<JarvisWorkflowActionSettings>();
+        var request = Regex.Replace((text ?? "").Trim(), @"\s+", " ");
+        if (request.Length == 0)
+            return false;
+
+        // Live input transcription arrives incrementally. Do not persist an
+        // incomplete list during a speaking pause; a terminal remember/save
+        // phrase proves the spoken mapping is complete. Local text submissions
+        // are already complete turns and can be parsed immediately.
+        if (!completeTurn && !Regex.IsMatch(
+                request,
+                @"\b(?:remember|save)\s+(?:this|that)(?:\s+(?:workflow|routine))?\s*[.!?]*$",
+                RegexOptions.IgnoreCase))
+            return false;
+
+        var match = Regex.Match(
+            request,
+            @"(?:^|\b)(?:whenever|when)\s+i\s+say\s+(?<trigger>.+?)[,;:]\s*(?<actions>.+)$",
+            RegexOptions.IgnoreCase);
+        if (!match.Success)
+        {
+            match = Regex.Match(
+                request,
+                @"(?:^|\b)make\s+(?<trigger>.+?)\s+mean\s+(?<actions>.+)$",
+                RegexOptions.IgnoreCase);
+        }
+        if (!match.Success)
+            return false;
+
+        trigger = CleanRoutineTrigger(match.Groups["trigger"].Value.Trim(' ', '\'', '"'));
+        var actionText = Regex.Replace(
+            match.Groups["actions"].Value,
+            @"(?:[.!?]\s*)?(?:remember|save)\s+(?:this|that)(?:\s+(?:workflow|routine))?\s*[.!?]*$",
+            "",
+            RegexOptions.IgnoreCase).Trim();
+        if (string.IsNullOrWhiteSpace(trigger)
+            || !Regex.IsMatch(actionText, @"^(?:please\s+)?(?:open|launch|start|visit|go\s+to)\b", RegexOptions.IgnoreCase))
+            return false;
+
+        var targets = SplitExplicitOpenTargets(actionText);
+        if (targets.Count == 0)
+            return false;
+        actions = targets.Select(ResolveExplicitOpenAction).ToArray();
+        return actions.All(action => !string.IsNullOrWhiteSpace(action.Target));
+    }
+
+    private static IReadOnlyList<string> SplitExplicitOpenTargets(string actionText)
+    {
+        var list = Regex.Replace(
+            actionText,
+            @"^(?:please\s+)?(?:open|launch|start|visit|go\s+to)\s+",
+            "",
+            RegexOptions.IgnoreCase).Trim();
+        list = Regex.Replace(list, @"\s+(?:and\s+then|then)\s+", ",", RegexOptions.IgnoreCase);
+        var parts = list.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 1)
+            parts = Regex.Split(list, @"\s+and\s+", RegexOptions.IgnoreCase);
+        return parts
+            .Select(part => Regex.Replace(part, @"^and\s+", "", RegexOptions.IgnoreCase))
+            .Select(part => Regex.Replace(
+                part,
+                @"^(?:open|launch|start|visit|go\s+to)\s+",
+                "",
+                RegexOptions.IgnoreCase))
+            .Select(part => part.Trim().TrimEnd('.', '!', '?'))
+            .Where(part => !string.IsNullOrWhiteSpace(part))
+            .Take(24)
+            .ToArray();
+    }
+
+    private JarvisWorkflowActionSettings ResolveExplicitOpenAction(string rawTarget)
+    {
+        var explicitNative = Regex.IsMatch(rawTarget, @"\s+(?:native\s+)?(?:app|application)$", RegexOptions.IgnoreCase);
+        var explicitWeb = Regex.IsMatch(rawTarget, @"\s+(?:website|site|web\s+page)$", RegexOptions.IgnoreCase);
+        var target = Regex.Replace(
+            rawTarget,
+            @"\s+(?:(?:native\s+)?(?:app|application)|website|site|web\s+page)$",
+            "",
+            RegexOptions.IgnoreCase).Trim();
+        if (explicitNative)
+            return new JarvisWorkflowActionSettings { Kind = "app", Target = target };
+        if (Uri.TryCreate(target, UriKind.Absolute, out var uri)
+            && (string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+        {
+            return new JarvisWorkflowActionSettings { Kind = "url", Target = uri.AbsoluteUri };
+        }
+
+        var normalized = NormalizeWords(target);
+        if (KnownWebApps.TryGetValue(normalized, out var knownUrl))
+            return new JarvisWorkflowActionSettings { Kind = "url", Target = knownUrl };
+        if (explicitWeb || Regex.IsMatch(target, @"^[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+(?:/.*)?$"))
+            return new JarvisWorkflowActionSettings { Kind = "url", Target = NormalizeUrl(target) };
+
+        var app = _apps.Resolve(target);
+        return new JarvisWorkflowActionSettings
+        {
+            Kind = app.Status == AppResolutionStatus.Found ? "app" : "auto",
+            Target = target,
+        };
     }
 
     private Dictionary<string, object> ListWorkflows() =>

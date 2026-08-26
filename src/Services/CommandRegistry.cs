@@ -212,6 +212,32 @@ public sealed class CommandRegistry
         if (_automation != null
             && JarvisAutomationService.IsExplicitWorkflowPersistenceRequest(userTurn))
         {
+            if (_automation.TryRememberWorkflowFromTranscript(
+                    userTurn,
+                    completeTurn: fromLocalTextSubmission,
+                    out var saveResult))
+            {
+                var ok = saveResult.TryGetValue("ok", out var okValue)
+                    && okValue is bool succeeded
+                    && succeeded;
+                var message = saveResult.TryGetValue("message", out var messageValue)
+                    ? messageValue?.ToString() ?? ""
+                    : "";
+                lock (_browserPreRouteLock)
+                {
+                    _browserPreRouteReceipt = new BrowserPreRouteReceipt
+                    {
+                        UserTurn = userTurn,
+                        ToolName = "remember_routine",
+                        Ok = ok,
+                        Message = message,
+                        Result = new Dictionary<string, object>(saveResult),
+                    };
+                    _browserPreRouteOwnsCurrentTurn = true;
+                }
+                AppLog.Info($"Explicit workflow persistence pre-route: ok={ok}");
+                return true;
+            }
             AppLog.Info("Browser pre-route skipped for explicit workflow persistence request.");
             return false;
         }
