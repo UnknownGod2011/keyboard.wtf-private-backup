@@ -128,15 +128,19 @@ public class TypeOutDestination : IDestination
             KeyboardInput(VkControl, KeyeventfKeyup),
         };
 
-        var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+        var sent = SendInput((uint)inputs.Length, inputs, NativeInputSize);
         if (sent != inputs.Length)
         {
-            AppLog.Warning($"TypeOut: sent {sent}/{inputs.Length} paste input events");
+            AppLog.Warning(
+                $"TypeOut: sent {sent}/{inputs.Length} paste input events " +
+                $"win32Error={Marshal.GetLastWin32Error()} inputSize={NativeInputSize}");
             return false;
         }
 
         return true;
     }
+
+    internal static int NativeInputSize => Marshal.SizeOf<INPUT>();
 
     private static INPUT KeyboardInput(ushort key, uint flags) =>
         new()
@@ -169,7 +173,20 @@ public class TypeOutDestination : IDestination
     [StructLayout(LayoutKind.Explicit)]
     private struct InputUnion
     {
+        [FieldOffset(0)] public MOUSEINPUT mi;
         [FieldOffset(0)] public KEYBDINPUT ki;
+        [FieldOffset(0)] public HARDWAREINPUT hi;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -180,6 +197,14 @@ public class TypeOutDestination : IDestination
         public uint dwFlags;
         public uint time;
         public IntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct HARDWAREINPUT
+    {
+        public uint uMsg;
+        public ushort wParamL;
+        public ushort wParamH;
     }
 
     [DllImport("user32.dll", SetLastError = true)]

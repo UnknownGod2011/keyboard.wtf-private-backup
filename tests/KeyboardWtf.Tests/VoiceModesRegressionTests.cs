@@ -224,6 +224,13 @@ public sealed class VoiceModesRegressionTests
         Assert.Equal("original", clipboardText);
     }
 
+    [Fact]
+    public void Type_out_uses_the_complete_native_INPUT_layout()
+    {
+        var expectedSize = IntPtr.Size == 8 ? 40 : 28;
+        Assert.Equal(expectedSize, TypeOutDestination.NativeInputSize);
+    }
+
     private static TypeOutDestination CreateDestination(
         Func<TextInsertionTarget> captureTarget,
         Func<ClipboardHelper.Snapshot> captureClipboard,
