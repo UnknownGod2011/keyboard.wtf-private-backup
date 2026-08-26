@@ -178,29 +178,36 @@ public sealed class SmartFileSearchService
             };
         }
 
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
-        timeoutCts.CancelAfter(timeout ?? DefaultTimeout);
+        var roots = BuildRoots(requestedLocation);
+        var direct = TryResolveDirectChild(
+            cleanQuery,
+            roots,
+            includeFiles,
+            includeFolders);
+        if (direct != null)
+        {
+            return new FileSearchResult
+            {
+                Status = FileResolutionStatus.Found,
+                Best = direct,
+                Candidates = [direct],
+                SearchSummary = RootSummary(roots),
+            };
+        }
+
         try
         {
             return await Task.Run(
                 () => SearchCore(
                     cleanQuery,
-                    requestedLocation,
+                    roots,
                     includeFiles,
                     includeFolders,
                     Math.Clamp(maxDepth, 1, 10),
                     Math.Clamp(maxResults, 1, 25),
-                    timeoutCts.Token),
-                timeoutCts.Token);
-        }
-        catch (OperationCanceledException) when (!token.IsCancellationRequested)
-        {
-            return new FileSearchResult
-            {
-                Status = FileResolutionStatus.NotFound,
-                TimedOut = true,
-                SearchSummary = "common user folders with a bounded five-second search",
-            };
+                    timeout ?? DefaultTimeout,
+                    token),
+                token);
         }
         catch (OperationCanceledException)
         {
@@ -269,16 +276,18 @@ public sealed class SmartFileSearchService
 
     private FileSearchResult SearchCore(
         string query,
-        string location,
+        IReadOnlyList<SearchRoot> roots,
         bool includeFiles,
         bool includeFolders,
         int maxDepth,
         int maxResults,
+        TimeSpan timeout,
         CancellationToken token)
     {
-        var roots = BuildRoots(location);
         var candidates = new List<FileSearchCandidate>();
         var scanned = 0;
+        var timedOut = false;
+        var stopwatch = Stopwatch.StartNew();
         var wantsLatest = query.Contains("latest", StringComparison.OrdinalIgnoreCase)
             || query.Contains("recent", StringComparison.OrdinalIgnoreCase)
             || query.Contains("last ", StringComparison.OrdinalIgnoreCase);
@@ -292,6 +301,11 @@ public sealed class SmartFileSearchService
 
         while (queue.Count > 0 && scanned < DefaultMaxScannedEntries)
         {
+            if (stopwatch.Elapsed >= timeout)
+            {
+                timedOut = true;
+                break;
+            }
             token.ThrowIfCancellationRequested();
             var current = queue.Dequeue();
             IEnumerable<string> entries;
@@ -304,6 +318,11 @@ public sealed class SmartFileSearchService
 
             foreach (var entry in entries)
             {
+                if (stopwatch.Elapsed >= timeout)
+                {
+                    timedOut = true;
+                    break;
+                }
                 token.ThrowIfCancellationRequested();
                 scanned++;
                 if (scanned >= DefaultMaxScannedEntries)
@@ -361,6 +380,7 @@ public sealed class SmartFileSearchService
             {
                 Status = FileResolutionStatus.NotFound,
                 ScannedEntries = scanned,
+                TimedOut = timedOut,
                 SearchSummary = RootSummary(roots),
             };
         }
@@ -386,8 +406,75 @@ public sealed class SmartFileSearchService
             Best = best,
             Candidates = ranked,
             ScannedEntries = scanned,
+            TimedOut = timedOut,
             SearchSummary = RootSummary(roots),
         };
+    }
+
+    private static FileSearchCandidate TryResolveDirectChild(
+        string query,
+        IReadOnlyList<SearchRoot> roots,
+        bool includeFiles,
+        bool includeFolders)
+    {
+        var needle = SearchNeedle(query);
+        if (string.IsNullOrWhiteSpace(needle)
+            || needle.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            return null;
+
+        var literalNames = new[]
+        {
+            needle,
+            needle.Replace(' ', '.'),
+            needle.Replace(' ', '_'),
+            needle.Replace(' ', '-'),
+        }.Distinct(StringComparer.OrdinalIgnoreCase);
+        foreach (var root in roots.OrderByDescending(root => root.Priority))
+        {
+            foreach (var literalName in literalNames)
+            {
+                var direct = Path.Combine(root.Path, literalName);
+                if ((includeFolders && Directory.Exists(direct))
+                    || (includeFiles && File.Exists(direct)))
+                {
+                    return CandidateFromPath(ExistingPathSpelling(direct), root.Label, 1);
+                }
+
+                if (!includeFiles || Path.HasExtension(literalName))
+                    continue;
+                foreach (var extension in new[]
+                         {
+                             ".txt", ".md", ".pdf", ".doc", ".docx", ".rtf",
+                             ".ppt", ".pptx", ".xls", ".xlsx", ".csv",
+                             ".png", ".jpg", ".jpeg", ".webp",
+                         })
+                {
+                    var withExtension = direct + extension;
+                    if (File.Exists(withExtension))
+                        return CandidateFromPath(ExistingPathSpelling(withExtension), root.Label, 1);
+                }
+            }
+        }
+        return null;
+    }
+
+    private static string ExistingPathSpelling(string path)
+    {
+        try
+        {
+            var parent = Path.GetDirectoryName(path);
+            var name = Path.GetFileName(path);
+            if (string.IsNullOrWhiteSpace(parent) || string.IsNullOrWhiteSpace(name))
+                return path;
+            return Directory.EnumerateFileSystemEntries(parent, name, SearchOption.TopDirectoryOnly)
+                .FirstOrDefault(candidate =>
+                    string.Equals(candidate, path, StringComparison.OrdinalIgnoreCase))
+                ?? path;
+        }
+        catch
+        {
+            return path;
+        }
     }
 
     private IReadOnlyList<SearchRoot> BuildRoots(string location)

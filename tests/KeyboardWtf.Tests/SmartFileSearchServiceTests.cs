@@ -90,7 +90,8 @@ public sealed class SmartFileSearchServiceTests : IDisposable
             "",
             includeFiles: false,
             includeFolders: true,
-            CancellationToken.None);
+            CancellationToken.None,
+            timeout: TimeSpan.FromTicks(1));
 
         Assert.Equal(FileResolutionStatus.Found, result.Status);
         Assert.Equal(desktopTarget, result.Best.Path);
