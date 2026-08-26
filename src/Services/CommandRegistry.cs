@@ -289,6 +289,31 @@ public sealed class CommandRegistry
             return true;
         }
 
+        // An exact deleted trigger is a durable tombstone, not a new web
+        // search or planner request. Keep deletion authoritative across new
+        // conversations and legacy learned-index fallbacks.
+        if (_automation?.IsDeletedWorkflowTrigger(userTurn) == true)
+        {
+            var deletedResult = ToolResult(
+                false,
+                "That saved workflow was deleted. Save it again before using this trigger.",
+                supported: true);
+            lock (_browserPreRouteLock)
+            {
+                _browserPreRouteReceipt = new BrowserPreRouteReceipt
+                {
+                    UserTurn = userTurn,
+                    ToolName = "run_workflow",
+                    Ok = false,
+                    Message = deletedResult["message"]?.ToString() ?? "",
+                    Result = deletedResult,
+                };
+                _browserPreRouteOwnsCurrentTurn = true;
+            }
+            AppLog.Info("Deleted workflow trigger blocked from alternate routing.");
+            return true;
+        }
+
         if (_browserAutomation != null
             && JarvisAutomationService.TryGetBrowserTabSelection(
                 text,

@@ -317,6 +317,9 @@ public sealed class RoutineMemoryTests : IDisposable
             () => { });
         Assert.False(laterConversation.TryResolveSavedWorkflowTrigger("start my day", out _));
         Assert.False(laterConversation.TryResolveSavedWorkflowTrigger("initialize my setup", out _));
+        Assert.True(laterConversation.IsDeletedWorkflowTrigger("start my day"));
+        Assert.True(laterConversation.IsDeletedWorkflowTrigger("Initialize-my setup!"));
+        Assert.False(laterConversation.IsDeletedWorkflowTrigger("an unrelated request"));
     }
 
     public void Dispose()

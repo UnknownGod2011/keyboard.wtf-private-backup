@@ -2251,6 +2251,9 @@ public sealed class JarvisAutomationService : IDisposable
         return true;
     }
 
+    internal bool IsDeletedWorkflowTrigger(string utterance) =>
+        _settings.IsWorkflowDeleted(NormalizePhraseText(utterance));
+
     internal static bool IsExplicitWorkflowPersistenceRequest(string text)
     {
         var normalized = NormalizePhraseText(text);
