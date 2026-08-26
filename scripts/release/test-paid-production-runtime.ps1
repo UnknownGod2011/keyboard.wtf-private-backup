@@ -98,8 +98,8 @@ try {
 }
 finally {
     if ($null -ne $process -and -not $process.HasExited) {
-        $process.Kill($true)
-        $process.WaitForExit(5000)
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        $process.WaitForExit(5000) | Out-Null
     }
     Get-CimInstance Win32_Process -Filter "Name = 'keyboard.wtf.exe'" |
         Where-Object {
