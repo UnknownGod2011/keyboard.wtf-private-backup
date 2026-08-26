@@ -31,6 +31,8 @@ public sealed class JarvisAutomationService : IDisposable
             ["drive"] = "https://drive.google.com/",
             ["google calendar"] = "https://calendar.google.com/",
             ["calendar"] = "https://calendar.google.com/",
+            ["google sheets"] = "https://docs.google.com/spreadsheets/",
+            ["sheets"] = "https://docs.google.com/spreadsheets/",
             ["youtube"] = "https://www.youtube.com/",
             ["github"] = "https://github.com/",
             ["chatgpt"] = "https://chatgpt.com/",
@@ -39,6 +41,14 @@ public sealed class JarvisAutomationService : IDisposable
             ["vercel"] = "https://vercel.com/",
             ["whatsapp"] = "https://web.whatsapp.com/",
         };
+    private static readonly LearnedMappingKind[] DurablePreferenceKinds =
+    [
+        LearnedMappingKind.App,
+        LearnedMappingKind.Link,
+        LearnedMappingKind.File,
+        LearnedMappingKind.Folder,
+        LearnedMappingKind.Browser,
+    ];
 
     private readonly NotificationService _notifications;
     private readonly SettingsService _settings;
@@ -52,6 +62,7 @@ public sealed class JarvisAutomationService : IDisposable
     private readonly WebcamCaptureService _webcam = new();
     private readonly Action _openSettings;
     private readonly object _pendingLock = new();
+    private readonly object _conversationStateLock = new();
     private readonly JarvisTimerService _timerService;
     private readonly bool _ownsTimerService;
     private readonly object _selectionLock = new();
@@ -60,6 +71,10 @@ public sealed class JarvisAutomationService : IDisposable
     private SelectionSnapshot _lastSelection;
     private string _latestUserTranscript = "";
     private DateTimeOffset _latestUserTranscriptAt;
+    private string _latestOpenTarget = "";
+    private DateTimeOffset _latestOpenTargetAt;
+    private string _latestWorkflowName = "";
+    private DateTimeOffset _latestWorkflowAt;
     private bool _executingApprovedAction;
     private bool _disposed;
 
@@ -192,6 +207,7 @@ public sealed class JarvisAutomationService : IDisposable
             "copy_text" => CopyText(GetString(args, "text")),
             "create_workflow" => CreateWorkflow(args),
             "remember_routine" => RememberRoutine(args),
+            "edit_workflow" => EditWorkflow(args),
             "list_workflows" => ListWorkflows(),
             "run_workflow" => await RunWorkflowAsync(GetString(args, "name"), token),
             "delete_workflow" => DeleteWorkflow(GetString(args, "name")),
@@ -296,6 +312,7 @@ public sealed class JarvisAutomationService : IDisposable
         "copy_text" => "Copy prepared text to the clipboard",
         "create_workflow" => "Save a Jarvis workflow",
         "remember_routine" => $"Remember the phrase {GetString(args, "trigger")} as a routine",
+        "edit_workflow" => $"Update workflow {GetString(args, "name")}",
         "run_workflow" => $"Run the {GetString(args, "name")} workflow",
         "delete_workflow" => $"Delete the {GetString(args, "name")} workflow",
         "remember_app_alias" => $"Remember {GetString(args, "alias")} as {GetString(args, "app_name")}",
@@ -366,6 +383,7 @@ public sealed class JarvisAutomationService : IDisposable
         var name = NormalizeWords(resolverQuery);
         if (string.IsNullOrWhiteSpace(name))
             return Result(false, "Which app should I open?", needsClarification: true);
+        RememberTransientOpenTarget(name);
 
         if (IsWindowsSettingsTarget(name))
         {
@@ -727,6 +745,60 @@ public sealed class JarvisAutomationService : IDisposable
                 return Logged("window_action", $"close {label}", true, $"Closed {label}.");
             default:
                 return Result(false, "Supported window actions are list, switch, minimize, maximize, restore, and close.", supported: false);
+        }
+    }
+
+    internal void ResetConversationTransientContext()
+    {
+        lock (_conversationStateLock)
+        {
+            _latestOpenTarget = "";
+            _latestOpenTargetAt = default;
+            _latestWorkflowName = "";
+            _latestWorkflowAt = default;
+        }
+    }
+
+    private void RememberTransientOpenTarget(string target)
+    {
+        var clean = Limit((target ?? "").Trim(), 120);
+        if (string.IsNullOrWhiteSpace(clean))
+            return;
+        lock (_conversationStateLock)
+        {
+            _latestOpenTarget = clean;
+            _latestOpenTargetAt = DateTimeOffset.UtcNow;
+        }
+    }
+
+    private string RecentOpenTarget()
+    {
+        lock (_conversationStateLock)
+        {
+            return DateTimeOffset.UtcNow - _latestOpenTargetAt <= TimeSpan.FromMinutes(5)
+                ? _latestOpenTarget
+                : "";
+        }
+    }
+
+    private void RememberWorkflowContext(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return;
+        lock (_conversationStateLock)
+        {
+            _latestWorkflowName = name.Trim();
+            _latestWorkflowAt = DateTimeOffset.UtcNow;
+        }
+    }
+
+    private string RecentWorkflowName()
+    {
+        lock (_conversationStateLock)
+        {
+            return DateTimeOffset.UtcNow - _latestWorkflowAt <= TimeSpan.FromMinutes(10)
+                ? _latestWorkflowName
+                : "";
         }
     }
 
@@ -1780,17 +1852,25 @@ public sealed class JarvisAutomationService : IDisposable
                 });
         }
 
-        var entry = _mappings.Remember(
+        var entry = _mappings.RememberExclusive(
             LearnedMappingKind.App,
             alias,
             resolution.Best.LaunchTarget,
-            resolution.Best.Name);
+            resolution.Best.Name,
+            DurablePreferenceKinds);
+        var persisted = _mappings.FindExact(LearnedMappingKind.App, alias);
+        if (!MappingRecordsMatch(entry, persisted))
+            return Result(false, "The app preference could not be read back, so I did not mark it as remembered.");
         return Logged(
             "remember_app_alias",
             $"{entry.Alias} -> {entry.DisplayName}",
             true,
             $"I will use {entry.DisplayName} when you say {entry.Alias}.",
-            extras: new() { ["mapping"] = PublicMapping(entry) });
+            extras: new()
+            {
+                ["mapping"] = PublicMapping(persisted),
+                ["persistence_verified"] = true,
+            });
     }
 
     private Dictionary<string, object> RememberPathAlias(string alias, string path, string kind)
@@ -1805,24 +1885,230 @@ public sealed class JarvisAutomationService : IDisposable
         var mappingKind = NormalizeWords(kind) == "folder" || isFolder
             ? LearnedMappingKind.Folder
             : LearnedMappingKind.File;
-        var entry = _mappings.Remember(mappingKind, alias, expanded, Path.GetFileName(expanded.TrimEnd(Path.DirectorySeparatorChar)));
+        var entry = _mappings.RememberExclusive(
+            mappingKind,
+            alias,
+            expanded,
+            Path.GetFileName(expanded.TrimEnd(Path.DirectorySeparatorChar)),
+            DurablePreferenceKinds);
+        var persisted = _mappings.FindExact(mappingKind, alias);
+        if (!MappingRecordsMatch(entry, persisted))
+            return Result(false, "The path preference could not be read back, so I did not mark it as remembered.");
         return Logged(
             "remember_path_alias",
             $"{entry.Alias} -> {entry.Target}",
             true,
             $"Remembered {entry.Alias}.",
-            extras: new() { ["mapping"] = PublicMapping(entry) });
+            extras: new()
+            {
+                ["mapping"] = PublicMapping(persisted),
+                ["persistence_verified"] = true,
+            });
     }
 
     private Dictionary<string, object> RememberLinkAlias(string alias, string url)
     {
-        var entry = _mappings.Remember(LearnedMappingKind.Link, alias, url, url);
+        var entry = _mappings.RememberExclusive(
+            LearnedMappingKind.Link,
+            alias,
+            url,
+            url,
+            DurablePreferenceKinds);
+        var persisted = _mappings.FindExact(LearnedMappingKind.Link, alias);
+        if (!MappingRecordsMatch(entry, persisted))
+            return Result(false, "The web preference could not be read back, so I did not mark it as remembered.");
         return Logged(
             "remember_link_alias",
             $"{entry.Alias} -> {entry.Target}",
             true,
             $"Remembered the link {entry.Alias}.",
-            extras: new() { ["mapping"] = PublicMapping(entry) });
+            extras: new()
+            {
+                ["mapping"] = PublicMapping(persisted),
+                ["persistence_verified"] = true,
+            });
+    }
+
+    internal bool TryApplyDurablePreferenceFromTranscript(
+        string text,
+        out string toolName,
+        out Dictionary<string, object> result)
+    {
+        toolName = "";
+        result = null;
+        var request = Regex.Replace((text ?? "").Trim(), @"\s+", " ");
+        if (!IsExplicitDurablePreferenceRequest(request))
+            return false;
+
+        var forget = Regex.Match(
+            request,
+            @"^(?:please\s+)?(?:forget|delete|remove|clear|stop\s+remembering)(?:\s+my|\s+the)?(?:\s+saved)?\s+(?:preference|correction|mapping)\s+(?:for|about)\s+(?<alias>.+?)[.!?]*$",
+            RegexOptions.IgnoreCase);
+        if (forget.Success)
+        {
+            var alias = CleanPreferenceAlias(forget.Groups["alias"].Value);
+            var removed = _mappings.ForgetAcrossKinds(alias, DurablePreferenceKinds);
+            result = Logged(
+                "forget_learned_mapping",
+                alias,
+                removed > 0 && !DurablePreferenceKinds.Any(kind =>
+                    _mappings.FindExact(kind, alias) != null),
+                removed > 0
+                    ? $"Forgot the saved preference for {alias}."
+                    : $"No saved preference for {alias} was found.",
+                extras: new() { ["removed_count"] = removed });
+            toolName = "forget_learned_mapping";
+            return true;
+        }
+
+        var explicitLink = Regex.Match(
+            request,
+            @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward|remember(?:\s+that)?))\s+(?:open|use)\s+(?<url>https?://\S+|[\p{L}\p{N}.-]+\.[\p{L}]{2,}\S*)\s+(?:when\s+i\s+say|for)\s+(?<alias>.+?)[.!?]*$",
+            RegexOptions.IgnoreCase);
+        if (explicitLink.Success)
+        {
+            var alias = CleanPreferenceAlias(explicitLink.Groups["alias"].Value);
+            var url = NormalizeUrl(explicitLink.Groups["url"].Value.TrimEnd('.', '!', '?'));
+            result = RememberLinkAlias(alias, url);
+            toolName = "remember_link_alias";
+            return true;
+        }
+
+        if (TryParseWebPreference(request, out var webAlias))
+        {
+            if (!TryResolvePreferenceUrl(webAlias, out var webUrl))
+            {
+                result = Result(
+                    false,
+                    $"I need the exact website URL to remember a web preference for {webAlias}.",
+                    needsClarification: true);
+                toolName = "remember_link_alias";
+                return true;
+            }
+            result = RememberLinkAlias(webAlias, webUrl);
+            toolName = "remember_link_alias";
+            return true;
+        }
+
+        if (TryParseNativePreference(request, out var nativeAlias))
+        {
+            result = RememberAppAlias(nativeAlias, nativeAlias);
+            toolName = "remember_app_alias";
+            return true;
+        }
+
+        var browser = Regex.Match(
+            request,
+            @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward|remember(?:\s+that)?\s+i))\s+(?:use|open\s+links\s+in)\s+(?<browser>chrome|edge|brave|firefox|opera|vivaldi|arc)(?:\s+browser)?[.!?]*$",
+            RegexOptions.IgnoreCase);
+        if (browser.Success)
+        {
+            result = SetBrowserPreference(browser.Groups["browser"].Value);
+            toolName = "set_browser_preference";
+            return true;
+        }
+
+        return false;
+    }
+
+    internal static bool IsExplicitDurablePreferenceRequest(string text)
+    {
+        var request = (text ?? "").Trim();
+        if (request.Length == 0
+            || Regex.IsMatch(
+                request,
+                @"\b(?:this\s+time|just\s+(?:this\s+)?once|for\s+now|temporarily|only\s+today)\b",
+                RegexOptions.IgnoreCase))
+            return false;
+        return Regex.IsMatch(
+            request,
+            @"\b(?:always|from\s+now\s+on|going\s+forward|remember\s+(?:that|to)|(?:forget|delete|remove|clear)\s+(?:my\s+|the\s+)?(?:saved\s+)?(?:preference|correction|mapping)|stop\s+remembering)\b",
+            RegexOptions.IgnoreCase);
+    }
+
+    private bool TryParseWebPreference(string request, out string alias)
+    {
+        alias = "";
+        var patterns = new[]
+        {
+            @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward))\s+(?:open|use|launch)\s+(?<alias>.+?)\s+(?:on|in|using)\s+(?:the\s+)?(?:web|browser|web\s+version)(?:\s+instead)?[.!?]*$",
+            @"^remember\s+that\s+i\s+(?:use|open)\s+(?<alias>.+?)\s+(?:on|in|using)\s+(?:the\s+)?(?:web|browser|web\s+version)[.!?]*$",
+            @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward))\s+(?:use|open)\s+(?:the\s+)?(?:web|browser|web\s+version)(?:\s+instead)?\s+(?:for|of)\s+(?<alias>.+?)[.!?]*$",
+            @"^(?:change|update)\s+(?:my\s+|the\s+)?(?:saved\s+)?preference\s+for\s+(?<alias>.+?)\s+to\s+(?:the\s+)?(?:web|browser|web\s+version)[.!?]*$",
+        };
+        foreach (var pattern in patterns)
+        {
+            var match = Regex.Match(request, pattern, RegexOptions.IgnoreCase);
+            if (!match.Success)
+                continue;
+            alias = CleanPreferenceAlias(match.Groups["alias"].Value);
+            return !string.IsNullOrWhiteSpace(alias);
+        }
+
+        if (!Regex.IsMatch(
+                request,
+                @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward))\s+(?:use|open)\s+(?:it\s+)?(?:(?:on|in)\s+)?(?:the\s+)?(?:web|browser|web\s+version)(?:\s+instead)?[.!?]*$",
+                RegexOptions.IgnoreCase))
+            return false;
+        alias = RecentOpenTarget();
+        return !string.IsNullOrWhiteSpace(alias);
+    }
+
+    private bool TryParseNativePreference(string request, out string alias)
+    {
+        alias = "";
+        var patterns = new[]
+        {
+            @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward))\s+(?:open|use|launch)\s+(?<alias>.+?)\s+as\s+(?:an?\s+)?(?:native\s+)?(?:app|application)[.!?]*$",
+            @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward))\s+(?:use|open)\s+(?:the\s+)?(?:native\s+)?(?:app|application)\s+(?:for|of)\s+(?<alias>.+?)[.!?]*$",
+            @"^(?:change|update)\s+(?:my\s+|the\s+)?(?:saved\s+)?preference\s+for\s+(?<alias>.+?)\s+to\s+(?:the\s+)?(?:native\s+)?(?:app|application)[.!?]*$",
+        };
+        foreach (var pattern in patterns)
+        {
+            var match = Regex.Match(request, pattern, RegexOptions.IgnoreCase);
+            if (!match.Success)
+                continue;
+            alias = CleanPreferenceAlias(match.Groups["alias"].Value);
+            return !string.IsNullOrWhiteSpace(alias);
+        }
+        return false;
+    }
+
+    private static string CleanPreferenceAlias(string value) =>
+        Regex.Replace(
+            (value ?? "").Trim().Trim(' ', '\'', '"', '.', '!', '?'),
+            @"^(?:the\s+)",
+            "",
+            RegexOptions.IgnoreCase).Trim();
+
+    private static bool TryResolvePreferenceUrl(string alias, out string url)
+    {
+        url = "";
+        var clean = CleanPreferenceAlias(alias);
+        if (Uri.TryCreate(clean, UriKind.Absolute, out var absolute)
+            && (string.Equals(absolute.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(absolute.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+        {
+            url = absolute.AbsoluteUri;
+            return true;
+        }
+        var normalized = NormalizeWords(clean);
+        if (KnownWebApps.TryGetValue(normalized, out url))
+            return true;
+        // Discord is intentionally native-first for an ambiguous "open"
+        // request, but its official web client is a valid explicit durable
+        // preference target.
+        if (normalized == "discord")
+        {
+            url = "https://discord.com/app";
+            return true;
+        }
+        if (Regex.IsMatch(clean, @"^[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+(?:/.*)?$"))
+        {
+            url = NormalizeUrl(clean);
+            return true;
+        }
+        return false;
     }
 
     private Dictionary<string, object> RememberWorkflowAlias(string alias, string workflowName)
@@ -1871,13 +2157,17 @@ public sealed class JarvisAutomationService : IDisposable
         if (!string.IsNullOrWhiteSpace(normalized) && _browsers.FindBrowserExecutable(normalized) == null)
             return Result(false, $"{browser} is not installed, so the browser preference was not changed.", supported: false);
         _settings.SavePreferredBrowser(normalized);
+        var persisted = _settings.ReadPersistedPreferredBrowser();
+        if (!string.Equals(normalized, persisted, StringComparison.OrdinalIgnoreCase))
+            return Result(false, "The browser preference could not be read back, so I did not confirm it.");
         return Logged(
             "set_browser_preference",
             normalized,
             true,
             string.IsNullOrWhiteSpace(normalized)
                 ? "Future links will use the Windows default browser."
-                : $"Future links will use {browser} unless you name another browser.");
+                : $"Future links will use {browser} unless you name another browser.",
+            extras: new() { ["persistence_verified"] = true });
     }
 
     private Dictionary<string, object> OpenGmailDraft(string recipient, string subject, string body)
@@ -1961,6 +2251,338 @@ public sealed class JarvisAutomationService : IDisposable
         return SaveVerifiedRoutine(trigger, ParseWorkflowActions(args));
     }
 
+    private Dictionary<string, object> EditWorkflow(JsonElement args) =>
+        ApplyWorkflowEdit(
+            GetString(args, "name"),
+            GetString(args, "operation"),
+            GetString(args, "target"),
+            GetString(args, "replacement") ?? GetString(args, "new_value"));
+
+    internal bool TryEditWorkflowFromTranscript(
+        string text,
+        out Dictionary<string, object> result)
+    {
+        result = null;
+        var request = Regex.Replace((text ?? "").Trim(), @"\s+", " ")
+            .TrimEnd('.', '!', '?');
+        if (request.Length == 0)
+            return false;
+
+        var aliasEdit = Regex.Match(
+            request,
+            @"^(?<operation>add|remove|delete)\s+(?:the\s+)?alias\s+(?<target>.+?)\s+(?:to|from)\s+(?<workflow>.+)$",
+            RegexOptions.IgnoreCase);
+        if (aliasEdit.Success)
+        {
+            result = ApplyWorkflowEdit(
+                ResolveWorkflowReference(aliasEdit.Groups["workflow"].Value),
+                aliasEdit.Groups["operation"].Value.Equals("add", StringComparison.OrdinalIgnoreCase)
+                    ? "add_alias"
+                    : "remove_alias",
+                aliasEdit.Groups["target"].Value,
+                "");
+            return true;
+        }
+
+        var rename = Regex.Match(
+            request,
+            @"^rename\s+(?<workflow>.+?)\s+to\s+(?<target>.+)$",
+            RegexOptions.IgnoreCase);
+        if (rename.Success)
+        {
+            result = ApplyWorkflowEdit(
+                ResolveWorkflowReference(rename.Groups["workflow"].Value),
+                "rename",
+                rename.Groups["target"].Value,
+                "");
+            return true;
+        }
+
+        var replace = Regex.Match(
+            request,
+            @"^(?:replace|change)\s+(?<target>.+?)\s+(?:with|to)\s+(?<replacement>.+?)(?:\s+(?:in|from)\s+(?<workflow>.+))?$",
+            RegexOptions.IgnoreCase);
+        if (replace.Success)
+        {
+            var rawWorkflow = replace.Groups["workflow"].Value;
+            var workflow = ResolveWorkflowReference(rawWorkflow);
+            if (!string.IsNullOrWhiteSpace(workflow))
+            {
+                if (FindSavedWorkflow(workflow) == null
+                    && !IsExplicitWorkflowReferenceLanguage(rawWorkflow))
+                    return false;
+                result = ApplyWorkflowEdit(
+                    workflow,
+                    "replace_action",
+                    replace.Groups["target"].Value,
+                    replace.Groups["replacement"].Value);
+                return true;
+            }
+        }
+
+        var actionEdit = Regex.Match(
+            request,
+            @"^(?<operation>add|remove|delete)\s+(?<target>.+?)(?:\s+(?:to|from)\s+(?<workflow>.+))?$",
+            RegexOptions.IgnoreCase);
+        if (!actionEdit.Success)
+            return false;
+        var rawWorkflowReference = actionEdit.Groups["workflow"].Value;
+        var workflowReference = ResolveWorkflowReference(rawWorkflowReference);
+        if (string.IsNullOrWhiteSpace(workflowReference))
+            return false;
+        if (FindSavedWorkflow(workflowReference) == null
+            && !IsExplicitWorkflowReferenceLanguage(rawWorkflowReference))
+            return false;
+        result = ApplyWorkflowEdit(
+            workflowReference,
+            actionEdit.Groups["operation"].Value.Equals("add", StringComparison.OrdinalIgnoreCase)
+                ? "add_action"
+                : "remove_action",
+            actionEdit.Groups["target"].Value,
+            "");
+        return true;
+    }
+
+    private static bool IsExplicitWorkflowReferenceLanguage(string value) =>
+        Regex.IsMatch(
+            (value ?? "").Trim(),
+            @"\b(?:workflow|routine|setup)\b",
+            RegexOptions.IgnoreCase);
+
+    private Dictionary<string, object> ApplyWorkflowEdit(
+        string workflowReference,
+        string operation,
+        string target,
+        string replacement)
+    {
+        var workflow = FindSavedWorkflow(workflowReference);
+        if (workflow == null)
+            return Result(false, $"Workflow {workflowReference} was not found.", supported: false);
+
+        var previousIdentities = (workflow.Aliases ?? [])
+            .Prepend(workflow.Name)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var newName = workflow.Name;
+        var aliases = (workflow.Aliases ?? [])
+            .Prepend(workflow.Name)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var actions = OrderedWorkflowActions(workflow)
+            .Select(action => new JarvisWorkflowActionSettings
+            {
+                Kind = action.Kind,
+                Target = action.Target,
+            })
+            .ToList();
+        var normalizedOperation = NormalizeWords(
+            (operation ?? "").Replace('_', ' ').Replace('-', ' '));
+        var cleanTarget = (target ?? "").Trim().Trim(' ', '\'', '"', '.', '!', '?');
+
+        switch (normalizedOperation)
+        {
+            case "add action":
+            case "add":
+            {
+                var action = ResolveExplicitOpenAction(cleanTarget);
+                if (string.IsNullOrWhiteSpace(action.Target))
+                    return Result(false, "What should I add to the workflow?", needsClarification: true);
+                if (!actions.Any(existing => SameWorkflowAction(existing, action)))
+                    actions.Add(action);
+                break;
+            }
+            case "remove action":
+            case "remove":
+            case "delete action":
+            {
+                if (!TryFindWorkflowAction(actions, cleanTarget, out var index, out var reason))
+                    return Result(false, reason, needsClarification: true);
+                actions.RemoveAt(index);
+                if (actions.Count == 0)
+                    return Result(false, "A workflow must keep at least one action. Delete the workflow instead.", needsClarification: true);
+                break;
+            }
+            case "replace action":
+            case "replace":
+            case "change":
+            {
+                if (!TryFindWorkflowAction(actions, cleanTarget, out var index, out var reason))
+                    return Result(false, reason, needsClarification: true);
+                var action = ResolveExplicitOpenAction(replacement);
+                if (string.IsNullOrWhiteSpace(action.Target))
+                    return Result(false, "What should replace that workflow action?", needsClarification: true);
+                actions[index] = action;
+                break;
+            }
+            case "rename":
+                newName = CleanRoutineTrigger(cleanTarget);
+                if (string.IsNullOrWhiteSpace(newName))
+                    return Result(false, "What should the workflow be called?", needsClarification: true);
+                aliases.RemoveAll(alias => string.Equals(
+                    NormalizePhraseText(alias),
+                    NormalizePhraseText(workflow.Name),
+                    StringComparison.Ordinal));
+                aliases.Insert(0, newName);
+                break;
+            case "add alias":
+            {
+                var alias = CleanRoutineTrigger(cleanTarget);
+                if (string.IsNullOrWhiteSpace(alias))
+                    return Result(false, "What alias should I add?", needsClarification: true);
+                if (!aliases.Any(existing => string.Equals(
+                    NormalizePhraseText(existing),
+                    NormalizePhraseText(alias),
+                    StringComparison.Ordinal)))
+                    aliases.Add(alias);
+                break;
+            }
+            case "remove alias":
+            case "delete alias":
+            {
+                var normalized = NormalizePhraseText(cleanTarget);
+                if (string.Equals(normalized, NormalizePhraseText(workflow.Name), StringComparison.Ordinal))
+                    return Result(false, "Rename the workflow instead of removing its canonical trigger.", needsClarification: true);
+                var removed = aliases.RemoveAll(alias => string.Equals(
+                    NormalizePhraseText(alias),
+                    normalized,
+                    StringComparison.Ordinal));
+                if (removed == 0)
+                    return Result(false, $"Alias {cleanTarget} was not found.", needsClarification: true);
+                break;
+            }
+            default:
+                return Result(false, "Supported workflow edits are add, remove, replace, rename, and alias changes.", supported: false);
+        }
+
+        JarvisWorkflowSettings updated;
+        try
+        {
+            updated = _settings.UpdateWorkflow(
+                workflow.Name,
+                newName,
+                aliases,
+                actions);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Result(false, ex.Message, needsClarification: true);
+        }
+
+        var persisted = _settings.ReadPersistedWorkflow(updated.Name);
+        if (!WorkflowRecordsMatch(updated, persisted))
+        {
+            return Logged(
+                "edit_workflow",
+                workflow.Name,
+                false,
+                "The updated workflow could not be read back, so I did not confirm the change.");
+        }
+
+        try
+        {
+            foreach (var identity in previousIdentities)
+                _mappings.ForgetWorkflowReferences(identity);
+            foreach (var alias in persisted.Aliases.Prepend(persisted.Name)
+                .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                _mappings.Remember(
+                    LearnedMappingKind.Workflow,
+                    alias,
+                    persisted.Name,
+                    persisted.Name);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning(ex, "Workflow alias index refresh failed after verified authoritative edit");
+        }
+
+        RememberWorkflowContext(persisted.Name);
+        return Logged(
+            "edit_workflow",
+            persisted.Name,
+            true,
+            $"Updated workflow {persisted.Name}.",
+            extras: new()
+            {
+                ["workflow"] = PublicWorkflow(persisted),
+                ["persistence_verified"] = true,
+            });
+    }
+
+    private string ResolveWorkflowReference(string value)
+    {
+        var reference = Regex.Replace((value ?? "").Trim(), @"\s+", " ")
+            .Trim(' ', '\'', '"', '.', '!', '?');
+        reference = Regex.Replace(reference, @"^(?:my|the)\s+", "", RegexOptions.IgnoreCase);
+        reference = Regex.Replace(reference, @"\s+(?:workflow|routine)$", "", RegexOptions.IgnoreCase);
+        if (string.IsNullOrWhiteSpace(reference)
+            || NormalizeWords(reference) is "that" or "this" or "it" or "workflow" or "routine" or "that workflow" or "this workflow")
+            return RecentWorkflowName();
+        return FindSavedWorkflow(reference)?.Name ?? reference;
+    }
+
+    private static bool TryFindWorkflowAction(
+        IReadOnlyList<JarvisWorkflowActionSettings> actions,
+        string query,
+        out int index,
+        out string reason)
+    {
+        index = -1;
+        reason = "";
+        var ranked = actions
+            .Select((action, actionIndex) => new
+            {
+                Index = actionIndex,
+                Score = WorkflowActionMatchScore(action, query),
+            })
+            .Where(item => item.Score >= 0.62)
+            .OrderByDescending(item => item.Score)
+            .ToArray();
+        if (ranked.Length == 0)
+        {
+            reason = $"I could not find {query} in that workflow.";
+            return false;
+        }
+        if (ranked.Length > 1
+            && ranked[0].Score < 0.92
+            && ranked[0].Score - ranked[1].Score < 0.08)
+        {
+            reason = $"More than one workflow action resembles {query}. Please name it more precisely.";
+            return false;
+        }
+        index = ranked[0].Index;
+        return true;
+    }
+
+    private static double WorkflowActionMatchScore(
+        JarvisWorkflowActionSettings action,
+        string query)
+    {
+        var terms = new List<string> { action?.Target ?? "" };
+        if (Uri.TryCreate(action?.Target, UriKind.Absolute, out var uri))
+        {
+            var host = uri.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase)
+                ? uri.Host[4..]
+                : uri.Host;
+            terms.Add(host);
+            terms.Add(host.Split('.')[0]);
+            terms.AddRange(KnownWebApps
+                .Where(pair => Uri.TryCreate(pair.Value, UriKind.Absolute, out var known)
+                    && string.Equals(known.Host, uri.Host, StringComparison.OrdinalIgnoreCase))
+                .Select(pair => pair.Key));
+        }
+        return terms.Max(term => FuzzyMatcher.Score(query, term));
+    }
+
+    private static bool SameWorkflowAction(
+        JarvisWorkflowActionSettings left,
+        JarvisWorkflowActionSettings right) =>
+        string.Equals(left?.Kind, right?.Kind, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(left?.Target, right?.Target, StringComparison.OrdinalIgnoreCase);
+
     internal bool TryRememberWorkflowFromTranscript(
         string text,
         bool completeTurn,
@@ -2021,6 +2643,7 @@ public sealed class JarvisAutomationService : IDisposable
                 false,
                 "The complete workflow could not be read back from local storage, so I did not mark it as remembered.");
         }
+        RememberWorkflowContext(persisted.Name);
         return Logged(
             "remember_routine",
             trigger,
@@ -2166,6 +2789,7 @@ public sealed class JarvisAutomationService : IDisposable
         var workflow = FindWorkflow(name);
         if (workflow == null)
             return Result(false, $"Workflow {name} was not found. Create it first or use a built-in example.", supported: false);
+        RememberWorkflowContext(workflow.Name);
 
         var failures = new List<string>();
         var receipts = new List<object>();
@@ -2233,6 +2857,17 @@ public sealed class JarvisAutomationService : IDisposable
         _mappings.ForgetWorkflowReferences(name);
         foreach (var alias in saved?.Aliases ?? [])
             _mappings.ForgetWorkflowReferences(alias);
+        lock (_conversationStateLock)
+        {
+            if (string.Equals(
+                    NormalizePhraseText(_latestWorkflowName),
+                    NormalizePhraseText(canonicalName),
+                    StringComparison.Ordinal))
+            {
+                _latestWorkflowName = "";
+                _latestWorkflowAt = default;
+            }
+        }
         return Logged("delete_workflow", name, removed, removed ? "Workflow deleted." : "Workflow not found.");
     }
 
@@ -2248,6 +2883,7 @@ public sealed class JarvisAutomationService : IDisposable
         if (workflow == null || OrderedWorkflowActions(workflow).Count == 0)
             return false;
         canonicalName = workflow.Name;
+        RememberWorkflowContext(workflow.Name);
         return true;
     }
 
@@ -2594,6 +3230,18 @@ public sealed class JarvisAutomationService : IDisposable
                 NormalizePhraseText(persisted.Name),
                 StringComparison.Ordinal))
             return false;
+        var expectedAliases = (expected.Aliases ?? [])
+            .Prepend(expected.Name)
+            .Select(NormalizePhraseText)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(StringComparer.Ordinal);
+        var persistedAliases = (persisted.Aliases ?? [])
+            .Prepend(persisted.Name)
+            .Select(NormalizePhraseText)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(StringComparer.Ordinal);
+        if (!expectedAliases.SetEquals(persistedAliases))
+            return false;
         var expectedActions = OrderedWorkflowActions(expected);
         var persistedActions = OrderedWorkflowActions(persisted);
         return expectedActions.Count > 0
@@ -2602,6 +3250,18 @@ public sealed class JarvisAutomationService : IDisposable
                 string.Equals(pair.First.Kind, pair.Second.Kind, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(pair.First.Target, pair.Second.Target, StringComparison.OrdinalIgnoreCase));
     }
+
+    private static bool MappingRecordsMatch(
+        LearnedMappingEntry expected,
+        LearnedMappingEntry persisted) =>
+        expected != null
+        && persisted != null
+        && expected.Kind == persisted.Kind
+        && string.Equals(
+            FuzzyMatcher.Normalize(expected.Alias),
+            FuzzyMatcher.Normalize(persisted.Alias),
+            StringComparison.Ordinal)
+        && string.Equals(expected.Target, persisted.Target, StringComparison.OrdinalIgnoreCase);
 
     private static object PublicWorkflow(JarvisWorkflowSettings workflow) => new
     {

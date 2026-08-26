@@ -592,8 +592,13 @@ internal sealed class PaidAccountService : IDisposable
         CancellationToken cancellationToken = default)
     {
         EnsureEnabled();
+        var totalStarted = Stopwatch.GetTimestamp();
+        var entitlementStarted = Stopwatch.GetTimestamp();
         await EnsureUsableCreditsAsync(cancellationToken);
+        var entitlementMs = (long)Stopwatch.GetElapsedTime(entitlementStarted).TotalMilliseconds;
+        var authenticationStarted = Stopwatch.GetTimestamp();
         var accessToken = await EnsureAccessTokenAsync(cancellationToken);
+        var authenticationMs = (long)Stopwatch.GetElapsedTime(authenticationStarted).TotalMilliseconds;
         var requestId = $"desktop_live_{Guid.NewGuid():N}";
         var builder = new UriBuilder(new Uri(_configuration.BackendBaseUri, "v1/ai/live"))
         {
@@ -615,6 +620,10 @@ internal sealed class PaidAccountService : IDisposable
                     AppLog.Info(
                         $"Jarvis Live recovered after a previous-session slot conflict: retries={liveSlotConflictRetries}");
                 }
+                AppLog.Info(
+                    $"Jarvis Live backend timing: entitlementMs={entitlementMs} " +
+                    $"authenticationMs={authenticationMs} retries={liveSlotConflictRetries} " +
+                    $"totalMs={(long)Stopwatch.GetElapsedTime(totalStarted).TotalMilliseconds}");
                 return socket;
             }
             catch (WebSocketException)

@@ -27,6 +27,10 @@ public sealed class BrowserAutomationV2ClassifierTests
     [InlineData("Open Instagram and Discord.")]
     [InlineData("Open Gmail.")]
     [InlineData("Open Devpost.")]
+    [InlineData("Always open Discord on the web instead.")]
+    [InlineData("Add Instagram to my duck duck setup.")]
+    [InlineData("Remove Devpost from that workflow.")]
+    [InlineData("Change Gmail to Google Sheets in that workflow.")]
     public void Simple_open_and_search_commands_stay_on_fast_tools(string request)
     {
         var result = _classifier.Classify(request);
@@ -184,6 +188,18 @@ public sealed class BrowserAutomationV2ClassifierTests
     public void Pre_routed_turn_rejects_competing_active_window_tools(string toolName)
     {
         Assert.False(CommandRegistry.IsBrowserTaskLifecycleTool(toolName));
+    }
+
+    [Theory]
+    [InlineData("remember_routine")]
+    [InlineData("edit_workflow")]
+    [InlineData("remember_app_alias")]
+    [InlineData("remember_link_alias")]
+    [InlineData("forget_learned_mapping")]
+    [InlineData("set_browser_preference")]
+    public void Durable_local_mutations_are_idempotent_pre_route_operations(string toolName)
+    {
+        Assert.True(CommandRegistry.IsDurableMutationTool(toolName));
     }
 
     [Fact]

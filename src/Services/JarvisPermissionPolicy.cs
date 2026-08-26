@@ -16,7 +16,7 @@ public static class JarvisPermissionPolicy
         "open_camera", "take_photo", "take_screenshot", "inspect_screen", "virtual_desktop_action",
         "windows_recording_action",
         "open_gmail_draft", "prepare_whatsapp_message", "copy_text", "create_workflow",
-        "remember_routine",
+        "remember_routine", "edit_workflow",
         "run_workflow", "delete_workflow", "remember_app_alias", "remember_path_alias",
         "remember_link_alias", "remember_workflow_alias", "forget_learned_mapping", "set_browser_preference",
     };

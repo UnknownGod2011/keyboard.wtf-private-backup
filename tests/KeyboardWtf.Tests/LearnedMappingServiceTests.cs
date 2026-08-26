@@ -48,6 +48,40 @@ public sealed class LearnedMappingServiceTests : IDisposable
         Assert.Equal(LearnedMappingService.MaxEntries, service.Snapshot().Count);
     }
 
+    [Fact]
+    public void ExclusivePreferenceReplacesSupersededKindInOneDurableRecord()
+    {
+        var service = new LearnedMappingService(_path);
+        service.Load();
+        service.Remember(
+            LearnedMappingKind.App,
+            "My service",
+            "appx:Example.App_123!App",
+            "Example App");
+
+        service.RememberExclusive(
+            LearnedMappingKind.Link,
+            "my-service",
+            "https://example.com/app",
+            "Example web",
+            LearnedMappingKind.App,
+            LearnedMappingKind.Link);
+
+        var reloaded = new LearnedMappingService(_path);
+        reloaded.Load();
+        Assert.Null(reloaded.FindExact(LearnedMappingKind.App, "my service"));
+        Assert.Equal(
+            "https://example.com/app",
+            reloaded.FindExact(LearnedMappingKind.Link, "MY_service")?.Target);
+        Assert.Equal(
+            1,
+            reloaded.ForgetAcrossKinds(
+                "my service",
+                LearnedMappingKind.App,
+                LearnedMappingKind.Link));
+        Assert.Empty(reloaded.Snapshot());
+    }
+
     public void Dispose()
     {
         try

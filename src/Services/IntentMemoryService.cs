@@ -35,11 +35,18 @@ public sealed class IntentMemoryService
     private readonly object _lock = new();
     private readonly List<IntentMemoryEntry> _entries = new();
 
-    public string MemoryPath { get; } = Path.Combine(SettingsService.AppDataDir, "intent-memory.json");
+    public IntentMemoryService(string memoryPath = null)
+    {
+        MemoryPath = string.IsNullOrWhiteSpace(memoryPath)
+            ? Path.Combine(SettingsService.AppDataDir, "intent-memory.json")
+            : memoryPath;
+    }
+
+    public string MemoryPath { get; }
 
     public void Load()
     {
-        Directory.CreateDirectory(SettingsService.AppDataDir);
+        EnsureMemoryDirectory();
         if (!File.Exists(MemoryPath))
             return;
 
@@ -137,6 +144,23 @@ public sealed class IntentMemoryService
         }
     }
 
+    public IntentMemoryEntry ReadPersisted(string idOrKey)
+    {
+        var needle = (idOrKey ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(needle) || !File.Exists(MemoryPath))
+            return null;
+        lock (_lock)
+        {
+            var entries = JsonSerializer.Deserialize<List<IntentMemoryEntry>>(
+                File.ReadAllText(MemoryPath),
+                JsonOptions) ?? new();
+            var entry = entries.FirstOrDefault(candidate =>
+                string.Equals(candidate.Id, needle, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(candidate.Key, needle, StringComparison.OrdinalIgnoreCase));
+            return entry == null ? null : Clone(NormalizeEntry(entry));
+        }
+    }
+
     public void Clear()
     {
         lock (_lock)
@@ -181,9 +205,18 @@ public sealed class IntentMemoryService
 
     private void SaveLocked()
     {
-        Directory.CreateDirectory(SettingsService.AppDataDir);
+        EnsureMemoryDirectory();
         var ordered = _entries.OrderByDescending(e => e.UpdatedAt).ToArray();
-        File.WriteAllText(MemoryPath, JsonSerializer.Serialize(ordered, JsonOptions));
+        var temporaryPath = MemoryPath + ".tmp";
+        File.WriteAllText(temporaryPath, JsonSerializer.Serialize(ordered, JsonOptions));
+        File.Move(temporaryPath, MemoryPath, overwrite: true);
+    }
+
+    private void EnsureMemoryDirectory()
+    {
+        var directory = Path.GetDirectoryName(MemoryPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
     }
 
     private static IntentMemoryEntry NormalizeEntry(IntentMemoryEntry entry)

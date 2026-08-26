@@ -123,6 +123,56 @@ public sealed class LearnedMappingService
         }
     }
 
+    public LearnedMappingEntry RememberExclusive(
+        LearnedMappingKind kind,
+        string alias,
+        string target,
+        string displayName,
+        params LearnedMappingKind[] supersededKinds)
+    {
+        var cleanAlias = Clean(alias, 80);
+        var cleanTarget = CleanTarget(target);
+        if (string.IsNullOrWhiteSpace(cleanAlias))
+            throw new InvalidOperationException("A learned preference needs an alias.");
+        if (string.IsNullOrWhiteSpace(cleanTarget))
+            throw new InvalidOperationException("A learned preference needs a target.");
+        ValidateTarget(kind, cleanTarget);
+
+        var normalizedAlias = FuzzyMatcher.Normalize(cleanAlias);
+        var replaceableKinds = (supersededKinds ?? Array.Empty<LearnedMappingKind>())
+            .Append(kind)
+            .ToHashSet();
+        lock (_lock)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var existing = _entries.FirstOrDefault(entry =>
+                entry.Kind == kind
+                && FuzzyMatcher.Normalize(entry.Alias) == normalizedAlias);
+            _entries.RemoveAll(entry =>
+                !ReferenceEquals(entry, existing)
+                && replaceableKinds.Contains(entry.Kind)
+                && FuzzyMatcher.Normalize(entry.Alias) == normalizedAlias);
+            if (existing == null)
+            {
+                existing = new LearnedMappingEntry
+                {
+                    Kind = kind,
+                    Alias = cleanAlias,
+                    CreatedAt = now,
+                };
+                _entries.Add(existing);
+            }
+
+            existing.Alias = cleanAlias;
+            existing.Target = cleanTarget;
+            existing.DisplayName = Clean(displayName, 120);
+            existing.UpdatedAt = now;
+            TrimLocked();
+            SaveLocked();
+            return Clone(existing);
+        }
+    }
+
     public LearnedMappingEntry FindExact(LearnedMappingKind kind, string alias)
     {
         var normalized = FuzzyMatcher.Normalize(alias);
@@ -170,6 +220,27 @@ public sealed class LearnedMappingService
                 && (string.Equals(entry.Id, needle, StringComparison.OrdinalIgnoreCase)
                     || string.Equals(entry.Alias, needle, StringComparison.OrdinalIgnoreCase))) > 0;
             if (removed)
+                SaveLocked();
+            return removed;
+        }
+    }
+
+    public int ForgetAcrossKinds(
+        string idOrAlias,
+        params LearnedMappingKind[] kinds)
+    {
+        var needle = (idOrAlias ?? "").Trim();
+        if (needle.Length == 0)
+            return 0;
+        var normalized = FuzzyMatcher.Normalize(needle);
+        var allowedKinds = (kinds ?? Array.Empty<LearnedMappingKind>()).ToHashSet();
+        lock (_lock)
+        {
+            var removed = _entries.RemoveAll(entry =>
+                (allowedKinds.Count == 0 || allowedKinds.Contains(entry.Kind))
+                && (string.Equals(entry.Id, needle, StringComparison.OrdinalIgnoreCase)
+                    || FuzzyMatcher.Normalize(entry.Alias) == normalized));
+            if (removed > 0)
                 SaveLocked();
             return removed;
         }

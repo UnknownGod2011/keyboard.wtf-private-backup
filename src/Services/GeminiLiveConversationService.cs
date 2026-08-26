@@ -111,6 +111,7 @@ public sealed class GeminiLiveConversationService : IDisposable
     {
         if (Interlocked.CompareExchange(ref _startInProgress, 1, 0) != 0)
             return;
+        var startupStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         try
         {
             if (_paidAccount?.Enabled == true)
@@ -145,6 +146,9 @@ public sealed class GeminiLiveConversationService : IDisposable
             _toolAttemptGuard.Reset();
             _logicalSessionId = Guid.NewGuid().ToString("N");
             _providerSocketSequence = 0;
+            var localPreflightMs = (long)System.Diagnostics.Stopwatch
+                .GetElapsedTime(startupStarted)
+                .TotalMilliseconds;
 
             try
             {
@@ -155,20 +159,41 @@ public sealed class GeminiLiveConversationService : IDisposable
                         AssistantName(),
                         "Connecting securely...");
                     await Task.Yield();
-                    var microphoneStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-                    StartMicrophone();
-                    AppLog.Info(
-                        $"Jarvis logical session started: logicalSession={_logicalSessionId} microphoneStartupMs=" +
-                        (long)System.Diagnostics.Stopwatch
-                            .GetElapsedTime(microphoneStarted)
-                            .TotalMilliseconds);
-                    // The dedicated Jarvis hotkey is the user's explicit intent.
-                    // Open the real paid transport immediately and retain a short
-                    // bounded PCM pre-roll only so words spoken during setup are
-                    // not clipped.
-                    await EnsurePaidLiveActivatedAsync(
+                    // Authentication/entitlement and the WebSocket handshake do
+                    // not depend on WaveIn initialization. Begin the real paid
+                    // transport first, then open the microphone immediately on
+                    // this same user-triggered path. Audio remains in the
+                    // existing bounded pre-roll until setup completes.
+                    var transportStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+                    var activationTask = EnsurePaidLiveActivatedAsync(
                         includeBufferedAudio: true,
-                        token);
+                        token,
+                        showReady: false);
+                    var microphoneStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+                    try
+                    {
+                        StartMicrophone();
+                    }
+                    catch
+                    {
+                        _sessionCts?.Cancel();
+                        try { await activationTask; }
+                        catch { }
+                        throw;
+                    }
+                    var microphoneMs = (long)System.Diagnostics.Stopwatch
+                        .GetElapsedTime(microphoneStarted)
+                        .TotalMilliseconds;
+                    AppLog.Info(
+                        $"Jarvis logical session started: logicalSession={_logicalSessionId} " +
+                        $"localPreflightMs={localPreflightMs} microphoneStartupMs={microphoneMs}");
+                    await activationTask;
+                    ShowConversationReady(announce: Volatile.Read(ref _providerSocketSequence) == 1);
+                    AppLog.Info(
+                        $"Jarvis startup timing: logicalSession={_logicalSessionId} " +
+                        $"localPreflightMs={localPreflightMs} microphoneMs={microphoneMs} " +
+                        $"transportReadyMs={(long)System.Diagnostics.Stopwatch.GetElapsedTime(transportStarted).TotalMilliseconds} " +
+                        $"totalMs={(long)System.Diagnostics.Stopwatch.GetElapsedTime(startupStarted).TotalMilliseconds}");
                     return;
                 }
 
@@ -197,6 +222,7 @@ public sealed class GeminiLiveConversationService : IDisposable
         CancellationTokenSource expectedSession,
         CancellationToken token)
     {
+        var connectionStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         var setupReady = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         ClientWebSocket socket;
@@ -213,6 +239,9 @@ public sealed class GeminiLiveConversationService : IDisposable
                 $"?key={Uri.EscapeDataString(KeyboardWtfState.GeminiApiKey)}");
             await socket.ConnectAsync(endpoint, token);
         }
+        var socketConnectedMs = (long)System.Diagnostics.Stopwatch
+            .GetElapsedTime(connectionStarted)
+            .TotalMilliseconds;
 
         if (!ReferenceEquals(_sessionCts, expectedSession) || token.IsCancellationRequested)
         {
@@ -271,6 +300,10 @@ public sealed class GeminiLiveConversationService : IDisposable
         await setupReady.Task.WaitAsync(TimeSpan.FromSeconds(12), token);
         await SendRolloverContextIfPresentAsync(token);
         StartPlayback();
+        AppLog.Info(
+            $"Jarvis transport timing: logicalSession={_logicalSessionId} " +
+            $"socketConnectedMs={socketConnectedMs} " +
+            $"setupReadyMs={(long)System.Diagnostics.Stopwatch.GetElapsedTime(connectionStarted).TotalMilliseconds}");
     }
 
     private void ShowConversationReady(bool announce)
@@ -544,7 +577,8 @@ public sealed class GeminiLiveConversationService : IDisposable
 
     private Task EnsurePaidLiveActivatedAsync(
         bool includeBufferedAudio,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool showReady = true)
     {
         if (_paidAccount?.Enabled != true || IsProviderConnected)
             return Task.CompletedTask;
@@ -566,6 +600,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             _paidActivationTask = ActivatePaidLiveAsync(
                 session,
                 includeBufferedAudio,
+                showReady,
                 session.Token);
             return _paidActivationTask.WaitAsync(cancellationToken);
         }
@@ -574,6 +609,7 @@ public sealed class GeminiLiveConversationService : IDisposable
     private async Task ActivatePaidLiveAsync(
         CancellationTokenSource expectedSession,
         bool includeBufferedAudio,
+        bool showReady,
         CancellationToken token)
     {
         await ConnectAndSetupLiveAsync(expectedSession, token);
@@ -603,7 +639,8 @@ public sealed class GeminiLiveConversationService : IDisposable
             _audioSendLock.Release();
         }
 
-        ShowConversationReady(announce: Volatile.Read(ref _providerSocketSequence) == 1);
+        if (showReady)
+            ShowConversationReady(announce: Volatile.Read(ref _providerSocketSequence) == 1);
     }
 
     internal static TimeSpan PaidReconnectDelay(int failureCount) =>
@@ -1056,13 +1093,21 @@ public sealed class GeminiLiveConversationService : IDisposable
             case "remember_intent":
             {
                 var entry = _memory.Remember(GetArg(args, "key"), GetArg(args, "value") ?? GetArg(args, "text"));
+                var persisted = _memory.ReadPersisted(entry.Id);
+                if (persisted == null
+                    || !string.Equals(entry.Key, persisted.Key, StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(entry.Value, persisted.Value, StringComparison.Ordinal))
+                {
+                    return ToolError("Intent memory could not be read back, so it was not confirmed as saved.");
+                }
                 var count = _memory.Snapshot().Count;
                 return ToolOk("Saved to intent memory.", new()
                 {
-                    ["key"] = entry.Key,
-                    ["value"] = entry.Value,
+                    ["key"] = persisted.Key,
+                    ["value"] = persisted.Value,
                     ["count"] = count,
                     ["max_entries"] = IntentMemoryService.MaxEntries,
+                    ["persistence_verified"] = true,
                 });
             }
             case "recall_intent":
@@ -1087,10 +1132,13 @@ public sealed class GeminiLiveConversationService : IDisposable
             }
             case "forget_intent_memory":
             {
-                var removed = _memory.Forget(GetArg(args, "key_or_id") ?? GetArg(args, "key") ?? GetArg(args, "id"));
+                var keyOrId = GetArg(args, "key_or_id") ?? GetArg(args, "key") ?? GetArg(args, "id");
+                var removed = _memory.Forget(keyOrId);
+                var deletionVerified = _memory.ReadPersisted(keyOrId) == null;
                 return ToolOk(removed ? "Removed from intent memory." : "No matching intent memory was found.", new()
                 {
                     ["removed"] = removed,
+                    ["persistence_verified"] = deletionVerified,
                 });
             }
             case "end_conversation":
@@ -1251,7 +1299,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             "Treat successful tool receipts as authoritative. If an earlier capability fails but a later fallback succeeds for the requested outcome, report the final success and keep the superseded failure internal. Never claim success without a successful receipt. " +
             "App names and file names do not need to be exact. Use open_app, open_folder, open_path, or search_files with the user's natural approximate wording; the local resolver performs fuzzy matching and returns choices when confidence is low. Preserve an explicit Desktop, Documents, Downloads, or other location in the tool location field because the local resolver treats it as a strong scope. " +
             "If the local resolver returns multiple candidates, read only the short names, ask the user to choose, and then retry with the chosen name or path. Do not guess between ambiguous matches. " +
-            "If the user corrects an app, file, folder, link, or browser choice, ask whether they want that correction remembered. Call a remember tool only after they explicitly approve it. " +
+            "If the user corrects an app, file, folder, link, or browser choice only for this time, keep it temporary. If they clearly say always, from now on, going forward, or remember that, persist the correction immediately with the matching existing remember tool and use it in future conversations; never claim it was saved until local read-back succeeds. A current explicit instruction overrides a saved preference for that one turn. " +
             "When the user explicitly asks to remember a selected http/https link for a phrase such as open test portal, call remember_link_alias with the phrase as alias. If the URL is omitted, the local tool safely reads the current selection, validates it, and restores the clipboard. Do not claim the alias was saved until that tool succeeds. " +
             "Use list_learned_mappings and forget_learned_mapping for requests to inspect or forget local mappings. " +
             "Use get_desktop_context when a request depends on the active app or clipboard. Re-evaluate routing independently for every user turn; never carry selected-content mode or page-action mode forward from the previous turn. If the current request explicitly says the user selected or highlighted something, call get_selected_text for that current turn and use the returned selection as normal answer context. Never reuse a selection or get_selected_text result from an earlier turn. The local tool performs a fresh bounded capture and only uses a recent same-window fallback when fresh Windows capture is momentarily unavailable. The selection may be one word needing a definition, a paragraph needing a summary, questions needing answers, or any other content, including content inside a webpage or form. Do not start browser automation for that turn unless the same current request explicitly asks to fill, enter, click, choose, submit, paste, or otherwise modify the page. A current request to fill, complete, or solve a form, quiz, questionnaire, assessment, or survey without mentioning a selection is a page-action request and should use browser automation; do not ask the user to select text merely because the previous turn used a selection. For a bare answer this, solve these, explain this, or what does this mean request with neither explicit selection context nor a clear page-action target, ask one short clarification. " +
@@ -1266,6 +1314,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             "Virtual desktop create/next/previous actions use Windows shortcuts. Closing the current virtual desktop requires confirmation. A successful tool response means the shortcut was sent, not that desktop state was independently verified. " +
             "For Windows recording requests, call windows_recording_action. Win+Alt+R is a toggle controlled by Xbox Game Bar, so report only that the shortcut was sent unless Windows state is independently verified. " +
             "When the user explicitly asks to remember or save a reusable trigger, for example whenever/when I say PHRASE do ACTIONS, call remember_routine once with the exact trigger and an ordered actions array. Classify each action as app, url, or folder and preserve the user's order. Use app for installed applications and url for ordinary websites. The local tool durably reads the complete record back before confirming. When a later utterance matches a saved trigger, call run_workflow using exactly what the user said; the local resolver and stored actions are authoritative, so never reinterpret that trigger into Browser Automation. " +
+            "When the user asks to add, remove, replace, rename, or change an alias on an existing saved workflow, call edit_workflow. Update that one authoritative workflow instead of creating a competing copy, and confirm only after the updated ordered record is read back. A phrase such as that workflow refers only to the workflow used earlier in this same conversation; otherwise ask which saved workflow. " +
             "Ordinary one-time commands such as open an app, open these apps, or visit a site are transient. Never call remember_routine, create_workflow, remember_intent, or another remember tool unless the user explicitly asks to remember, save, learn, or reuse the behavior later. " +
             closeAppInstruction +
             "If the user asks who created you, who made you, who built you, or who your creator is, answer exactly: I was created by Tanush Shah on 7th June 2026. Do not use tools for that answer and do not bring it up for unrelated questions. " +
@@ -1275,7 +1324,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             "For an email/Gmail draft or a WhatsApp message, prefer the dedicated safe draft tool and do not start browser automation in parallel. Use browser automation only when the requested outcome actually depends on live inbox/page state. " +
             "If a request is unsupported, say that clearly and briefly. " +
             "For WhatsApp requests with only a contact name, call prepare_whatsapp_message with the contact name and message; the tool will explain the current limitation. " +
-            "Only save intent memory when the user explicitly asks you to remember something. Keep saved memory short and useful. " +
+            "Only save intent memory when the user explicitly asks you to remember something. Keep saved memory short and useful. To update an existing saved memory, call remember_intent with its same key and the new value; to delete one, call forget_intent_memory. Confirm an update or deletion only from the tool's persistence_verified result. " +
             "Use saved intent memory only when it helps the current request. " +
             "In casual conversation only, you may occasionally ask one genuinely useful follow-up or show brief curiosity. Do not append a question to every answer, and never add conversational follow-ups while executing a task or when the user asked for a direct answer. " +
             "End the conversation only when the user clearly dismisses Jarvis or explicitly ends the chat/conversation, for example goodbye, stop Jarvis, end chat, or go away. Thanks and thank you are normal conversational acknowledgements and must not end Jarvis. Browser/window commands such as close, close tab, close window, or close Chrome must never end Jarvis. " +
@@ -1736,6 +1785,19 @@ public sealed class GeminiLiveConversationService : IDisposable
                     },
                     "trigger",
                     "actions"),
+                FunctionDeclaration(
+                    "edit_workflow",
+                    "Edit one existing saved workflow in place and verify the complete updated record from durable storage. Use for add/remove/replace action, rename, add alias, or remove alias requests. Do not create a duplicate workflow.",
+                    new()
+                    {
+                        ["name"] = Schema("string", "Current workflow name or alias."),
+                        ["operation"] = Schema("string", "add_action, remove_action, replace_action, rename, add_alias, or remove_alias."),
+                        ["target"] = Schema("string", "Action or alias to add/remove/replace, or the new name for rename."),
+                        ["replacement"] = Schema("string", "Replacement action for replace_action; otherwise empty."),
+                    },
+                    "name",
+                    "operation",
+                    "target"),
                 FunctionDeclaration(
                     "list_workflows",
                     "List saved workflows and built-in examples.",

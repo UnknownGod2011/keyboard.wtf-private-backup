@@ -32,6 +32,19 @@ internal sealed class BrowserPreRouteReceipt
             Normalize(userTurn),
             StringComparison.Ordinal);
 
+    public bool IsIncrementalContinuationOf(string userTurn, DateTime utcNow)
+    {
+        if (!IsFresh(utcNow))
+            return false;
+        var existing = Normalize(UserTurn);
+        var current = Normalize(userTurn);
+        return existing.Length > 0
+            && current.Length > 0
+            && (string.Equals(existing, current, StringComparison.Ordinal)
+                || current.StartsWith(existing + " ", StringComparison.Ordinal)
+                || existing.StartsWith(current + " ", StringComparison.Ordinal));
+    }
+
     public bool AppliesTo(string toolName, DateTime utcNow) =>
         IsFresh(utcNow)
         && string.Equals(ToolName, toolName?.Trim(), StringComparison.Ordinal);

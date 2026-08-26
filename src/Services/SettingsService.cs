@@ -460,6 +460,93 @@ public sealed class SettingsService
         return workflow;
     }
 
+    public JarvisWorkflowSettings UpdateWorkflow(
+        string currentName,
+        string newName,
+        IEnumerable<string> aliases,
+        IEnumerable<JarvisWorkflowActionSettings> actions)
+    {
+        var currentNormalized = FuzzyMatcher.Normalize(currentName);
+        if (string.IsNullOrWhiteSpace(currentNormalized))
+            throw new InvalidOperationException("Which workflow should I update?");
+
+        lock (_saveLock)
+        {
+            Current.JarvisWorkflows ??= new List<JarvisWorkflowSettings>();
+            Current.DeletedJarvisWorkflowNames ??= new List<string>();
+            var workflow = Current.JarvisWorkflows.FirstOrDefault(candidate =>
+                string.Equals(
+                    FuzzyMatcher.Normalize(candidate.Name),
+                    currentNormalized,
+                    StringComparison.Ordinal)
+                || (candidate.Aliases ?? []).Any(alias => string.Equals(
+                    FuzzyMatcher.Normalize(alias),
+                    currentNormalized,
+                    StringComparison.Ordinal)));
+            if (workflow == null)
+                throw new InvalidOperationException($"Workflow {currentName} was not found.");
+
+            var cleanName = CleanInline(newName, 48);
+            if (string.IsNullOrWhiteSpace(cleanName))
+                throw new InvalidOperationException("Workflow name is required.");
+            var cleanAliases = (aliases ?? Array.Empty<string>())
+                .Prepend(cleanName)
+                .Select(value => CleanInline(value, 48))
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(8)
+                .ToList();
+            var cleanActions = (actions ?? Array.Empty<JarvisWorkflowActionSettings>())
+                .Select(CleanWorkflowAction)
+                .Where(action => action != null)
+                .Take(24)
+                .ToList();
+            if (cleanActions.Count == 0)
+                throw new InvalidOperationException("A workflow needs at least one app, website, or folder.");
+
+            var newIdentities = cleanAliases
+                .Select(FuzzyMatcher.Normalize)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .ToHashSet(StringComparer.Ordinal);
+            var collision = Current.JarvisWorkflows
+                .Where(candidate => !ReferenceEquals(candidate, workflow))
+                .FirstOrDefault(candidate => (candidate.Aliases ?? [])
+                    .Prepend(candidate.Name)
+                    .Select(FuzzyMatcher.Normalize)
+                    .Any(newIdentities.Contains));
+            if (collision != null)
+                throw new InvalidOperationException($"That name or alias already belongs to workflow {collision.Name}.");
+
+            var previousIdentities = (workflow.Aliases ?? [])
+                .Prepend(workflow.Name)
+                .Select(value => CleanInline(value, 48))
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            foreach (var previous in previousIdentities)
+            {
+                var normalized = FuzzyMatcher.Normalize(previous);
+                if (newIdentities.Contains(normalized)
+                    || Current.DeletedJarvisWorkflowNames.Any(item => string.Equals(
+                        FuzzyMatcher.Normalize(item),
+                        normalized,
+                        StringComparison.Ordinal)))
+                    continue;
+                Current.DeletedJarvisWorkflowNames.Add(previous);
+            }
+            Current.DeletedJarvisWorkflowNames.RemoveAll(item =>
+                newIdentities.Contains(FuzzyMatcher.Normalize(item)));
+
+            workflow.Version = JarvisWorkflowSettings.CurrentVersion;
+            workflow.Name = cleanName;
+            workflow.Aliases = cleanAliases;
+            workflow.Actions = cleanActions;
+            SynchronizeLegacyWorkflowFields(workflow);
+            Save();
+            return workflow;
+        }
+    }
+
     public bool DeleteWorkflow(string name)
     {
         var normalized = FuzzyMatcher.Normalize(name);
@@ -518,6 +605,19 @@ public sealed class SettingsService
                 string.Equals(FuzzyMatcher.Normalize(workflow.Name), normalized, StringComparison.Ordinal)
                 || (workflow.Aliases ?? []).Any(alias => string.Equals(
                     FuzzyMatcher.Normalize(alias), normalized, StringComparison.Ordinal)));
+        }
+    }
+
+    internal string ReadPersistedPreferredBrowser()
+    {
+        if (!File.Exists(SettingsPath))
+            return "";
+        lock (_saveLock)
+        {
+            var persisted = JsonSerializer.Deserialize<AppSettings>(
+                File.ReadAllText(SettingsPath),
+                JsonOptions);
+            return BrowserLauncherService.NormalizeBrowser(persisted?.PreferredBrowser);
         }
     }
 

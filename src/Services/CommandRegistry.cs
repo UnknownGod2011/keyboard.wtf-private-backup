@@ -137,6 +137,7 @@ public sealed class CommandRegistry
             _awaitingLocalTextEcho = "";
             _awaitingLocalTextEchoUtc = default;
         }
+        _automation?.ResetConversationTransientContext();
         if (_browserAutomation != null)
             await _browserAutomation.CancelAsync("Jarvis conversation ended");
     }
@@ -167,6 +168,15 @@ public sealed class CommandRegistry
         lock (_browserPreRouteLock)
         {
             var now = DateTime.UtcNow;
+            if (!fromLocalTextSubmission
+                && IsDurableMutationTool(_browserPreRouteReceipt?.ToolName)
+                && _browserPreRouteReceipt?.IsIncrementalContinuationOf(userTurn, now) == true)
+            {
+                _browserPreRouteOwnsCurrentTurn = true;
+                _latestJarvisUserTurn = BrowserAutomationText.Truncate(userTurn, 4000);
+                _latestJarvisUserTurnUtc = now;
+                return true;
+            }
             if (!fromLocalTextSubmission
                 && string.Equals(
                     _browserPreRouteReceipt?.ToolName,
@@ -240,6 +250,38 @@ public sealed class CommandRegistry
             }
             AppLog.Info("Browser pre-route skipped for explicit workflow persistence request.");
             return false;
+        }
+
+        // Explicit durable corrections use the existing learned mapping or
+        // browser preference store. Persistence is deterministic and verified
+        // before Live narrates it; temporary "this time" instructions do not
+        // enter this path.
+        if (_automation != null
+            && _automation.TryApplyDurablePreferenceFromTranscript(
+                userTurn,
+                out var preferenceTool,
+                out var preferenceResult))
+        {
+            RecordAuthoritativePreRoute(
+                userTurn,
+                preferenceTool,
+                preferenceResult);
+            AppLog.Info($"Durable correction pre-route: tool={preferenceTool} ok={ToolSucceeded(preferenceResult)}");
+            return true;
+        }
+
+        // Mutate the one authoritative saved workflow object in place. This
+        // runs before browser classification so adding a website is a durable
+        // direct URL action, never a reason to start Browser Automation.
+        if (_automation != null
+            && _automation.TryEditWorkflowFromTranscript(userTurn, out var editResult))
+        {
+            RecordAuthoritativePreRoute(
+                userTurn,
+                "edit_workflow",
+                editResult);
+            AppLog.Info($"Workflow edit pre-route: ok={ToolSucceeded(editResult)}");
+            return true;
         }
 
         // A complete durable workflow trigger is locally authoritative. Run
@@ -503,8 +545,8 @@ public sealed class CommandRegistry
             if (TryGetPreRoutedToolResult(toolName, out var preRoutedResult))
                 return preRoutedResult;
 
-            if (TryConsumePreRoutedWorkflowOutcome(out var workflowOutcome))
-                return workflowOutcome;
+            if (TryConsumePreRoutedAuthoritativeOutcome(out var authoritativeOutcome))
+                return authoritativeOutcome;
 
             if (ShouldBlockCompetingToolForPreRoutedBrowserTurn(toolName))
             {
@@ -1636,13 +1678,14 @@ public sealed class CommandRegistry
         }
     }
 
-    private bool TryConsumePreRoutedWorkflowOutcome(
+    private bool TryConsumePreRoutedAuthoritativeOutcome(
         out Dictionary<string, object> result)
     {
         lock (_browserPreRouteLock)
         {
             var receipt = _browserPreRouteReceipt;
-            if (!string.Equals(receipt?.ToolName, "run_workflow", StringComparison.Ordinal)
+            if (!(string.Equals(receipt?.ToolName, "run_workflow", StringComparison.Ordinal)
+                    || IsDurableMutationTool(receipt?.ToolName))
                 || receipt?.IsFresh(DateTime.UtcNow) != true
                 || receipt.Result == null)
             {
@@ -1651,13 +1694,55 @@ public sealed class CommandRegistry
             }
             result = new Dictionary<string, object>(receipt.Result)
             {
-                ["routing_note"] = "The exact durable workflow trigger was resolved and executed locally; no alternate planner action was run.",
+                ["routing_note"] = string.Equals(receipt.ToolName, "run_workflow", StringComparison.Ordinal)
+                    ? "The exact durable workflow trigger was resolved and executed locally; no alternate planner action was run."
+                    : "The explicit durable change was persisted and read back locally; no alternate planner action was run.",
             };
             _browserPreRouteReceipt = null;
             _browserPreRouteOwnsCurrentTurn = false;
             return true;
         }
     }
+
+    private void RecordAuthoritativePreRoute(
+        string userTurn,
+        string toolName,
+        Dictionary<string, object> result)
+    {
+        var ok = ToolSucceeded(result);
+        var message = result?.TryGetValue("message", out var messageValue) == true
+            ? messageValue?.ToString() ?? ""
+            : "";
+        lock (_browserPreRouteLock)
+        {
+            _browserPreRouteReceipt = new BrowserPreRouteReceipt
+            {
+                UserTurn = userTurn,
+                ToolName = toolName,
+                Ok = ok,
+                Message = message,
+                Result = result == null
+                    ? ToolResult(false, "The durable change did not return a result.")
+                    : new Dictionary<string, object>(result),
+            };
+            _browserPreRouteOwnsCurrentTurn = true;
+        }
+    }
+
+    internal static bool IsDurableMutationTool(string toolName) =>
+        (toolName ?? "").Trim() is
+            "remember_routine"
+            or "edit_workflow"
+            or "remember_app_alias"
+            or "remember_path_alias"
+            or "remember_link_alias"
+            or "forget_learned_mapping"
+            or "set_browser_preference";
+
+    private static bool ToolSucceeded(Dictionary<string, object> result) =>
+        result?.TryGetValue("ok", out var value) == true
+        && value is bool ok
+        && ok;
 
     private Dictionary<string, object> BrowserAutomationStatus()
     {
@@ -1846,6 +1931,7 @@ public sealed class CommandRegistry
         "inspect_screen" => "Inspecting screen",
         "virtual_desktop_action" => "Controlling virtual desktop",
         "create_workflow" => "Saving workflow",
+        "edit_workflow" => "Updating workflow",
         "list_workflows" => "Reading workflows",
         "run_workflow" => "Running workflow",
         "delete_workflow" => "Deleting workflow",

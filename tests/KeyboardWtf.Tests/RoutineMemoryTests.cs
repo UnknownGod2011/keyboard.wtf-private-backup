@@ -322,6 +322,221 @@ public sealed class RoutineMemoryTests : IDisposable
         Assert.False(laterConversation.IsDeletedWorkflowTrigger("an unrelated request"));
     }
 
+    [Fact]
+    public void ExplicitDurableWebCorrectionPersistsUpdatesAndDeletesAcrossConversations()
+    {
+        Directory.CreateDirectory(_root);
+        var settingsPath = Path.Combine(_root, "settings.json");
+        var mappingsPath = Path.Combine(_root, "mappings.json");
+        var historyPath = Path.Combine(_root, "history.json");
+        var settings = new SettingsService(settingsPath);
+        settings.Load();
+        var mappings = new LearnedMappingService(mappingsPath);
+        mappings.Load();
+        using (var firstConversation = new JarvisAutomationService(
+                   new NotificationService(null),
+                   settings,
+                   new JarvisActionHistoryService(historyPath),
+                   mappings,
+                   () => { }))
+        {
+            Assert.True(firstConversation.TryApplyDurablePreferenceFromTranscript(
+                "Always open Discord on the web instead.",
+                out var tool,
+                out var saved));
+            Assert.Equal("remember_link_alias", tool);
+            Assert.True((bool)saved["ok"]);
+            Assert.True((bool)saved["persistence_verified"]);
+            Assert.False(firstConversation.TryApplyDurablePreferenceFromTranscript(
+                "Open Discord on the web this time.",
+                out _,
+                out _));
+        }
+
+        var secondConversationMappings = new LearnedMappingService(mappingsPath);
+        secondConversationMappings.Load();
+        Assert.Equal(
+            "https://discord.com/app",
+            secondConversationMappings.FindExact(LearnedMappingKind.Link, "discord")?.Target);
+        var secondSettings = new SettingsService(settingsPath);
+        secondSettings.Load();
+        using (var secondConversation = new JarvisAutomationService(
+                   new NotificationService(null),
+                   secondSettings,
+                   new JarvisActionHistoryService(historyPath),
+                   secondConversationMappings,
+                   () => { }))
+        {
+            Assert.True(secondConversation.TryApplyDurablePreferenceFromTranscript(
+                "Always open https://discord.com/channels/@me when I say Discord.",
+                out var updateTool,
+                out var updated));
+            Assert.Equal("remember_link_alias", updateTool);
+            Assert.True((bool)updated["ok"]);
+        }
+
+        var updatedMappings = new LearnedMappingService(mappingsPath);
+        updatedMappings.Load();
+        Assert.Equal(
+            "https://discord.com/channels/@me",
+            updatedMappings.FindExact(LearnedMappingKind.Link, "discord")?.Target);
+        using (var finalConversation = new JarvisAutomationService(
+                   new NotificationService(null),
+                   new SettingsService(settingsPath),
+                   new JarvisActionHistoryService(historyPath),
+                   updatedMappings,
+                   () => { }))
+        {
+            Assert.True(finalConversation.TryApplyDurablePreferenceFromTranscript(
+                "Forget my saved preference for Discord.",
+                out var deleteTool,
+                out var deleted));
+            Assert.Equal("forget_learned_mapping", deleteTool);
+            Assert.True((bool)deleted["ok"]);
+        }
+        var afterDelete = new LearnedMappingService(mappingsPath);
+        afterDelete.Load();
+        Assert.Null(afterDelete.FindExact(LearnedMappingKind.Link, "discord"));
+    }
+
+    [Fact]
+    public async Task WorkflowEditsUpdateOneAuthoritativeRecordAndSurviveFreshConversations()
+    {
+        Directory.CreateDirectory(_root);
+        var settingsPath = Path.Combine(_root, "settings.json");
+        var mappingsPath = Path.Combine(_root, "mappings.json");
+        var historyPath = Path.Combine(_root, "history.json");
+        var settings = new SettingsService(settingsPath);
+        settings.Load();
+        var mappings = new LearnedMappingService(mappingsPath);
+        mappings.Load();
+        using (var firstConversation = new JarvisAutomationService(
+                   new NotificationService(null),
+                   settings,
+                   new JarvisActionHistoryService(historyPath),
+                   mappings,
+                   () => { }))
+        {
+            Assert.True(firstConversation.TryRememberWorkflowFromTranscript(
+                "Whenever I say duck duck setup, open Gmail and Devpost. Remember this.",
+                completeTurn: true,
+                out var saved));
+            Assert.True((bool)saved["ok"]);
+
+            Assert.True(firstConversation.TryEditWorkflowFromTranscript(
+                "Add Instagram to my duck duck setup.",
+                out var added));
+            Assert.True((bool)added["ok"], added["message"]?.ToString());
+            Assert.Equal(3, settings.ReadPersistedWorkflow("duck duck setup").Actions.Count);
+        }
+
+        var secondSettings = new SettingsService(settingsPath);
+        secondSettings.Load();
+        var secondMappings = new LearnedMappingService(mappingsPath);
+        secondMappings.Load();
+        using (var secondConversation = new JarvisAutomationService(
+                   new NotificationService(null),
+                   secondSettings,
+                   new JarvisActionHistoryService(historyPath),
+                   secondMappings,
+                   () => { }))
+        {
+            Assert.True(secondConversation.TryResolveSavedWorkflowTrigger("duck duck setup", out _));
+            Assert.True(secondConversation.TryEditWorkflowFromTranscript(
+                "Remove Devpost from that workflow.",
+                out var removed));
+            Assert.True((bool)removed["ok"]);
+            Assert.True(secondConversation.TryEditWorkflowFromTranscript(
+                "Change Gmail to Google Sheets in that workflow.",
+                out var replaced));
+            Assert.True((bool)replaced["ok"]);
+            Assert.True(secondConversation.TryEditWorkflowFromTranscript(
+                "Add alias morning ducks to my duck duck setup.",
+                out var aliased));
+            Assert.True((bool)aliased["ok"]);
+        }
+
+        var thirdSettings = new SettingsService(settingsPath);
+        thirdSettings.Load();
+        thirdSettings.Current.JarvisPermissionMode = JarvisPermissionMode.AutoExecute;
+        var persisted = thirdSettings.ReadPersistedWorkflow("morning ducks");
+        Assert.NotNull(persisted);
+        Assert.Collection(
+            persisted.Actions,
+            action =>
+            {
+                Assert.Equal("url", action.Kind);
+                Assert.Equal("https://docs.google.com/spreadsheets/", action.Target);
+            },
+            action =>
+            {
+                Assert.Equal("url", action.Kind);
+                Assert.Equal("https://www.instagram.com/", action.Target);
+            });
+        Assert.DoesNotContain("Devpost", persisted.Apps + persisted.Urls, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("morning ducks", persisted.Aliases, StringComparer.OrdinalIgnoreCase);
+
+        var thirdMappings = new LearnedMappingService(mappingsPath);
+        thirdMappings.Load();
+        using var thirdConversation = new JarvisAutomationService(
+            new NotificationService(null),
+            thirdSettings,
+            new JarvisActionHistoryService(historyPath),
+            thirdMappings,
+            () => { });
+        Assert.True(thirdConversation.TryResolveSavedWorkflowTrigger("morning ducks", out var canonical));
+        Assert.Equal("duck duck setup", canonical, ignoreCase: true);
+        thirdConversation.ResetConversationTransientContext();
+        Assert.False(thirdConversation.TryEditWorkflowFromTranscript(
+            "Add GitHub to that workflow.",
+            out _));
+
+        var deleted = await thirdConversation.ExecuteAsync(
+            "delete_workflow",
+            JsonSerializer.SerializeToElement(new { name = "morning ducks" }),
+            CancellationToken.None);
+        Assert.True((bool)deleted["ok"]);
+        var afterDeleteSettings = new SettingsService(settingsPath);
+        afterDeleteSettings.Load();
+        var afterDeleteMappings = new LearnedMappingService(mappingsPath);
+        afterDeleteMappings.Load();
+        using var afterDeleteConversation = new JarvisAutomationService(
+            new NotificationService(null),
+            afterDeleteSettings,
+            new JarvisActionHistoryService(historyPath),
+            afterDeleteMappings,
+            () => { });
+        Assert.False(afterDeleteConversation.TryResolveSavedWorkflowTrigger("morning ducks", out _));
+        Assert.False(afterDeleteConversation.TryResolveSavedWorkflowTrigger("duck duck setup", out _));
+        Assert.True(afterDeleteConversation.IsDeletedWorkflowTrigger("morning ducks"));
+    }
+
+    [Fact]
+    public void WebPageMutationLanguageIsNotMistakenForAWorkflowEdit()
+    {
+        Directory.CreateDirectory(_root);
+        var settings = new SettingsService(Path.Combine(_root, "settings.json"));
+        settings.Load();
+        var mappings = new LearnedMappingService(Path.Combine(_root, "mappings.json"));
+        mappings.Load();
+        using var automation = new JarvisAutomationService(
+            new NotificationService(null),
+            settings,
+            new JarvisActionHistoryService(Path.Combine(_root, "history.json")),
+            mappings,
+            () => { });
+
+        Assert.False(automation.TryEditWorkflowFromTranscript(
+            "Add the first result to my Amazon cart.",
+            out _));
+        Assert.False(automation.TryEditWorkflowFromTranscript(
+            "Remove the selected file from Downloads.",
+            out _));
+        Assert.False(automation.TryEditWorkflowFromTranscript(
+            "Change the destination to Mumbai in the current page.",
+            out _));
+    }
+
     public void Dispose()
     {
         try

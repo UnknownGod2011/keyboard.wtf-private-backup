@@ -225,6 +225,12 @@ public sealed class KeyboardWtfApp : IDisposable
         try
         {
             await _paidAccount.InitializeAsync();
+            // The earlier constructor-time warmup runs before the persisted
+            // paid session has loaded and therefore normally has nothing to
+            // authenticate with. Warm only after initialization; this is a
+            // read-only backend readiness request, never a provider/Live
+            // session and never a credit reservation.
+            await _paidAccount.WarmBackendAsync();
         }
         catch (Exception exception)
         {
