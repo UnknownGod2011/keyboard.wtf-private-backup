@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "channel": "stable",
-  "version": "1.4.9",
+  "version": "1.4.10",
   "minimumVersion": "1.2.0",
-  "publishedAt": "2026-08-24T12:41:17.1572239+00:00",
-  "packageUrl": "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.9/keyboard-wtf-setup.exe",
-  "sha256": "88d2d7f0718ec426296eb280ca99a17c07efb1244879f1854be8aded0188f963",
-  "sizeBytes": 84226980,
-  "releaseNotes": "# keyboard.wtf 1.4.9\n\nkeyboard.wtf 1.4.9 is a narrow browser-task lifecycle reliability update.\n\n- A task paused for login, CAPTCHA, confirmation, permission, ambiguity, or\n  another manual step now retains and reports the exact intervention reason.\n  The user can complete the step and say continue to resume the same task, or\n  cancel it cleanly.\n- If the one task-owned tab disappears during navigation, the desktop performs\n  one bounded recovery through the existing published Helper and opens the\n  intended safe HTTPS destination without replacing an unrelated active page.\n- A spoken browser-task cancellation now has one user-visible acknowledgement:\n  the tool result remains authoritative and the duplicate background terminal\n  announcement is suppressed for that same cancellation only.\n\nThe existing New Tab bootstrap, normal-tab target selection, Jarvis Live,\nSmart Writing, Screen Reasoning, authentication, billing, provider routing, and\nusage settlement are unchanged.\n\nThe installer is not yet Authenticode-signed, so Windows may show an\nunknown-publisher warning. Download it only from https://keyboardwtf.com or the\nofficial keyboard.wtf GitHub Release.\n",
+  "publishedAt": "2026-08-26T06:30:31.6269785+00:00",
+  "packageUrl": "https://github.com/UnknownGod2011/keyboard.wtf/releases/download/v1.4.10/keyboard-wtf-setup.exe",
+  "sha256": "f685423a023f59eef16448234df43239e88a87df53850729a79993fcb5c1c337",
+  "sizeBytes": 84227861,
+  "releaseNotes": "# keyboard.wtf 1.4.10\n\nkeyboard.wtf 1.4.10 is a focused intelligence and operation-lifecycle reliability update.\n\n- Smart Writing now keeps the final Gemini result on the clipboard even after\n  successful insertion. Operation ownership prevents a cancelled or replaced\n  request from pasting late or overwriting the active overlay, while explicit\n  stopping and long natural recording pauses remain unchanged.\n- Jarvis automatically performs bounded recovery when a previous Live session\n  slot is still being finalized by the service. Resetting or changing a hotkey\n  is never required to restore the connection.\n- Bounded local file search now extracts the intended name from natural phrases,\n  handles spaces, underscores, hyphens, and case more reliably, and reports the\n  containing folder for safe navigation.\n- Safe email and message drafts prefer existing deterministic draft tools instead\n  of starting browser automation in parallel. Final successful tool receipts are\n  authoritative over superseded internal failures.\n- Explicitly saved routines remain persistent, one-time commands remain transient,\n  and deleting a routine by a learned alias now also removes and tombstones its\n  canonical saved workflow so stale routines cannot return.\n\nJarvis\u0027s immediate Live startup, continuous logical session and socket rollover,\nSmart Writing Gemini-audio understanding, Screen Reasoning, Chrome Helper protocol,\nauthentication, billing, provider pricing, reservations, and settlement are not\nredesigned by this release.\n\nThe installer is not yet Authenticode-signed, so Windows may show an\nunknown-publisher warning. Download it only from https://keyboardwtf.com or the\nofficial keyboard.wtf GitHub Release.\n",
   "keyId": "kwt-release-2026-01",
-  "signature": "WosC1TKWQMsQ/toelRecdNiaLEdsdj1x16RNpEVkbAUtq70EDZIlKPhtHg0EGzsePkWwbttoSsNhv84VC9tfxw=="
+  "signature": "/WF9K72XyEi3sDXk2EGLrVfkxf3tV6ZwVZbZ0ZeRmLXKAJ2igxVBZRkVFTAsoptHy17JoOR3W1lmGwD\u002BeRw\u002ByA=="
 }
