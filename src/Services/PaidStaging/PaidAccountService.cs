@@ -661,9 +661,13 @@ internal sealed class PaidAccountService : IDisposable
         }
     }
 
-    private static ClientWebSocket CreateLiveSocket(string accessToken)
+    internal static ClientWebSocket CreateLiveSocket(string accessToken)
     {
         var socket = new ClientWebSocket();
+        // ClientWebSocket leaves HttpStatusCode unset unless response details
+        // are collected. The bounded stale-session recovery below needs the
+        // real 409 handshake status to distinguish it from other failures.
+        socket.Options.CollectHttpResponseDetails = true;
         socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
         socket.Options.SetRequestHeader("Authorization", $"Bearer {accessToken}");
         socket.Options.SetRequestHeader(DesktopVersionHeader, DesktopVersion);

@@ -311,6 +311,14 @@ public sealed class PaidStagingSecurityTests
     }
 
     [Fact]
+    public void Live_socket_collects_handshake_status_for_slot_conflict_recovery()
+    {
+        using var socket = PaidAccountService.CreateLiveSocket("test-token");
+
+        Assert.True(socket.Options.CollectHttpResponseDetails);
+    }
+
+    [Fact]
     public async Task Sign_out_all_devices_is_server_authoritative_and_clears_the_local_session()
     {
         if (!OperatingSystem.IsWindows())
