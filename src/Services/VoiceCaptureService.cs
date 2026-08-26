@@ -388,6 +388,7 @@ public sealed class VoiceCaptureService
         var heardStrongVoice = false;
         var lastVoiceUtc = DateTime.UtcNow;
         var lastStrongVoiceUtc = DateTime.UtcNow;
+        var lastVeryStrongVoiceUtc = DateTime.UtcNow;
 
         try
         {
@@ -415,6 +416,8 @@ public sealed class VoiceCaptureService
                     heardStrongVoice = true;
                     lastStrongVoiceUtc = now;
                 }
+                if (peakDb > -20)
+                    lastVeryStrongVoiceUtc = now;
 
                 var quietPause = now - lastVoiceUtc > (smartWriting
                     ? SmartWritingFinalSilence
@@ -423,17 +426,26 @@ public sealed class VoiceCaptureService
                     && now - lastStrongVoiceUtc > (smartWriting
                         ? SmartWritingFinalSilence + TimeSpan.FromSeconds(2)
                         : TimeSpan.FromMilliseconds(1200));
+                var stablePreviewPause = smartWriting
+                    && HasSmartWritingFinalPreviewPause(
+                        _lastPreviewUtc,
+                        lastVeryStrongVoiceUtc,
+                        now);
                 var minimumSpeechWindow = smartWriting
                     ? TimeSpan.FromSeconds(2)
                     : TimeSpan.FromMilliseconds(650);
-                if (heardVoice && elapsed > minimumSpeechWindow && (quietPause || noisyRoomPause))
+                if (heardVoice
+                    && elapsed > minimumSpeechWindow
+                    && (quietPause || noisyRoomPause || stablePreviewPause))
                 {
                     if (smartWriting)
                     {
                         AppLog.Info(
                             "Smart Writing final silence detected: " +
                             $"recordingMs={(long)elapsed.TotalMilliseconds} " +
-                            $"silenceMs={(long)(now - lastVoiceUtc).TotalMilliseconds}");
+                            $"silenceMs={(long)(now - lastVoiceUtc).TotalMilliseconds} " +
+                            $"previewQuietMs={(long)(now - _lastPreviewUtc).TotalMilliseconds} " +
+                            $"reason={(stablePreviewPause ? "preview_stable" : noisyRoomPause ? "noise_floor" : "quiet")}");
                         _notifications.Info("Processing", "Finishing Smart Writing...");
                     }
                     else
@@ -556,6 +568,14 @@ public sealed class VoiceCaptureService
             Interlocked.Exchange(ref _autoCompleteInProgress, 0);
         }
     }
+
+    internal static bool HasSmartWritingFinalPreviewPause(
+        DateTime lastPreviewUtc,
+        DateTime lastVeryStrongVoiceUtc,
+        DateTime nowUtc) =>
+        lastPreviewUtc != DateTime.MinValue
+        && nowUtc - lastPreviewUtc > SmartWritingFinalSilence
+        && nowUtc - lastVeryStrongVoiceUtc > TimeSpan.FromSeconds(2);
 
     private SmartWritingAudioCapture StopAndCaptureSmartWritingAudio()
     {

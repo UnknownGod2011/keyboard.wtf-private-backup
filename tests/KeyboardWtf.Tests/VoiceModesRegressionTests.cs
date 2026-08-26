@@ -40,6 +40,28 @@ public sealed class VoiceModesRegressionTests
     }
 
     [Fact]
+    public void Smart_writing_can_finish_from_a_stable_preview_above_a_noisy_floor()
+    {
+        var now = DateTime.UtcNow;
+        Assert.True(VoiceCaptureService.HasSmartWritingFinalPreviewPause(
+            now - TimeSpan.FromSeconds(9),
+            now - TimeSpan.FromSeconds(3),
+            now));
+        Assert.False(VoiceCaptureService.HasSmartWritingFinalPreviewPause(
+            now - TimeSpan.FromSeconds(5),
+            now - TimeSpan.FromSeconds(3),
+            now));
+        Assert.False(VoiceCaptureService.HasSmartWritingFinalPreviewPause(
+            now - TimeSpan.FromSeconds(9),
+            now - TimeSpan.FromSeconds(1),
+            now));
+        Assert.False(VoiceCaptureService.HasSmartWritingFinalPreviewPause(
+            DateTime.MinValue,
+            now - TimeSpan.FromSeconds(3),
+            now));
+    }
+
+    [Fact]
     public void Smart_writing_can_retain_the_final_result_on_clipboard_after_insertion()
     {
         var retained = "";
