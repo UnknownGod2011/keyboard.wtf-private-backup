@@ -119,6 +119,29 @@ public sealed class JarvisRoutingAndTtsRegressionTests
     }
 
     [Fact]
+    public void Durable_workflow_receipt_blocks_reinterpretation_but_accepts_its_one_tool_result()
+    {
+        var receipt = new BrowserPreRouteReceipt
+        {
+            UserTurn = "potato patato",
+            ToolName = "run_workflow",
+            Ok = true,
+            Message = "Started potato patato.",
+            Result = new Dictionary<string, object>
+            {
+                ["ok"] = true,
+                ["message"] = "Started potato patato.",
+            },
+        };
+        var now = receipt.CreatedUtc.AddSeconds(20);
+
+        Assert.True(receipt.AppliesTo("run_workflow", now));
+        Assert.False(receipt.BlocksCompetingTool("run_workflow", now));
+        Assert.True(receipt.BlocksCompetingTool("browser_automation", now));
+        Assert.True(receipt.BlocksCompetingTool("open_url", now));
+    }
+
+    [Fact]
     public void Stale_receipt_cannot_contaminate_the_next_turn()
     {
         var receipt = new BrowserPreRouteReceipt

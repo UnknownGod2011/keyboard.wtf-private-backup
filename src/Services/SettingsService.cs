@@ -20,10 +20,24 @@ public enum JarvisPermissionMode
 
 public sealed class JarvisWorkflowSettings
 {
+    public const int CurrentVersion = 2;
+
+    public int Version { get; set; } = CurrentVersion;
     public string Name { get; set; } = "";
+    public List<string> Aliases { get; set; } = new();
+    public List<JarvisWorkflowActionSettings> Actions { get; set; } = new();
+
+    // Retained for Settings UI and backward compatibility with workflows
+    // saved before the ordered-action representation was introduced.
     public string Apps { get; set; } = "";
     public string Urls { get; set; } = "";
     public string Folder { get; set; } = "";
+}
+
+public sealed class JarvisWorkflowActionSettings
+{
+    public string Kind { get; set; } = "";
+    public string Target { get; set; } = "";
 }
 
 public sealed class HotkeySettings
@@ -92,6 +106,7 @@ public sealed class AppSettings
 public sealed class SettingsService
 {
     public const int CurrentBrowserAutomationConsentVersion = 1;
+    private readonly object _saveLock = new();
 
     public static readonly IReadOnlyDictionary<string, string> GeminiVoices =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -196,6 +211,7 @@ public sealed class SettingsService
         Current.CustomPrompts ??= new Dictionary<string, string>();
         Current.JarvisWorkflows ??= new List<JarvisWorkflowSettings>();
         Current.DeletedJarvisWorkflowNames ??= new List<string>();
+        MigrateLegacyWorkflows();
         Current.UpdateChannel = string.Equals(Current.UpdateChannel, "beta", StringComparison.OrdinalIgnoreCase)
             ? "beta"
             : "stable";
@@ -262,8 +278,15 @@ public sealed class SettingsService
 
     public void Save()
     {
-        Directory.CreateDirectory(AppDataDir);
-        File.WriteAllText(SettingsPath, JsonSerializer.Serialize(Current, JsonOptions));
+        lock (_saveLock)
+        {
+            var directory = Path.GetDirectoryName(SettingsPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+            var temporaryPath = SettingsPath + ".tmp";
+            File.WriteAllText(temporaryPath, JsonSerializer.Serialize(Current, JsonOptions));
+            File.Move(temporaryPath, SettingsPath, overwrite: true);
+        }
     }
 
     public void ApplyToState()
@@ -374,29 +397,65 @@ public sealed class SettingsService
 
     public JarvisWorkflowSettings SaveWorkflow(string name, string apps, string urls, string folder)
     {
+        var actions = SplitWorkflowItems(apps)
+            .Select(target => new JarvisWorkflowActionSettings { Kind = "auto", Target = target })
+            .Concat(SplitWorkflowItems(urls)
+                .Select(target => new JarvisWorkflowActionSettings { Kind = "url", Target = target }))
+            .Concat(string.IsNullOrWhiteSpace(folder)
+                ? Array.Empty<JarvisWorkflowActionSettings>()
+                : [new JarvisWorkflowActionSettings { Kind = "folder", Target = folder }])
+            .ToArray();
+        return SaveWorkflow(name, [name], actions);
+    }
+
+    public JarvisWorkflowSettings SaveWorkflow(
+        string name,
+        IEnumerable<string> aliases,
+        IEnumerable<JarvisWorkflowActionSettings> actions)
+    {
         var cleanName = CleanInline(name, 48);
         if (string.IsNullOrWhiteSpace(cleanName))
             throw new InvalidOperationException("Workflow name is required.");
-        if (string.IsNullOrWhiteSpace(apps)
-            && string.IsNullOrWhiteSpace(urls)
-            && string.IsNullOrWhiteSpace(folder))
+
+        var cleanAliases = (aliases ?? Array.Empty<string>())
+            .Prepend(cleanName)
+            .Select(value => CleanInline(value, 48))
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(8)
+            .ToList();
+        var cleanActions = (actions ?? Array.Empty<JarvisWorkflowActionSettings>())
+            .Select(CleanWorkflowAction)
+            .Where(action => action != null)
+            .Take(24)
+            .ToList();
+        if (cleanActions.Count == 0)
             throw new InvalidOperationException("A workflow needs at least one app, website, or folder.");
 
         Current.JarvisWorkflows ??= new List<JarvisWorkflowSettings>();
         Current.DeletedJarvisWorkflowNames ??= new List<string>();
         Current.DeletedJarvisWorkflowNames.RemoveAll(item =>
-            string.Equals(FuzzyMatcher.Normalize(item), FuzzyMatcher.Normalize(cleanName), StringComparison.Ordinal));
+            cleanAliases.Any(alias => string.Equals(
+                FuzzyMatcher.Normalize(item),
+                FuzzyMatcher.Normalize(alias),
+                StringComparison.Ordinal)));
         var workflow = Current.JarvisWorkflows.FirstOrDefault(w =>
-            string.Equals(w.Name, cleanName, StringComparison.OrdinalIgnoreCase));
+            string.Equals(FuzzyMatcher.Normalize(w.Name), FuzzyMatcher.Normalize(cleanName), StringComparison.Ordinal)
+            || (w.Aliases ?? []).Any(alias => string.Equals(
+                FuzzyMatcher.Normalize(alias),
+                FuzzyMatcher.Normalize(cleanName),
+                StringComparison.Ordinal)));
         if (workflow == null)
         {
             workflow = new JarvisWorkflowSettings { Name = cleanName };
             Current.JarvisWorkflows.Add(workflow);
         }
 
-        workflow.Apps = CleanInline(apps, 300);
-        workflow.Urls = CleanInline(urls, 800);
-        workflow.Folder = CleanInline(folder, 260);
+        workflow.Version = JarvisWorkflowSettings.CurrentVersion;
+        workflow.Name = cleanName;
+        workflow.Aliases = cleanAliases;
+        workflow.Actions = cleanActions;
+        SynchronizeLegacyWorkflowFields(workflow);
         Save();
         return workflow;
     }
@@ -406,13 +465,32 @@ public sealed class SettingsService
         var normalized = FuzzyMatcher.Normalize(name);
         if (string.IsNullOrWhiteSpace(normalized))
             return false;
-        var removed = Current.JarvisWorkflows?.RemoveAll(w =>
-            string.Equals(FuzzyMatcher.Normalize(w.Name), normalized, StringComparison.Ordinal)) > 0;
+        var matched = Current.JarvisWorkflows?.Where(w =>
+            string.Equals(FuzzyMatcher.Normalize(w.Name), normalized, StringComparison.Ordinal)
+            || (w.Aliases ?? []).Any(alias => string.Equals(
+                FuzzyMatcher.Normalize(alias), normalized, StringComparison.Ordinal)))
+            .ToArray() ?? [];
+        var removed = matched.Length > 0;
+        if (removed)
+            Current.JarvisWorkflows.RemoveAll(workflow => matched.Contains(workflow));
         Current.DeletedJarvisWorkflowNames ??= new List<string>();
-        var tombstoneAdded = !Current.DeletedJarvisWorkflowNames.Any(item =>
-            string.Equals(FuzzyMatcher.Normalize(item), normalized, StringComparison.Ordinal));
-        if (tombstoneAdded)
-            Current.DeletedJarvisWorkflowNames.Add(CleanInline(name, 48));
+        var tombstones = matched
+            .SelectMany(workflow => (workflow.Aliases ?? []).Prepend(workflow.Name))
+            .Append(name)
+            .Select(value => CleanInline(value, 48))
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var tombstoneAdded = false;
+        foreach (var tombstone in tombstones)
+        {
+            var tombstoneNormalized = FuzzyMatcher.Normalize(tombstone);
+            if (Current.DeletedJarvisWorkflowNames.Any(item =>
+                    string.Equals(FuzzyMatcher.Normalize(item), tombstoneNormalized, StringComparison.Ordinal)))
+                continue;
+            Current.DeletedJarvisWorkflowNames.Add(tombstone);
+            tombstoneAdded = true;
+        }
         if (removed || tombstoneAdded)
             Save();
         return removed || tombstoneAdded;
@@ -424,6 +502,23 @@ public sealed class SettingsService
         return !string.IsNullOrWhiteSpace(normalized)
             && (Current.DeletedJarvisWorkflowNames ?? []).Any(item =>
                 string.Equals(FuzzyMatcher.Normalize(item), normalized, StringComparison.Ordinal));
+    }
+
+    internal JarvisWorkflowSettings ReadPersistedWorkflow(string trigger)
+    {
+        var normalized = FuzzyMatcher.Normalize(trigger);
+        if (string.IsNullOrWhiteSpace(normalized) || !File.Exists(SettingsPath))
+            return null;
+        lock (_saveLock)
+        {
+            var persisted = JsonSerializer.Deserialize<AppSettings>(
+                File.ReadAllText(SettingsPath),
+                JsonOptions);
+            return persisted?.JarvisWorkflows?.FirstOrDefault(workflow =>
+                string.Equals(FuzzyMatcher.Normalize(workflow.Name), normalized, StringComparison.Ordinal)
+                || (workflow.Aliases ?? []).Any(alias => string.Equals(
+                    FuzzyMatcher.Normalize(alias), normalized, StringComparison.Ordinal)));
+        }
     }
 
     public void SaveCustomPrompt(string destinationName, string prompt)
@@ -485,4 +580,95 @@ public sealed class SettingsService
             .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
         return clean.Length <= maxLength ? clean : clean[..maxLength].Trim();
     }
+
+    private void MigrateLegacyWorkflows()
+    {
+        foreach (var workflow in Current.JarvisWorkflows ?? [])
+        {
+            workflow.Aliases ??= new List<string>();
+            workflow.Actions ??= new List<JarvisWorkflowActionSettings>();
+            if (!workflow.Aliases.Any(alias => string.Equals(
+                    FuzzyMatcher.Normalize(alias),
+                    FuzzyMatcher.Normalize(workflow.Name),
+                    StringComparison.Ordinal)))
+            {
+                workflow.Aliases.Insert(0, CleanInline(workflow.Name, 48));
+            }
+            if (workflow.Actions.Count == 0)
+            {
+                workflow.Actions.AddRange(SplitWorkflowItems(workflow.Apps)
+                    .Select(target => new JarvisWorkflowActionSettings { Kind = "auto", Target = target }));
+                workflow.Actions.AddRange(SplitWorkflowItems(workflow.Urls)
+                    .Select(target => new JarvisWorkflowActionSettings { Kind = "url", Target = target }));
+                if (!string.IsNullOrWhiteSpace(workflow.Folder))
+                {
+                    workflow.Actions.Add(new JarvisWorkflowActionSettings
+                    {
+                        Kind = "folder",
+                        Target = CleanInline(workflow.Folder, 260),
+                    });
+                }
+            }
+            workflow.Actions = workflow.Actions
+                .Select(CleanWorkflowAction)
+                .Where(action => action != null)
+                .Take(24)
+                .ToList();
+            workflow.Aliases = workflow.Aliases
+                .Select(value => CleanInline(value, 48))
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(8)
+                .ToList();
+            workflow.Version = JarvisWorkflowSettings.CurrentVersion;
+            SynchronizeLegacyWorkflowFields(workflow);
+        }
+    }
+
+    private static JarvisWorkflowActionSettings CleanWorkflowAction(
+        JarvisWorkflowActionSettings action)
+    {
+        var kind = (action?.Kind ?? "").Trim().ToLowerInvariant() switch
+        {
+            "application" or "native" or "native_app" => "app",
+            "website" or "link" => "url",
+            "directory" => "folder",
+            "automatic" => "auto",
+            var value => value,
+        };
+        if (kind is not ("app" or "auto" or "url" or "folder"))
+            return null;
+        var maxLength = kind == "url" ? 800 : kind == "folder" ? 260 : 120;
+        var target = CleanInline(action.Target, maxLength);
+        if (string.IsNullOrWhiteSpace(target))
+            return null;
+        if (kind == "url")
+        {
+            var candidate = target.Contains("://", StringComparison.Ordinal)
+                ? target
+                : "https://" + target;
+            if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri)
+                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+                return null;
+            target = uri.AbsoluteUri;
+        }
+        return new JarvisWorkflowActionSettings { Kind = kind, Target = target };
+    }
+
+    private static void SynchronizeLegacyWorkflowFields(JarvisWorkflowSettings workflow)
+    {
+        workflow.Apps = CleanInline(string.Join(", ", workflow.Actions
+            .Where(action => action.Kind is "app" or "auto")
+            .Select(action => action.Target)), 300);
+        workflow.Urls = CleanInline(string.Join(", ", workflow.Actions
+            .Where(action => action.Kind == "url")
+            .Select(action => action.Target)), 800);
+        workflow.Folder = CleanInline(workflow.Actions
+            .FirstOrDefault(action => action.Kind == "folder")?.Target, 260);
+    }
+
+    private static IEnumerable<string> SplitWorkflowItems(string value) =>
+        (value ?? "").Split(
+            [',', ';', '\n'],
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 }

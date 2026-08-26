@@ -17,9 +17,13 @@ internal sealed class BrowserPreRouteReceipt
     public bool Started { get; init; }
     public string TaskId { get; init; } = "";
     public string Message { get; init; } = "";
+    public Dictionary<string, object> Result { get; init; }
     public DateTime CreatedUtc { get; init; } = DateTime.UtcNow;
 
-    public bool IsFresh(DateTime utcNow) => utcNow - CreatedUtc <= Lifetime;
+    public bool IsFresh(DateTime utcNow) => utcNow - CreatedUtc <=
+        (string.Equals(ToolName, "run_workflow", StringComparison.Ordinal)
+            ? TimeSpan.FromSeconds(60)
+            : Lifetime);
 
     public bool IsEchoOf(string userTurn, DateTime utcNow) =>
         IsFresh(utcNow)
@@ -35,7 +39,8 @@ internal sealed class BrowserPreRouteReceipt
     public bool BlocksCompetingTool(string toolName, DateTime utcNow) =>
         IsFresh(utcNow)
         && !AppliesTo(toolName, utcNow)
-        && !CommandRegistry.IsBrowserTaskLifecycleTool(toolName);
+        && (string.Equals(ToolName, "run_workflow", StringComparison.Ordinal)
+            || !CommandRegistry.IsBrowserTaskLifecycleTool(toolName));
 
     private static string Normalize(string value) =>
         Regex.Replace((value ?? "").ToLowerInvariant(), @"[^\p{L}\p{N}]+", " ").Trim();

@@ -1945,9 +1945,8 @@ public sealed class JarvisAutomationService : IDisposable
     {
         var workflow = _settings.SaveWorkflow(
             GetString(args, "name"),
-            GetString(args, "apps"),
-            GetString(args, "urls"),
-            GetString(args, "folder"));
+            [GetString(args, "name")],
+            ParseWorkflowActions(args));
         return Logged("create_workflow", workflow.Name, true, $"Saved workflow {workflow.Name}.");
     }
 
@@ -1957,16 +1956,46 @@ public sealed class JarvisAutomationService : IDisposable
         if (string.IsNullOrWhiteSpace(trigger))
             return Result(false, "What phrase should trigger the routine?", needsClarification: true);
 
-        var workflow = _settings.SaveWorkflow(
-            trigger,
-            GetString(args, "apps"),
-            GetString(args, "urls"),
-            GetString(args, "folder"));
-        var mapping = _mappings.Remember(
-            LearnedMappingKind.Workflow,
-            trigger,
-            workflow.Name,
-            workflow.Name);
+        JarvisWorkflowSettings workflow;
+        try
+        {
+            workflow = _settings.SaveWorkflow(
+                trigger,
+                [trigger],
+                ParseWorkflowActions(args));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Result(false, ex.Message, needsClarification: true);
+        }
+
+        // The complete settings record is authoritative. The learned mapping
+        // remains a backward-compatible lookup index, not a second copy of the
+        // routine. A failure to refresh that index cannot discard a verified
+        // durable workflow object.
+        LearnedMappingEntry mapping = null;
+        try
+        {
+            mapping = _mappings.Remember(
+                LearnedMappingKind.Workflow,
+                trigger,
+                workflow.Name,
+                workflow.Name);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning(ex, "Workflow alias index refresh failed; authoritative workflow remains saved");
+        }
+
+        var persisted = _settings.ReadPersistedWorkflow(trigger);
+        if (!WorkflowRecordsMatch(workflow, persisted))
+        {
+            return Logged(
+                "remember_routine",
+                trigger,
+                false,
+                "The complete workflow could not be read back from local storage, so I did not mark it as remembered.");
+        }
         return Logged(
             "remember_routine",
             trigger,
@@ -1974,8 +2003,9 @@ public sealed class JarvisAutomationService : IDisposable
             $"Saved the routine. Say {trigger} to run it.",
             extras: new()
             {
-                ["workflow"] = new { workflow.Name, workflow.Apps, workflow.Urls, workflow.Folder },
-                ["mapping"] = PublicMapping(mapping),
+                ["workflow"] = PublicWorkflow(persisted),
+                ["mapping"] = mapping == null ? null : PublicMapping(mapping),
+                ["persistence_verified"] = true,
             });
     }
 
@@ -1985,6 +2015,9 @@ public sealed class JarvisAutomationService : IDisposable
             ["workflows"] = (_settings.Current.JarvisWorkflows ?? new()).Select(w => new
             {
                 w.Name,
+                w.Version,
+                w.Aliases,
+                w.Actions,
                 w.Apps,
                 w.Urls,
                 w.Folder,
@@ -1999,27 +2032,37 @@ public sealed class JarvisAutomationService : IDisposable
             return Result(false, $"Workflow {name} was not found. Create it first or use a built-in example.", supported: false);
 
         var failures = new List<string>();
-        foreach (var app in SplitList(workflow.Apps))
+        var receipts = new List<object>();
+        foreach (var action in OrderedWorkflowActions(workflow))
         {
             token.ThrowIfCancellationRequested();
-            var result = OpenApp(app);
+            Dictionary<string, object> result;
+            switch (action.Kind)
+            {
+                case "app":
+                    result = OpenApp(action.Target, "native");
+                    break;
+                case "auto":
+                    result = OpenApp(action.Target);
+                    break;
+                case "url":
+                    result = OpenUrl(NormalizeUrl(action.Target));
+                    break;
+                case "folder":
+                    result = await OpenFolderAsync(action.Target, "", token);
+                    break;
+                default:
+                    result = Result(false, $"Unsupported saved action type {action.Kind}.", supported: false);
+                    break;
+            }
+            var ok = Succeeded(result);
+            var message = result.TryGetValue("message", out var detail)
+                ? detail?.ToString() ?? ""
+                : "";
+            receipts.Add(new { action.Kind, action.Target, ok, message });
             if (!Succeeded(result))
-                failures.Add(result["message"]?.ToString() ?? $"Could not open {app}.");
+                failures.Add(string.IsNullOrWhiteSpace(message) ? $"Could not run {action.Target}." : message);
             await Task.Delay(180, token);
-        }
-        foreach (var url in SplitList(workflow.Urls))
-        {
-            token.ThrowIfCancellationRequested();
-            var result = OpenUrl(NormalizeUrl(url));
-            if (!Succeeded(result))
-                failures.Add(result["message"]?.ToString() ?? $"Could not open {url}.");
-            await Task.Delay(180, token);
-        }
-        if (!string.IsNullOrWhiteSpace(workflow.Folder))
-        {
-            var result = await OpenFolderAsync(workflow.Folder, "", token);
-            if (!Succeeded(result))
-                failures.Add(result["message"]?.ToString() ?? $"Could not open {workflow.Folder}.");
         }
 
         return Logged(
@@ -2029,7 +2072,12 @@ public sealed class JarvisAutomationService : IDisposable
             failures.Count == 0
                 ? $"Started {workflow.Name}."
                 : $"Started {workflow.Name} with {failures.Count} action failure(s).",
-            extras: new() { ["failures"] = failures.ToArray() });
+            extras: new()
+            {
+                ["failures"] = failures.ToArray(),
+                ["action_results"] = receipts.ToArray(),
+                ["workflow_version"] = workflow.Version,
+            });
     }
 
     private Dictionary<string, object> DeleteWorkflow(string name)
@@ -2047,7 +2095,48 @@ public sealed class JarvisAutomationService : IDisposable
         }
         _mappings.ForgetWorkflowReferences(canonicalName);
         _mappings.ForgetWorkflowReferences(name);
+        foreach (var alias in saved?.Aliases ?? [])
+            _mappings.ForgetWorkflowReferences(alias);
         return Logged("delete_workflow", name, removed, removed ? "Workflow deleted." : "Workflow not found.");
+    }
+
+    internal bool TryResolveSavedWorkflowTrigger(string utterance, out string canonicalName)
+    {
+        canonicalName = "";
+        var normalized = NormalizePhraseText(utterance);
+        if (string.IsNullOrWhiteSpace(normalized) || _settings.IsWorkflowDeleted(normalized))
+            return false;
+        var workflow = (_settings.Current.JarvisWorkflows ?? []).FirstOrDefault(candidate =>
+            (candidate.Aliases ?? []).Prepend(candidate.Name).Any(alias =>
+                string.Equals(NormalizePhraseText(alias), normalized, StringComparison.Ordinal)));
+        if (workflow == null || OrderedWorkflowActions(workflow).Count == 0)
+            return false;
+        canonicalName = workflow.Name;
+        return true;
+    }
+
+    internal static bool IsExplicitWorkflowPersistenceRequest(string text)
+    {
+        var normalized = NormalizePhraseText(text);
+        return Regex.IsMatch(normalized, @"\b(?:whenever|when) i say\b", RegexOptions.IgnoreCase)
+            || Regex.IsMatch(normalized, @"\b(?:remember|save) (?:this|that)(?: as)?(?: workflow| routine)?\b", RegexOptions.IgnoreCase)
+            || Regex.IsMatch(normalized, @"\bsave (?:this )?(?:workflow|routine)\b", RegexOptions.IgnoreCase)
+            || Regex.IsMatch(normalized, @"\bmake .+ mean .+", RegexOptions.IgnoreCase);
+    }
+
+    internal static string BuildSavedWorkflowPromptDigest(IEnumerable<JarvisWorkflowSettings> workflows)
+    {
+        var triggers = (workflows ?? [])
+            .Where(workflow => OrderedWorkflowActions(workflow).Count > 0)
+            .SelectMany(workflow => (workflow.Aliases ?? []).Prepend(workflow.Name))
+            .Select(NormalizePhraseText)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.Ordinal)
+            .Take(24)
+            .ToArray();
+        return triggers.Length == 0
+            ? "None."
+            : string.Join(" | ", triggers.Select(trigger => $"[{Limit(trigger, 48)}]"));
     }
 
     private Dictionary<string, object> RequestSensitiveAction(string action, string target)
@@ -2262,11 +2351,14 @@ public sealed class JarvisAutomationService : IDisposable
     {
         var normalized = NormalizeWords(name);
         var saved = _settings.Current.JarvisWorkflows?.FirstOrDefault(w =>
-            string.Equals(NormalizeWords(w.Name), normalized, StringComparison.OrdinalIgnoreCase));
+            (w.Aliases ?? []).Prepend(w.Name).Any(alias =>
+                string.Equals(NormalizeWords(alias), normalized, StringComparison.OrdinalIgnoreCase)));
         if (saved != null)
             return saved;
         var ranked = _settings.Current.JarvisWorkflows?
-            .Select(workflow => (Workflow: workflow, Score: FuzzyMatcher.Score(normalized, workflow.Name)))
+            .Select(workflow => (Workflow: workflow, Score: (workflow.Aliases ?? [])
+                .Prepend(workflow.Name)
+                .Max(alias => FuzzyMatcher.Score(normalized, alias))))
             .Where(item => item.Score >= 0.72)
             .OrderByDescending(item => item.Score)
             .Take(2)
@@ -2304,6 +2396,83 @@ public sealed class JarvisAutomationService : IDisposable
             },
             _ => null,
         };
+
+    private static IReadOnlyList<JarvisWorkflowActionSettings> OrderedWorkflowActions(
+        JarvisWorkflowSettings workflow)
+    {
+        if (workflow?.Actions is { Count: > 0 })
+            return workflow.Actions;
+        if (workflow == null)
+            return Array.Empty<JarvisWorkflowActionSettings>();
+        return SplitList(workflow.Apps)
+            .Select(target => new JarvisWorkflowActionSettings { Kind = "auto", Target = target })
+            .Concat(SplitList(workflow.Urls)
+                .Select(target => new JarvisWorkflowActionSettings { Kind = "url", Target = target }))
+            .Concat(string.IsNullOrWhiteSpace(workflow.Folder)
+                ? Array.Empty<JarvisWorkflowActionSettings>()
+                : [new JarvisWorkflowActionSettings { Kind = "folder", Target = workflow.Folder }])
+            .ToArray();
+    }
+
+    private static List<JarvisWorkflowActionSettings> ParseWorkflowActions(JsonElement args)
+    {
+        var actions = new List<JarvisWorkflowActionSettings>();
+        if (args.ValueKind == JsonValueKind.Object
+            && args.TryGetProperty("actions", out var actionArray)
+            && actionArray.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in actionArray.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object)
+                    continue;
+                actions.Add(new JarvisWorkflowActionSettings
+                {
+                    Kind = GetString(item, "kind") ?? GetString(item, "type"),
+                    Target = GetString(item, "target") ?? GetString(item, "value"),
+                });
+            }
+        }
+        if (actions.Count > 0)
+            return actions;
+        actions.AddRange(SplitList(GetString(args, "apps"))
+            .Select(target => new JarvisWorkflowActionSettings { Kind = "app", Target = target }));
+        actions.AddRange(SplitList(GetString(args, "urls"))
+            .Select(target => new JarvisWorkflowActionSettings { Kind = "url", Target = target }));
+        var folder = GetString(args, "folder");
+        if (!string.IsNullOrWhiteSpace(folder))
+            actions.Add(new JarvisWorkflowActionSettings { Kind = "folder", Target = folder });
+        return actions;
+    }
+
+    private static bool WorkflowRecordsMatch(
+        JarvisWorkflowSettings expected,
+        JarvisWorkflowSettings persisted)
+    {
+        if (expected == null || persisted == null
+            || persisted.Version != JarvisWorkflowSettings.CurrentVersion
+            || !string.Equals(
+                NormalizePhraseText(expected.Name),
+                NormalizePhraseText(persisted.Name),
+                StringComparison.Ordinal))
+            return false;
+        var expectedActions = OrderedWorkflowActions(expected);
+        var persistedActions = OrderedWorkflowActions(persisted);
+        return expectedActions.Count > 0
+            && expectedActions.Count == persistedActions.Count
+            && expectedActions.Zip(persistedActions).All(pair =>
+                string.Equals(pair.First.Kind, pair.Second.Kind, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(pair.First.Target, pair.Second.Target, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static object PublicWorkflow(JarvisWorkflowSettings workflow) => new
+    {
+        workflow.Name,
+        workflow.Version,
+        aliases = workflow.Aliases?.ToArray() ?? Array.Empty<string>(),
+        actions = OrderedWorkflowActions(workflow)
+            .Select(action => new { action.Kind, action.Target })
+            .ToArray(),
+    };
 
     private Dictionary<string, object> Logged(
         string action,

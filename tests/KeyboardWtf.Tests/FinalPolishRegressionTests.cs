@@ -100,6 +100,7 @@ public sealed class FinalPolishRegressionTests : IDisposable
     [InlineData("thanks", false)]
     [InlineData("thank you", false)]
     [InlineData("goodbye", true)]
+    [InlineData("bye", true)]
     [InlineData("good bye", true)]
     [InlineData("go away", true)]
     [InlineData("stop Jarvis", true)]
@@ -118,6 +119,24 @@ public sealed class FinalPolishRegressionTests : IDisposable
         Assert.True(GeminiLiveConversationService.ShouldAutoEnd("goodbye", saturatedTurn));
         Assert.True(GeminiLiveConversationService.ShouldAutoEnd("go away", saturatedTurn));
         Assert.False(GeminiLiveConversationService.ShouldAutoEnd("close tab", saturatedTurn));
+    }
+
+    [Fact]
+    public void Farewell_path_is_local_and_has_no_deferred_provider_turn_delay()
+    {
+        var root = FindRepositoryRoot();
+        var source = File.ReadAllText(Path.Combine(
+            root,
+            "src",
+            "Services",
+            "GeminiLiveConversationService.cs"));
+
+        Assert.Contains("_userTranscriptObserver?.Invoke(accumulatedUserTurn);", source,
+            StringComparison.Ordinal);
+        Assert.Contains("StopMicrophone();", source, StringComparison.Ordinal);
+        Assert.Contains("StopPlayback();", source, StringComparison.Ordinal);
+        Assert.Contains("await StopAsync(showDone: false);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("await Task.Delay(850);", source, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -112,8 +112,7 @@ public sealed class KeyboardWtfApp : IDisposable
             _browserAutomation);
         _liveConversation.SetToolExecutor(_commands.ExecuteJarvisToolAsync);
         _liveConversation.SetUserTranscriptObserver(_commands.ObserveJarvisTranscript);
-        _liveConversation.SetSessionEndingObserver(
-            () => _browserAutomation.CancelAsync("Jarvis conversation ended"));
+        _liveConversation.SetSessionEndingObserver(_commands.HandleJarvisSessionEndingAsync);
         _overlay = new VoiceOverlayForm(_audioRecorder);
         _overlay.InitializeUiThreadHandle();
 

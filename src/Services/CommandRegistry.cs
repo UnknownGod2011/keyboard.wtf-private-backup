@@ -126,6 +126,21 @@ public sealed class CommandRegistry
     public object PendingSensitiveAction => _automation?.PendingSnapshot();
     internal static bool UsesJarvisTranscriptPreflight => false;
 
+    public async Task HandleJarvisSessionEndingAsync()
+    {
+        lock (_browserPreRouteLock)
+        {
+            _browserPreRouteReceipt = null;
+            _browserPreRouteOwnsCurrentTurn = false;
+            _latestJarvisUserTurn = "";
+            _latestJarvisUserTurnUtc = default;
+            _awaitingLocalTextEcho = "";
+            _awaitingLocalTextEchoUtc = default;
+        }
+        if (_browserAutomation != null)
+            await _browserAutomation.CancelAsync("Jarvis conversation ended");
+    }
+
     private bool StopLiveBeforeAnotherVoiceMode(string requestedMode)
     {
         if (_liveConversation?.IsActive != true && _liveConversation?.IsStarting != true)
@@ -153,6 +168,18 @@ public sealed class CommandRegistry
         {
             var now = DateTime.UtcNow;
             if (!fromLocalTextSubmission
+                && string.Equals(
+                    _browserPreRouteReceipt?.ToolName,
+                    "run_workflow",
+                    StringComparison.Ordinal)
+                && _browserPreRouteReceipt?.IsEchoOf(userTurn, now) == true)
+            {
+                _browserPreRouteOwnsCurrentTurn = true;
+                _latestJarvisUserTurn = BrowserAutomationText.Truncate(userTurn, 4000);
+                _latestJarvisUserTurnUtc = now;
+                return true;
+            }
+            if (!fromLocalTextSubmission
                 && _browserPreRouteReceipt?.IsEchoOf(userTurn, now) == true
                 && !string.IsNullOrWhiteSpace(_awaitingLocalTextEcho)
                 && now - _awaitingLocalTextEchoUtc <= TimeSpan.FromSeconds(12))
@@ -177,6 +204,63 @@ public sealed class CommandRegistry
             {
                 _awaitingLocalTextEcho = "";
             }
+        }
+
+        // Explicit persistence requests must reach the workflow tool as one
+        // complete user turn. In particular, an early "open Gmail" fragment
+        // must not start Browser Automation before "remember this" arrives.
+        if (_automation != null
+            && JarvisAutomationService.IsExplicitWorkflowPersistenceRequest(userTurn))
+        {
+            AppLog.Info("Browser pre-route skipped for explicit workflow persistence request.");
+            return false;
+        }
+
+        // A complete durable workflow trigger is locally authoritative. Run
+        // its stored ordered actions once and retain the verified receipt for
+        // the matching Live tool call instead of asking the planner to
+        // reinterpret the phrase from conversation memory.
+        if (_automation != null
+            && _automation.TryResolveSavedWorkflowTrigger(userTurn, out var workflowName))
+        {
+            Dictionary<string, object> workflowResult;
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                workflowResult = _automation.ExecuteAsync(
+                        "run_workflow",
+                        JsonSerializer.SerializeToElement(new { name = workflowName }),
+                        timeout.Token)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warning(ex, "Deterministic saved workflow pre-route failed");
+                workflowResult = ToolResult(false, ex is OperationCanceledException
+                    ? "The saved workflow did not finish in time."
+                    : ex.Message);
+            }
+            var ok = workflowResult.TryGetValue("ok", out var okValue)
+                && okValue is bool succeeded
+                && succeeded;
+            var message = workflowResult.TryGetValue("message", out var messageValue)
+                ? messageValue?.ToString() ?? ""
+                : "";
+            lock (_browserPreRouteLock)
+            {
+                _browserPreRouteReceipt = new BrowserPreRouteReceipt
+                {
+                    UserTurn = userTurn,
+                    ToolName = "run_workflow",
+                    Ok = ok,
+                    Message = message,
+                    Result = new Dictionary<string, object>(workflowResult),
+                };
+                _browserPreRouteOwnsCurrentTurn = true;
+            }
+            AppLog.Info($"Saved workflow pre-route: workflow={workflowName} ok={ok}");
+            return true;
         }
 
         if (_browserAutomation != null
@@ -367,6 +451,9 @@ public sealed class CommandRegistry
         {
             if (TryGetPreRoutedToolResult(toolName, out var preRoutedResult))
                 return preRoutedResult;
+
+            if (TryConsumePreRoutedWorkflowOutcome(out var workflowOutcome))
+                return workflowOutcome;
 
             if (ShouldBlockCompetingToolForPreRoutedBrowserTurn(toolName))
             {
@@ -1381,6 +1468,22 @@ public sealed class CommandRegistry
         var request = ResolveBrowserAutomationTask(
             GetString(args, "task"),
             RecentJarvisUserTurn());
+        var classification = _browserAutomation.Classify(request);
+        if (classification.Decision != BrowserAutomationDecision.BrowserAutomation)
+        {
+            AppLog.Info(
+                $"Browser tool rejected by authoritative capability routing: decision={classification.Decision} reason={classification.Reason}");
+            return new Dictionary<string, object>
+            {
+                ["ok"] = false,
+                ["started"] = false,
+                ["state"] = "idle",
+                ["supported"] = false,
+                ["needs_clarification"] = classification.Decision == BrowserAutomationDecision.AskUser,
+                ["message"] = "Browser Automation was not started because this request can use a direct app, URL, or dedicated capability.",
+                ["routing_reason"] = classification.Reason,
+            };
+        }
         var result = _browserAutomation.Start(request);
         var lifecycleState = result.Started
             ? "starting"
@@ -1448,6 +1551,14 @@ public sealed class CommandRegistry
                 return false;
             }
 
+            if (receipt.Result != null)
+            {
+                result = new Dictionary<string, object>(receipt.Result);
+                _browserPreRouteReceipt = null;
+                _browserPreRouteOwnsCurrentTurn = false;
+                return true;
+            }
+
             if (string.Equals(toolName, "browser_automation", StringComparison.Ordinal))
             {
                 result = new Dictionary<string, object>
@@ -1470,6 +1581,29 @@ public sealed class CommandRegistry
                 receipt.Message,
                 supported: true,
                 detail: "The verified local browser command was already executed once for this user turn.");
+            return true;
+        }
+    }
+
+    private bool TryConsumePreRoutedWorkflowOutcome(
+        out Dictionary<string, object> result)
+    {
+        lock (_browserPreRouteLock)
+        {
+            var receipt = _browserPreRouteReceipt;
+            if (!string.Equals(receipt?.ToolName, "run_workflow", StringComparison.Ordinal)
+                || receipt?.IsFresh(DateTime.UtcNow) != true
+                || receipt.Result == null)
+            {
+                result = null;
+                return false;
+            }
+            result = new Dictionary<string, object>(receipt.Result)
+            {
+                ["routing_note"] = "The exact durable workflow trigger was resolved and executed locally; no alternate planner action was run.",
+            };
+            _browserPreRouteReceipt = null;
+            _browserPreRouteOwnsCurrentTurn = false;
             return true;
         }
     }

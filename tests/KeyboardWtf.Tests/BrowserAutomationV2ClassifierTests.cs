@@ -22,6 +22,11 @@ public sealed class BrowserAutomationV2ClassifierTests
     [InlineData("Set a ten second timer called cancellation check.")]
     [InlineData("Cancel the active timer.")]
     [InlineData("Show my active timers.")]
+    [InlineData("Open Gmail, Discord, Devpost, Instagram, and Excel.")]
+    [InlineData("Whenever I say potato patato, open Gmail, Discord, Devpost, Instagram, and Excel. Remember this.")]
+    [InlineData("Open Instagram and Discord.")]
+    [InlineData("Open Gmail.")]
+    [InlineData("Open Devpost.")]
     public void Simple_open_and_search_commands_stay_on_fast_tools(string request)
     {
         var result = _classifier.Classify(request);
