@@ -219,7 +219,7 @@ public sealed class RoutineMemoryTests : IDisposable
             },
             action =>
             {
-                Assert.Contains(action.Kind, new[] { "app", "auto" });
+                Assert.Equal("app", action.Kind);
                 Assert.Equal("Discord", action.Target);
             },
             action =>

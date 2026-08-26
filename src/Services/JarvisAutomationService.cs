@@ -2134,6 +2134,8 @@ public sealed class JarvisAutomationService : IDisposable
             return new JarvisWorkflowActionSettings { Kind = "url", Target = knownUrl };
         if (explicitWeb || Regex.IsMatch(target, @"^[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+(?:/.*)?$"))
             return new JarvisWorkflowActionSettings { Kind = "url", Target = NormalizeUrl(target) };
+        if (AppResolverService.IsKnownNativeAppName(target))
+            return new JarvisWorkflowActionSettings { Kind = "app", Target = target };
 
         var app = _apps.Resolve(target);
         return new JarvisWorkflowActionSettings

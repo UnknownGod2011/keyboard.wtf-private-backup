@@ -212,6 +212,14 @@ public sealed class AppResolverService
         return typo?.Value ?? clean;
     }
 
+    internal static bool IsKnownNativeAppName(string query)
+    {
+        var clean = (query ?? "").Trim();
+        if (NaturalAliases.ContainsKey(clean))
+            return true;
+        return KnownExecutables.ContainsKey(CanonicalizeNaturalName(clean));
+    }
+
     public bool TryLaunch(AppCandidate candidate, out string error)
     {
         error = "";
