@@ -1243,7 +1243,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             "Use tools only for allowed actions; never claim an action finished until the tool response says it did. " +
             "For the same user request, never repeat an identical action after a deterministic failure. A transient failure may receive at most one silent identical retry. Do not narrate internal retries or repeat the same failure aloud; use one genuinely different capability if available, otherwise explain the final limitation once. " +
             "Treat successful tool receipts as authoritative. If an earlier capability fails but a later fallback succeeds for the requested outcome, report the final success and keep the superseded failure internal. Never claim success without a successful receipt. " +
-            "App names and file names do not need to be exact. Use open_app, open_folder, open_path, or search_files with the user's natural approximate wording; the local resolver performs fuzzy matching and returns choices when confidence is low. " +
+            "App names and file names do not need to be exact. Use open_app, open_folder, open_path, or search_files with the user's natural approximate wording; the local resolver performs fuzzy matching and returns choices when confidence is low. Preserve an explicit Desktop, Documents, Downloads, or other location in the tool location field because the local resolver treats it as a strong scope. " +
             "If the local resolver returns multiple candidates, read only the short names, ask the user to choose, and then retry with the chosen name or path. Do not guess between ambiguous matches. " +
             "If the user corrects an app, file, folder, link, or browser choice, ask whether they want that correction remembered. Call a remember tool only after they explicitly approve it. " +
             "When the user explicitly asks to remember a selected http/https link for a phrase such as open test portal, call remember_link_alias with the phrase as alias. If the URL is omitted, the local tool safely reads the current selection, validates it, and restores the clipboard. Do not claim the alias was saved until that tool succeeds. " +
@@ -1440,18 +1440,20 @@ public sealed class GeminiLiveConversationService : IDisposable
                     }),
                 FunctionDeclaration(
                     "open_folder",
-                    "Open a known, learned, or approximately named folder. A concrete file path opens its containing folder. The local resolver searches common user locations safely and asks for a choice when results are ambiguous.",
+                    "Open a known, learned, or approximately named folder. A concrete file path opens its containing folder. The local resolver searches common user locations safely, treats an explicit requested location as a strong scope, and asks for a choice when results are ambiguous.",
                     new()
                     {
                         ["folder"] = Schema("string", "Known folder name or existing folder path."),
+                        ["location"] = Schema("string", "Optional explicit requested scope such as desktop, downloads, documents, or an existing folder path."),
                     },
                     "folder"),
                 FunctionDeclaration(
                     "open_path",
-                    "Open an existing or approximately named safe local document or folder. Executable, script, installer, shortcut, and registry files are blocked. Never invent a path.",
+                    "Open an existing or approximately named safe local document or folder. Preserve any explicit requested location. Executable, script, installer, shortcut, and registry files are blocked. Never invent a path.",
                     new()
                     {
                         ["path"] = Schema("string", "Existing local file or folder path."),
+                        ["location"] = Schema("string", "Optional explicit requested scope such as desktop, downloads, documents, or an existing folder path."),
                     },
                     "path"),
                 FunctionDeclaration(

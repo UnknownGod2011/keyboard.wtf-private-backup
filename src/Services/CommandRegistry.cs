@@ -1223,6 +1223,22 @@ public sealed class CommandRegistry
         bool retainFinalTextOnClipboard = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (retainFinalTextOnClipboard
+            && !EnsureFinalTextOnClipboard(text))
+        {
+            AppLog.Warning("Smart Writing could not place the final text on the clipboard before delivery");
+            KeyboardWtfState.SetUi(
+                VoiceUiPhase.Error,
+                "Clipboard unavailable",
+                "The final text remains visible in keyboard.wtf. Please try again.");
+            _notifications.Warning(
+                "Clipboard unavailable",
+                "Smart Writing could not safely copy or paste the final text.");
+            return;
+        }
+        if (retainFinalTextOnClipboard)
+            AppLog.Info($"Smart Writing prepared {text.Length} final characters on the clipboard");
+
         var destination = _settings.Current.TextDeliveryMode switch
         {
             VoiceTextDeliveryMode.ClipboardOnly => "Clipboard",
@@ -1255,17 +1271,23 @@ public sealed class CommandRegistry
             text,
             insertionTarget,
             cancellationToken);
-        if (ok
-            && retainFinalTextOnClipboard
-            && !string.Equals(destination, "Clipboard", StringComparison.OrdinalIgnoreCase))
+        if (ok && retainFinalTextOnClipboard)
         {
-            if (RetainFinalTextOnClipboard(text))
+            if (EnsureFinalTextOnClipboard(text))
             {
                 AppLog.Info($"Smart Writing retained {text.Length} final characters on the clipboard");
             }
             else
             {
                 AppLog.Warning("Smart Writing inserted the final text but could not retain it on the clipboard");
+                KeyboardWtfState.SetUi(
+                    VoiceUiPhase.Error,
+                    "Inserted — clipboard unavailable",
+                    "The text was inserted, but Windows did not retain the clipboard copy.");
+                _notifications.Warning(
+                    "Inserted — clipboard unavailable",
+                    "The text was inserted, but Windows did not retain the clipboard copy.");
+                return;
             }
         }
         if (!ok && destination == "Type Out")
@@ -1320,6 +1342,25 @@ public sealed class CommandRegistry
         string text,
         Func<string, bool> setter = null) =>
         (setter ?? ClipboardHelper.SetText)(text ?? "");
+
+    internal static bool EnsureFinalTextOnClipboard(
+        string text,
+        Func<string, bool> setter = null,
+        Func<string> getter = null)
+    {
+        text ??= "";
+        setter ??= ClipboardHelper.SetText;
+        getter ??= ClipboardHelper.GetText;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            if (setter(text)
+                && string.Equals(getter(), text, StringComparison.Ordinal))
+                return true;
+            if (attempt < 2)
+                Thread.Sleep(35 * (attempt + 1));
+        }
+        return false;
+    }
 
     private async Task CancelCurrentAsync()
     {

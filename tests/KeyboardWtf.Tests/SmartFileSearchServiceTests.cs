@@ -73,6 +73,117 @@ public sealed class SmartFileSearchServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Explicit_location_scopes_before_global_duplicate_ranking()
+    {
+        var desktop = Path.Combine(_root, "Desktop");
+        var downloads = Path.Combine(_root, "Downloads");
+        var desktopTarget = Path.Combine(desktop, "keyboard.wtf");
+        var downloadsTarget = Path.Combine(downloads, "some", "nested", "keyboard.wtf");
+        Directory.CreateDirectory(desktopTarget);
+        Directory.CreateDirectory(downloadsTarget);
+        var service = new SmartFileSearchService(
+            _mappings,
+            [(desktop, "Desktop", 10), (downloads, "Downloads", 9)]);
+
+        var result = await service.SearchAsync(
+            "open the folder called keyboard.wtf on my Desktop",
+            "",
+            includeFiles: false,
+            includeFolders: true,
+            CancellationToken.None);
+
+        Assert.Equal(FileResolutionStatus.Found, result.Status);
+        Assert.Equal(desktopTarget, result.Best.Path);
+        Assert.All(result.Candidates, candidate =>
+            Assert.StartsWith(desktop, candidate.Path, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Exact_direct_child_beats_a_nested_duplicate_within_requested_location()
+    {
+        var desktop = Path.Combine(_root, "Desktop");
+        var direct = Path.Combine(desktop, "Important_Doc.txt");
+        var nested = Path.Combine(desktop, "archive", "Important_Doc.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(nested)!);
+        File.WriteAllText(direct, "current");
+        File.WriteAllText(nested, "archived");
+        var service = new SmartFileSearchService(_mappings, [(desktop, "Desktop", 10)]);
+
+        var result = await service.SearchAsync(
+            "find the important doc on my desktop",
+            "",
+            includeFiles: true,
+            includeFolders: false,
+            CancellationToken.None);
+
+        Assert.Equal(FileResolutionStatus.Found, result.Status);
+        Assert.Equal(direct, result.Best.Path);
+    }
+
+    [Theory]
+    [InlineData("tanush oppo")]
+    [InlineData("TANUSH-OPPO")]
+    [InlineData("tanush_op")]
+    public async Task Explicit_location_normalizes_case_spaces_underscores_hyphens_and_partial_names(
+        string queryName)
+    {
+        var desktop = Path.Combine(_root, "Desktop");
+        Directory.CreateDirectory(desktop);
+        var target = Path.Combine(desktop, "Tanush_oppo.txt");
+        File.WriteAllText(target, "test");
+        var service = new SmartFileSearchService(_mappings, [(desktop, "Desktop", 10)]);
+
+        var result = await service.SearchAsync(
+            $"find {queryName} on my Desktop",
+            "",
+            includeFiles: true,
+            includeFolders: false,
+            CancellationToken.None);
+
+        Assert.NotEqual(FileResolutionStatus.NotFound, result.Status);
+        Assert.Equal(target, result.Best.Path);
+    }
+
+    [Fact]
+    public async Task Explicit_path_scope_ignores_a_learned_duplicate_outside_that_scope()
+    {
+        var desktop = Path.Combine(_root, "Desktop");
+        var downloads = Path.Combine(_root, "Downloads");
+        var desktopTarget = Path.Combine(desktop, "keyboard.wtf");
+        var downloadsTarget = Path.Combine(downloads, "keyboard.wtf");
+        Directory.CreateDirectory(desktopTarget);
+        Directory.CreateDirectory(downloadsTarget);
+        _mappings.Remember(
+            LearnedMappingKind.Folder,
+            "keyboard wtf",
+            downloadsTarget,
+            "Downloads copy");
+        var service = new SmartFileSearchService(
+            _mappings,
+            [(desktop, "Desktop", 10), (downloads, "Downloads", 9)]);
+
+        var result = await service.SearchAsync(
+            "keyboard wtf",
+            desktop,
+            includeFiles: false,
+            includeFolders: true,
+            CancellationToken.None);
+
+        Assert.Equal(FileResolutionStatus.Found, result.Status);
+        Assert.Equal(desktopTarget, result.Best.Path);
+    }
+
+    [Theory]
+    [InlineData("open it on my Desktop", "desktop")]
+    [InlineData("find it in downloads", "downloads")]
+    [InlineData("locate it inside my Documents", "documents")]
+    [InlineData("open it from OneDrive", "onedrive")]
+    public void Extracts_explicit_known_location_from_the_full_user_request(
+        string query,
+        string expected) =>
+        Assert.Equal(expected, SmartFileSearchService.ResolveRequestedLocation(query, ""));
+
+    [Fact]
     public void BlocksDangerousFileTypes()
     {
         Assert.True(SmartFileSearchService.IsRiskyFile(Path.Combine(_root, "dangerous-installer.exe")));

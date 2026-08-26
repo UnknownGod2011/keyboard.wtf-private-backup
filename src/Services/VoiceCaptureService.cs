@@ -8,6 +8,7 @@ using KeyboardWtf.Services.Ai;
 
 public sealed class VoiceCaptureService
 {
+    internal static readonly TimeSpan SmartWritingFinalSilence = TimeSpan.FromSeconds(8);
     private readonly AudioRecorderService _audioRecorder;
     private readonly SpeechRecognitionService _speechRecognition;
     private readonly NotificationService _notifications;
@@ -111,8 +112,10 @@ public sealed class VoiceCaptureService
         _autoStopCts?.Cancel();
         _autoStopCts = new CancellationTokenSource();
         _ = AutoStopAfterLimitAsync(mode, _autoStopCts.Token);
-        // Smart Writing is explicitly stopped by the user. A pause between
-        // sentences must not discard the rest of a long-form recording.
+        // Smart Writing still supports explicit toggle-to-finish, but a long
+        // final silence should also complete the normal hands-free path. Eight
+        // seconds preserves natural thinking pauses without leaving a finished
+        // recording alive indefinitely.
         if (UsesSilenceAutoStop(mode))
             StartSilenceWatcher(mode);
 
@@ -320,8 +323,7 @@ public sealed class VoiceCaptureService
     internal static bool RecordingModeUsesAiPostProcessing(RecordingMode mode) =>
         mode != RecordingMode.Dictate;
 
-    internal static bool UsesSilenceAutoStop(RecordingMode mode) =>
-        mode != RecordingMode.VoiceAssistant;
+    internal static bool UsesSilenceAutoStop(RecordingMode mode) => true;
 
     private async Task<string> PostProcessTranscriptAsync(
         string transcript,
@@ -381,6 +383,7 @@ public sealed class VoiceCaptureService
 
     private async Task MonitorSilenceAsync(RecordingMode mode, CancellationToken token)
     {
+        var smartWriting = mode == RecordingMode.VoiceAssistant;
         var heardVoice = false;
         var heardStrongVoice = false;
         var lastVoiceUtc = DateTime.UtcNow;
@@ -413,17 +416,35 @@ public sealed class VoiceCaptureService
                     lastStrongVoiceUtc = now;
                 }
 
-                var quietPause = (now - lastVoiceUtc).TotalMilliseconds > 800;
+                var quietPause = now - lastVoiceUtc > (smartWriting
+                    ? SmartWritingFinalSilence
+                    : TimeSpan.FromMilliseconds(800));
                 var noisyRoomPause = heardStrongVoice
-                    && (now - lastStrongVoiceUtc).TotalMilliseconds > 1200;
-                if (heardVoice && elapsed.TotalMilliseconds > 650 && (quietPause || noisyRoomPause))
+                    && now - lastStrongVoiceUtc > (smartWriting
+                        ? SmartWritingFinalSilence + TimeSpan.FromSeconds(2)
+                        : TimeSpan.FromMilliseconds(1200));
+                var minimumSpeechWindow = smartWriting
+                    ? TimeSpan.FromSeconds(2)
+                    : TimeSpan.FromMilliseconds(650);
+                if (heardVoice && elapsed > minimumSpeechWindow && (quietPause || noisyRoomPause))
                 {
-                    _notifications.Info("Processing", "Pause detected.");
+                    if (smartWriting)
+                    {
+                        AppLog.Info(
+                            "Smart Writing final silence detected: " +
+                            $"recordingMs={(long)elapsed.TotalMilliseconds} " +
+                            $"silenceMs={(long)(now - lastVoiceUtc).TotalMilliseconds}");
+                        _notifications.Info("Processing", "Finishing Smart Writing...");
+                    }
+                    else
+                    {
+                        _notifications.Info("Processing", "Pause detected.");
+                    }
                     await CompleteRecordingAsync();
                     return;
                 }
 
-                if (!heardVoice && elapsed.TotalSeconds > 5)
+                if (!smartWriting && !heardVoice && elapsed.TotalSeconds > 5)
                 {
                     _notifications.Warning("No speech", "Stopped listening after silence.");
                     await CompleteRecordingAsync();

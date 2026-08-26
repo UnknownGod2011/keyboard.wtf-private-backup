@@ -2,7 +2,7 @@
   #define MyAppName "keyboard.wtf"
 #endif
 #ifndef MyAppVersion
-  #define MyAppVersion "1.4.10"
+  #define MyAppVersion "1.4.11"
 #endif
 #ifndef MyAppPublisher
   #define MyAppPublisher "keyboard.wtf"

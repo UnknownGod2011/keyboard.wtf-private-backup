@@ -1,6 +1,6 @@
 # Smart Writing and Raw Dictation
 
-This document describes the Windows 1.4.10 production implementation. It is based on the code paths that ship in the desktop build, not on planned behavior.
+This document describes the Windows 1.4.11 production implementation. It is based on the code paths that ship in the desktop build, not on planned behavior.
 
 ## The three interaction modes
 
@@ -16,7 +16,7 @@ The displayed shortcut is the shortcut Windows actually registered. If a shortcu
 
 `HotkeyService` dispatches Smart Writing and Dictation to `CommandRegistry`, which delegates recording to `VoiceCaptureService`. `AudioRecorderService` captures 16 kHz mono PCM through NAudio/WinMM. A configured microphone index is honored; `-1` uses WinMM `WAVE_MAPPER`, so the current Windows default input is followed rather than assuming device zero.
 
-The shortcut toggles recording. Raw Dictation may use silence detection; Smart Writing deliberately waits for the user to press the shortcut again (or cancel) so pauses between sentences do not truncate a recording. Smart Writing has a five-minute safety limit. The visible states are Listening, Transcribing/Understanding, Polishing (Smart Writing only), Done, Cancelled, and Error. A microphone or Windows privacy failure is surfaced as an error and is never reported as success.
+The shortcut toggles recording. Raw Dictation uses its short silence detector. Smart Writing can be finished explicitly with the same shortcut and also finishes after eight seconds of final silence, preserving ordinary thinking pauses without leaving a completed utterance in Listening forever. Smart Writing has a five-minute safety limit. The visible states are Listening, Transcribing/Understanding, Polishing (Smart Writing only), Done, Cancelled, and Error. A microphone or Windows privacy failure is surfaced as an error and is never reported as success.
 
 Jarvis does not run a Vosk transcription or local speech gate before Live starts. Pressing the dedicated Jarvis shortcut immediately creates one logical conversation, opens the microphone, and begins the authenticated Gemini Live connection. A short PCM pre-roll prevents first-word clipping while that connection is established. Recoverable provider or Cloud Run socket rollovers replace only the physical transport: the microphone, bounded in-memory context, and single user-visible Jarvis surface remain part of the same logical session until the user stops it.
 
@@ -76,7 +76,7 @@ The default delivery mode is `TypeIntoActiveApp`; users may choose clipboard-onl
 
 At recording start, keyboard.wtf captures the intended foreground window, process, and title. Before pasting it verifies that target again, waits briefly, then verifies immediately before `Ctrl+V`. If focus changed to another app/window/tab, it does not type there: the result is copied to the clipboard and the user is told why.
 
-For verified paste delivery, keyboard.wtf snapshots the existing clipboard (including an empty clipboard), temporarily places the result on it, pastes, and restores the previous clipboard after the target had time to consume the paste. Cancellation before paste restores the clipboard and produces no late text.
+For verified Raw Dictation paste delivery, keyboard.wtf snapshots the existing clipboard (including an empty clipboard), temporarily places the result on it, pastes, and restores the prior clipboard after the target had time to consume the paste. Smart Writing deliberately establishes and verifies the final Gemini result on the clipboard before attempting insertion, so that same final result remains available after a successful paste or a safe focus-change fallback. Cancellation before a result exists produces no late text or clipboard replacement.
 
 This protection is intentionally conservative. It reliably detects application/window changes and ordinary Chrome tab-title changes. Windows does not provide a universal stable identity for every custom editor caret (notably canvas-based web editors), so a cursor move to another field inside the exact same unchanged window may not always be distinguishable. Clipboard-only mode is the safest fallback for such editors.
 

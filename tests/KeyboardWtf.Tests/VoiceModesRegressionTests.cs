@@ -28,10 +28,15 @@ public sealed class VoiceModesRegressionTests
         Assert.Equal(300, SmartWritingAudioCapture.MaximumSeconds);
 
     [Fact]
-    public void Smart_writing_waits_for_explicit_stop_instead_of_ending_on_a_thinking_pause()
+    public void Smart_writing_preserves_normal_thinking_pauses_but_has_a_bounded_final_silence()
     {
-        Assert.False(VoiceCaptureService.UsesSilenceAutoStop(RecordingMode.VoiceAssistant));
+        Assert.True(VoiceCaptureService.UsesSilenceAutoStop(RecordingMode.VoiceAssistant));
         Assert.True(VoiceCaptureService.UsesSilenceAutoStop(RecordingMode.Dictate));
+        Assert.InRange(
+            VoiceCaptureService.SmartWritingFinalSilence,
+            TimeSpan.FromSeconds(7),
+            TimeSpan.FromSeconds(12));
+        Assert.True(VoiceCaptureService.SmartWritingFinalSilence > TimeSpan.FromSeconds(5));
     }
 
     [Fact]
@@ -47,6 +52,36 @@ public sealed class VoiceModesRegressionTests
                 return true;
             }));
         Assert.Equal("final Gemini text", retained);
+    }
+
+    [Fact]
+    public void Smart_writing_verifies_and_retries_the_final_clipboard_copy()
+    {
+        var attempts = 0;
+        var clipboard = "old";
+
+        Assert.True(CommandRegistry.EnsureFinalTextOnClipboard(
+            "final Gemini text",
+            value =>
+            {
+                attempts++;
+                if (attempts == 1)
+                    return false;
+                clipboard = value;
+                return true;
+            },
+            () => clipboard));
+        Assert.Equal(2, attempts);
+        Assert.Equal("final Gemini text", clipboard);
+    }
+
+    [Fact]
+    public void Smart_writing_rejects_an_unverified_final_clipboard_copy()
+    {
+        Assert.False(CommandRegistry.EnsureFinalTextOnClipboard(
+            "final Gemini text",
+            _ => true,
+            () => "different text"));
     }
 
     [Theory]

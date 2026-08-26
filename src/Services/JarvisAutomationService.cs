@@ -42,6 +42,8 @@ public sealed class JarvisAutomationService : IDisposable
     private readonly string _todosPath = Path.Combine(SettingsService.AppDataDir, "jarvis-todos.json");
     private PendingJarvisAction _pending;
     private SelectionSnapshot _lastSelection;
+    private string _latestUserTranscript = "";
+    private DateTimeOffset _latestUserTranscriptAt;
     private bool _executingApprovedAction;
     private bool _disposed;
 
@@ -113,8 +115,14 @@ public sealed class JarvisAutomationService : IDisposable
                 GetString(args, "app_name"),
                 GetString(args, "target_kind")),
             "open_url" => OpenUrl(GetString(args, "url"), GetString(args, "browser")),
-            "open_folder" => await OpenFolderAsync(GetString(args, "folder"), token),
-            "open_path" => await OpenPathAsync(GetString(args, "path"), token),
+            "open_folder" => await OpenFolderAsync(
+                GetString(args, "folder"),
+                GetString(args, "location"),
+                token),
+            "open_path" => await OpenPathAsync(
+                GetString(args, "path"),
+                GetString(args, "location"),
+                token),
             "window_action" => await WindowActionAsync(
                 GetString(args, "action"),
                 GetString(args, "app_name"),
@@ -287,7 +295,11 @@ public sealed class JarvisAutomationService : IDisposable
     {
         PendingJarvisAction pending;
         lock (_pendingLock)
+        {
+            _latestUserTranscript = Limit((text ?? "").Trim(), 1000);
+            _latestUserTranscriptAt = DateTimeOffset.UtcNow;
             pending = _pending;
+        }
         if (pending == null)
             return;
 
@@ -493,7 +505,10 @@ public sealed class JarvisAutomationService : IDisposable
         return Logged("open_folder", path, true, $"Opened {Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar))}.");
     }
 
-    private async Task<Dictionary<string, object>> OpenFolderAsync(string folder, CancellationToken token)
+    private async Task<Dictionary<string, object>> OpenFolderAsync(
+        string folder,
+        string location,
+        CancellationToken token)
     {
         if (string.IsNullOrWhiteSpace(folder))
             return Result(false, "Which folder should I open?", needsClarification: true);
@@ -521,16 +536,20 @@ public sealed class JarvisAutomationService : IDisposable
             return Logged("open_folder", expanded, false, error, supported: false);
         }
 
+        var requestedLocation = ResolveRecentFileLocation(location);
         var result = await _files.SearchAsync(
             folder,
-            "",
+            requestedLocation,
             includeFiles: false,
             includeFolders: true,
             token);
         return OpenResolvedSearchResult("open_folder", folder, result);
     }
 
-    private async Task<Dictionary<string, object>> OpenPathAsync(string path, CancellationToken token)
+    private async Task<Dictionary<string, object>> OpenPathAsync(
+        string path,
+        string location,
+        CancellationToken token)
     {
         if (string.IsNullOrWhiteSpace(path))
             return Result(false, "Which file or folder should I open?", needsClarification: true);
@@ -549,13 +568,16 @@ public sealed class JarvisAutomationService : IDisposable
             return Logged("open_path", expanded, false, error, supported: false);
         }
 
-        var link = _mappings.FindExact(LearnedMappingKind.Link, path);
+        var requestedLocation = ResolveRecentFileLocation(location);
+        var link = string.IsNullOrWhiteSpace(requestedLocation)
+            ? _mappings.FindExact(LearnedMappingKind.Link, path)
+            : null;
         if (link != null)
             return OpenUrl(link.Target, "");
 
         var result = await _files.SearchAsync(
             path,
-            "",
+            requestedLocation,
             includeFiles: true,
             includeFolders: true,
             token);
@@ -1218,6 +1240,7 @@ public sealed class JarvisAutomationService : IDisposable
         if (string.IsNullOrWhiteSpace(query))
             return Result(false, "What file or folder should I search for?", needsClarification: true);
 
+        location = ResolveRecentFileLocation(location);
         var search = await _files.SearchAsync(
             query,
             location,
@@ -1250,6 +1273,22 @@ public sealed class JarvisAutomationService : IDisposable
                 ["scanned_entries"] = search.ScannedEntries,
                 ["timed_out"] = search.TimedOut,
             });
+    }
+
+    private string ResolveRecentFileLocation(string explicitLocation)
+    {
+        string recentTranscript;
+        DateTimeOffset observedAt;
+        lock (_pendingLock)
+        {
+            recentTranscript = _latestUserTranscript;
+            observedAt = _latestUserTranscriptAt;
+        }
+        if (DateTimeOffset.UtcNow - observedAt > TimeSpan.FromSeconds(30))
+            recentTranscript = "";
+        return SmartFileSearchService.ResolveRequestedLocation(
+            recentTranscript,
+            explicitLocation);
     }
 
     private Dictionary<string, object> SaveNote(string text, string title)
@@ -1978,7 +2017,7 @@ public sealed class JarvisAutomationService : IDisposable
         }
         if (!string.IsNullOrWhiteSpace(workflow.Folder))
         {
-            var result = await OpenFolderAsync(workflow.Folder, token);
+            var result = await OpenFolderAsync(workflow.Folder, "", token);
             if (!Succeeded(result))
                 failures.Add(result["message"]?.ToString() ?? $"Could not open {workflow.Folder}.");
         }

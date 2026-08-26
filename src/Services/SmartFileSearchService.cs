@@ -19,6 +19,8 @@ public sealed class FileSearchCandidate
     public DateTimeOffset ModifiedAt { get; init; }
     public double Score { get; init; }
     public string RootLabel { get; init; } = "";
+    internal int NameMatchRank { get; init; }
+    internal int Depth { get; init; }
 }
 
 public sealed class FileSearchResult
@@ -83,6 +85,8 @@ public sealed class SmartFileSearchService
         var cleanQuery = CleanQuery(query);
         if (cleanQuery.Length == 0)
             return new FileSearchResult { Status = FileResolutionStatus.NotFound };
+        var requestedLocation = ResolveRequestedLocation(cleanQuery, location);
+        var requestedRoot = ResolveLocationPath(requestedLocation);
 
         var learnedKind = includeFolders && !includeFiles
             ? LearnedMappingKind.Folder
@@ -92,7 +96,9 @@ public sealed class SmartFileSearchService
         if (learnedKind != null)
         {
             var learned = _mappings.FindExact(learnedKind.Value, cleanQuery);
-            if (learned != null && ExistsForKind(learned))
+            if (learned != null
+                && ExistsForKind(learned)
+                && IsInsideRequestedRoot(learned.Target, requestedRoot))
             {
                 var candidate = CandidateFromPath(learned.Target, "Learned", 1);
                 return new FileSearchResult
@@ -109,7 +115,9 @@ public sealed class SmartFileSearchService
             foreach (var kind in new[] { LearnedMappingKind.File, LearnedMappingKind.Folder })
             {
                 var learned = _mappings.FindExact(kind, cleanQuery);
-                if (learned != null && ExistsForKind(learned))
+                if (learned != null
+                    && ExistsForKind(learned)
+                    && IsInsideRequestedRoot(learned.Target, requestedRoot))
                 {
                     var candidate = CandidateFromPath(learned.Target, "Learned", 1);
                     return new FileSearchResult
@@ -128,6 +136,7 @@ public sealed class SmartFileSearchService
                 || (kind == LearnedMappingKind.Folder && includeFolders))
             .SelectMany(kind => _mappings.Search(cleanQuery, kind, 4))
             .Where(ExistsForKind)
+            .Where(entry => IsInsideRequestedRoot(entry.Target, requestedRoot))
             .Select(entry => new
             {
                 Entry = entry,
@@ -176,7 +185,7 @@ public sealed class SmartFileSearchService
             return await Task.Run(
                 () => SearchCore(
                     cleanQuery,
-                    location,
+                    requestedLocation,
                     includeFiles,
                     includeFolders,
                     Math.Clamp(maxDepth, 1, 10),
@@ -311,8 +320,14 @@ public sealed class SmartFileSearchService
 
                 if ((isDirectory && includeFolders) || (!isDirectory && includeFiles))
                 {
-                    var score = ScoreEntry(query, entry, isDirectory, current.Root.Priority, typeHint, wantsLatest);
-                    if (score >= 0.42)
+                    var match = ScoreEntry(
+                        query,
+                        entry,
+                        isDirectory,
+                        current.Root.Priority,
+                        typeHint,
+                        wantsLatest);
+                    if (match.Score >= 0.42)
                     {
                         candidates.Add(new FileSearchCandidate
                         {
@@ -320,8 +335,10 @@ public sealed class SmartFileSearchService
                             Name = Path.GetFileName(entry),
                             IsDirectory = isDirectory,
                             ModifiedAt = GetModifiedAt(entry, isDirectory),
-                            Score = score,
+                            Score = match.Score,
                             RootLabel = current.Root.Label,
+                            NameMatchRank = match.NameMatchRank,
+                            Depth = current.Depth,
                         });
                     }
                 }
@@ -332,7 +349,9 @@ public sealed class SmartFileSearchService
         }
 
         var ranked = candidates
-            .OrderByDescending(candidate => candidate.Score)
+            .OrderByDescending(candidate => candidate.NameMatchRank)
+            .ThenBy(candidate => candidate.Depth)
+            .ThenByDescending(candidate => candidate.Score)
             .ThenByDescending(candidate => candidate.ModifiedAt)
             .Take(maxResults)
             .ToArray();
@@ -348,8 +367,19 @@ public sealed class SmartFileSearchService
 
         var best = ranked[0];
         var second = ranked.Length > 1 ? ranked[1] : null;
-        var highConfidence = best.Score >= 0.88
-            || (best.Score >= 0.79 && (second == null || best.Score - second.Score >= 0.11));
+        var equallyStrong = second != null
+            && second.NameMatchRank == best.NameMatchRank
+            && second.Depth == best.Depth
+            && Math.Abs(best.Score - second.Score) < 0.08;
+        var highConfidence = !equallyStrong
+            && (best.NameMatchRank >= 4
+                || (best.NameMatchRank == 3
+                    && (second == null
+                        || best.NameMatchRank > second.NameMatchRank
+                        || best.Score - second.Score >= 0.08))
+                || (best.Score >= 0.88
+                    || (best.Score >= 0.79
+                        && (second == null || best.Score - second.Score >= 0.11))));
         return new FileSearchResult
         {
             Status = highConfidence ? FileResolutionStatus.Found : FileResolutionStatus.Ambiguous,
@@ -363,7 +393,36 @@ public sealed class SmartFileSearchService
     private IReadOnlyList<SearchRoot> BuildRoots(string location)
     {
         if (_rootOverrides != null)
-            return _rootOverrides.Where(root => Directory.Exists(root.Path)).ToArray();
+        {
+            var available = _rootOverrides
+                .Where(root => Directory.Exists(root.Path))
+                .ToArray();
+            if (string.IsNullOrWhiteSpace(location))
+                return available;
+
+            var explicitOverridePath = Environment.ExpandEnvironmentVariables(
+                location.Trim().Trim('"'));
+            if (Directory.Exists(explicitOverridePath))
+                return [new SearchRoot(
+                    Path.GetFullPath(explicitOverridePath),
+                    Path.GetFileName(explicitOverridePath.TrimEnd(
+                        Path.DirectorySeparatorChar,
+                        Path.AltDirectorySeparatorChar)),
+                    10)];
+
+            var normalizedOverrideLocation = FuzzyMatcher.Normalize(location);
+            return available
+                .Where(root =>
+                    string.Equals(
+                        FuzzyMatcher.Normalize(root.Label),
+                        normalizedOverrideLocation,
+                        StringComparison.Ordinal)
+                    || string.Equals(
+                        FuzzyMatcher.Normalize(Path.GetFileName(root.Path)),
+                        normalizedOverrideLocation,
+                        StringComparison.Ordinal))
+                .ToArray();
+        }
 
         var explicitPath = Environment.ExpandEnvironmentVariables((location ?? "").Trim().Trim('"'));
         if (Directory.Exists(explicitPath))
@@ -429,7 +488,73 @@ public sealed class SmartFileSearchService
             : null;
     }
 
-    private static double ScoreEntry(
+    internal static string ResolveRequestedLocation(string query, string location)
+    {
+        var provided = Environment.ExpandEnvironmentVariables((location ?? "").Trim().Trim('"'));
+        if (!string.IsNullOrWhiteSpace(provided))
+            return provided;
+
+        var normalized = FuzzyMatcher.Normalize(query);
+        if (normalized.Length == 0)
+            return "";
+
+        var scoped = Regex.Match(
+            normalized,
+            @"\b(?:on|in|from|under|within|inside)\s+(?:my\s+)?(?<folder>desktop|downloads?|documents?|pictures?|photos?|images?|videos?|music|onedrive|one\s+drive)\b",
+            RegexOptions.CultureInvariant);
+        if (!scoped.Success)
+        {
+            scoped = Regex.Match(
+                normalized,
+                @"\bmy\s+(?<folder>desktop|downloads?|documents?|pictures?|photos?|images?|videos?|music|onedrive|one\s+drive)\b",
+                RegexOptions.CultureInvariant);
+        }
+        if (!scoped.Success)
+            return "";
+
+        return FuzzyMatcher.Normalize(scoped.Groups["folder"].Value) switch
+        {
+            "download" => "downloads",
+            "document" => "documents",
+            "picture" or "photo" or "photos" or "image" or "images" => "pictures",
+            "video" => "videos",
+            "one drive" => "onedrive",
+            var folder => folder,
+        };
+    }
+
+    private static string ResolveLocationPath(string location)
+    {
+        var expanded = Environment.ExpandEnvironmentVariables((location ?? "").Trim().Trim('"'));
+        if (Directory.Exists(expanded))
+            return Path.GetFullPath(expanded);
+        return ResolveKnownFolder(expanded)?.Path ?? "";
+    }
+
+    private static bool IsInsideRequestedRoot(string target, string requestedRoot)
+    {
+        if (string.IsNullOrWhiteSpace(requestedRoot))
+            return true;
+        try
+        {
+            var fullRoot = Path.GetFullPath(requestedRoot).TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar);
+            var fullTarget = Path.GetFullPath(target).TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar);
+            return string.Equals(fullTarget, fullRoot, StringComparison.OrdinalIgnoreCase)
+                || fullTarget.StartsWith(
+                    fullRoot + Path.DirectorySeparatorChar,
+                    StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static (double Score, int NameMatchRank) ScoreEntry(
         string query,
         string path,
         bool isDirectory,
@@ -462,9 +587,20 @@ public sealed class SmartFileSearchService
                 ? 1
                 : 0;
 
+        var normalizedFileName = FuzzyMatcher.Normalize(Path.GetFileName(path));
+        var nameMatchRank = exactName == 1
+            || (normalizedNeedle.Length > 0
+                && string.Equals(normalizedFileName, normalizedNeedle, StringComparison.Ordinal))
+                ? 4
+                : exactPartial == 1
+                    ? 3
+                    : fuzzy >= 0.72
+                        ? 2
+                        : 1;
+
         var score = fuzzy * 0.60 + type * 0.10 + root * 0.07 + exactPartial * 0.08 + exactName * 0.08;
         score += recency * (wantsLatest ? 0.25 : 0.1);
-        return Math.Clamp(score, 0, 1);
+        return (Math.Clamp(score, 0, 1), nameMatchRank);
     }
 
     private static double TypeScore(string path, bool isDirectory, string hint)
