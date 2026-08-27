@@ -18,6 +18,7 @@ internal sealed class BrowserPreRouteReceipt
     public string TaskId { get; init; } = "";
     public string Message { get; init; } = "";
     public Dictionary<string, object> Result { get; init; }
+    public bool Authoritative { get; init; }
     public DateTime CreatedUtc { get; init; } = DateTime.UtcNow;
 
     public bool IsFresh(DateTime utcNow) => utcNow - CreatedUtc <=

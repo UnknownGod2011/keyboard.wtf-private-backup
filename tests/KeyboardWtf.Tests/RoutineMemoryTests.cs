@@ -400,6 +400,55 @@ public sealed class RoutineMemoryTests : IDisposable
     }
 
     [Fact]
+    public void AmbiguousOpenUsesDurablePreferenceButExplicitCurrentChoiceWins()
+    {
+        Directory.CreateDirectory(_root);
+        var settingsPath = Path.Combine(_root, "settings.json");
+        var mappingsPath = Path.Combine(_root, "mappings.json");
+        var historyPath = Path.Combine(_root, "history.json");
+        var settings = new SettingsService(settingsPath);
+        settings.Load();
+        var mappings = new LearnedMappingService(mappingsPath);
+        mappings.Load();
+        mappings.RememberExclusive(
+            LearnedMappingKind.Link,
+            "Discord",
+            "https://discord.com/app",
+            "Discord web",
+            new[]
+            {
+                LearnedMappingKind.App,
+                LearnedMappingKind.Link,
+                LearnedMappingKind.File,
+                LearnedMappingKind.Folder,
+                LearnedMappingKind.Browser,
+            });
+
+        using var conversation = new JarvisAutomationService(
+            new NotificationService(null),
+            settings,
+            new JarvisActionHistoryService(historyPath),
+            mappings,
+            () => { });
+        Assert.True(conversation.TryResolveDurableOpenPreference(
+            "open Discord",
+            out var tool,
+            out var arguments));
+        Assert.Equal("open_app", tool);
+        Assert.Equal("Discord", arguments.GetProperty("app_name").GetString());
+        Assert.Equal("auto", arguments.GetProperty("target_kind").GetString());
+
+        Assert.False(conversation.TryResolveDurableOpenPreference(
+            "open Discord app",
+            out _,
+            out _));
+        Assert.False(conversation.TryResolveDurableOpenPreference(
+            "open Discord on the web this time",
+            out _,
+            out _));
+    }
+
+    [Fact]
     public async Task WorkflowEditsUpdateOneAuthoritativeRecordAndSurviveFreshConversations()
     {
         Directory.CreateDirectory(_root);

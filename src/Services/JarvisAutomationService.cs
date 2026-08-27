@@ -2011,6 +2011,71 @@ public sealed class JarvisAutomationService : IDisposable
         return false;
     }
 
+    internal bool TryResolveDurableOpenPreference(
+        string text,
+        out string toolName,
+        out JsonElement arguments)
+    {
+        toolName = "";
+        arguments = default;
+        var request = Regex.Replace((text ?? "").Trim(), @"\s+", " ");
+        var match = Regex.Match(
+            request,
+            @"^(?:please\s+)?(?:open|use)\s+(?<alias>.+?)[.!?]*$",
+            RegexOptions.IgnoreCase);
+        if (!match.Success)
+            return false;
+
+        var alias = CleanPreferenceAlias(match.Groups["alias"].Value);
+        if (string.IsNullOrWhiteSpace(alias)
+            || Regex.IsMatch(
+                alias,
+                @"\b(?:app|application|website|web|browser|this\s+time|just\s+once|for\s+now)\b",
+                RegexOptions.IgnoreCase))
+        {
+            // An explicit current target choice outranks a durable preference.
+            return false;
+        }
+
+        if (_mappings.FindExact(LearnedMappingKind.Link, alias) is { } link)
+        {
+            toolName = "open_app";
+            arguments = JsonSerializer.SerializeToElement(new
+            {
+                app_name = link.Alias,
+                target_kind = "auto",
+            });
+            return true;
+        }
+
+        if (_mappings.FindExact(LearnedMappingKind.App, alias) is { } app)
+        {
+            toolName = "open_app";
+            arguments = JsonSerializer.SerializeToElement(new
+            {
+                app_name = app.Target,
+                target_kind = "native",
+            });
+            return true;
+        }
+
+        if (_mappings.FindExact(LearnedMappingKind.File, alias) is { } file)
+        {
+            toolName = "open_path";
+            arguments = JsonSerializer.SerializeToElement(new { path = file.Target });
+            return true;
+        }
+
+        if (_mappings.FindExact(LearnedMappingKind.Folder, alias) is { } folder)
+        {
+            toolName = "open_folder";
+            arguments = JsonSerializer.SerializeToElement(new { folder = folder.Target });
+            return true;
+        }
+
+        return false;
+    }
+
     internal static bool IsExplicitDurablePreferenceRequest(string text)
     {
         var request = (text ?? "").Trim();

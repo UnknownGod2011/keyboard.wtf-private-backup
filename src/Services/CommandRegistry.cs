@@ -270,6 +270,47 @@ public sealed class CommandRegistry
             return true;
         }
 
+        // An ambiguous one-time "open X" request must honor the current
+        // durable correction locally. Do not let a model-supplied default
+        // native hint override the user's verified saved web/app/path choice.
+        // Explicit current app/web wording remains outside this path and keeps
+        // its higher precedence.
+        if (_automation != null
+            && _automation.TryResolveDurableOpenPreference(
+                userTurn,
+                out var preferenceOpenTool,
+                out var preferenceOpenArguments))
+        {
+            Dictionary<string, object> preferenceOpenResult;
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+                preferenceOpenResult = _automation.ExecuteAsync(
+                        preferenceOpenTool,
+                        preferenceOpenArguments,
+                        timeout.Token)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warning(ex, "Durable preference open pre-route failed");
+                preferenceOpenResult = ToolResult(
+                    false,
+                    ex is OperationCanceledException
+                        ? "The saved preference did not finish in time."
+                        : ex.Message);
+            }
+            RecordAuthoritativePreRoute(
+                userTurn,
+                preferenceOpenTool,
+                preferenceOpenResult);
+            AppLog.Info(
+                $"Durable preference open pre-route: tool={preferenceOpenTool} " +
+                $"ok={ToolSucceeded(preferenceOpenResult)}");
+            return true;
+        }
+
         // Mutate the one authoritative saved workflow object in place. This
         // runs before browser classification so adding a website is a durable
         // direct URL action, never a reason to start Browser Automation.
@@ -1684,7 +1725,8 @@ public sealed class CommandRegistry
         lock (_browserPreRouteLock)
         {
             var receipt = _browserPreRouteReceipt;
-            if (!(string.Equals(receipt?.ToolName, "run_workflow", StringComparison.Ordinal)
+            if (!(receipt?.Authoritative == true
+                    || string.Equals(receipt?.ToolName, "run_workflow", StringComparison.Ordinal)
                     || IsDurableMutationTool(receipt?.ToolName))
                 || receipt?.IsFresh(DateTime.UtcNow) != true
                 || receipt.Result == null)
@@ -1696,7 +1738,9 @@ public sealed class CommandRegistry
             {
                 ["routing_note"] = string.Equals(receipt.ToolName, "run_workflow", StringComparison.Ordinal)
                     ? "The exact durable workflow trigger was resolved and executed locally; no alternate planner action was run."
-                    : "The explicit durable change was persisted and read back locally; no alternate planner action was run.",
+                    : IsDurableMutationTool(receipt.ToolName)
+                        ? "The explicit durable change was persisted and read back locally; no alternate planner action was run."
+                        : "The current durable preference was resolved and executed locally; no alternate planner action was run.",
             };
             _browserPreRouteReceipt = null;
             _browserPreRouteOwnsCurrentTurn = false;
@@ -1724,6 +1768,7 @@ public sealed class CommandRegistry
                 Result = result == null
                     ? ToolResult(false, "The durable change did not return a result.")
                     : new Dictionary<string, object>(result),
+                Authoritative = true,
             };
             _browserPreRouteOwnsCurrentTurn = true;
         }
