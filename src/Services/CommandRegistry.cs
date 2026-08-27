@@ -216,6 +216,25 @@ public sealed class CommandRegistry
             }
         }
 
+        // Explicit durable corrections use the existing learned mapping or
+        // browser preference store. Check them before workflow syntax because
+        // "always open URL when I say X" is a durable target preference, not
+        // a trigger-only workflow. Temporary "this time" instructions do not
+        // enter this path.
+        if (_automation != null
+            && _automation.TryApplyDurablePreferenceFromTranscript(
+                userTurn,
+                out var preferenceTool,
+                out var preferenceResult))
+        {
+            RecordAuthoritativePreRoute(
+                userTurn,
+                preferenceTool,
+                preferenceResult);
+            AppLog.Info($"Durable correction pre-route: tool={preferenceTool} ok={ToolSucceeded(preferenceResult)}");
+            return true;
+        }
+
         // Explicit persistence requests must reach the workflow tool as one
         // complete user turn. In particular, an early "open Gmail" fragment
         // must not start Browser Automation before "remember this" arrives.
@@ -250,24 +269,6 @@ public sealed class CommandRegistry
             }
             AppLog.Info("Browser pre-route skipped for explicit workflow persistence request.");
             return false;
-        }
-
-        // Explicit durable corrections use the existing learned mapping or
-        // browser preference store. Persistence is deterministic and verified
-        // before Live narrates it; temporary "this time" instructions do not
-        // enter this path.
-        if (_automation != null
-            && _automation.TryApplyDurablePreferenceFromTranscript(
-                userTurn,
-                out var preferenceTool,
-                out var preferenceResult))
-        {
-            RecordAuthoritativePreRoute(
-                userTurn,
-                preferenceTool,
-                preferenceResult);
-            AppLog.Info($"Durable correction pre-route: tool={preferenceTool} ok={ToolSucceeded(preferenceResult)}");
-            return true;
         }
 
         // An ambiguous one-time "open X" request must honor the current
