@@ -400,6 +400,74 @@ public sealed class RoutineMemoryTests : IDisposable
     }
 
     [Fact]
+    public void ExplicitCorrectionWithTrailingFromNowOnUsesRecentTarget()
+    {
+        Directory.CreateDirectory(_root);
+        var settingsPath = Path.Combine(_root, "settings.json");
+        var mappingsPath = Path.Combine(_root, "mappings.json");
+        var historyPath = Path.Combine(_root, "history.json");
+        var settings = new SettingsService(settingsPath);
+        settings.Load();
+        var mappings = new LearnedMappingService(mappingsPath);
+        mappings.Load();
+        using var conversation = new JarvisAutomationService(
+            new NotificationService(null),
+            settings,
+            new JarvisActionHistoryService(historyPath),
+            mappings,
+            () => { });
+
+        typeof(JarvisAutomationService)
+            .GetMethod(
+                "RememberTransientOpenTarget",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .Invoke(conversation, new object[] { "Discord" });
+        Assert.True(conversation.TryApplyDurablePreferenceFromTranscript(
+            "Always use the web version instead from now on.",
+            out var tool,
+            out var saved));
+        Assert.Equal("remember_link_alias", tool);
+        Assert.True((bool)saved["ok"]);
+        Assert.Equal(
+            "https://discord.com/app",
+            mappings.FindExact(LearnedMappingKind.Link, "discord")?.Target);
+    }
+
+    [Fact]
+    public void ExplicitWholeWorkflowDeletionUsesAuthoritativeStoreAndTombstone()
+    {
+        Directory.CreateDirectory(_root);
+        var settings = new SettingsService(Path.Combine(_root, "settings.json"));
+        settings.Load();
+        settings.SaveWorkflow(
+            "release ducks setup",
+            new[] { "release ducks setup", "release morning ducks" },
+            new[] { new JarvisWorkflowActionSettings { Kind = "url", Target = "https://example.com/" } });
+        var mappings = new LearnedMappingService(Path.Combine(_root, "mappings.json"));
+        mappings.Load();
+        mappings.Remember(
+            LearnedMappingKind.Workflow,
+            "release morning ducks",
+            "release ducks setup",
+            "release ducks setup");
+        using var automation = new JarvisAutomationService(
+            new NotificationService(null),
+            settings,
+            new JarvisActionHistoryService(Path.Combine(_root, "history.json")),
+            mappings,
+            () => { });
+
+        Assert.True(automation.TryEditWorkflowFromTranscript(
+            "Delete my release ducks setup workflow.",
+            out var result));
+        Assert.True((bool)result["ok"]);
+        Assert.Empty(settings.Current.JarvisWorkflows);
+        Assert.True(settings.IsWorkflowDeleted("release ducks setup"));
+        Assert.True(settings.IsWorkflowDeleted("release morning ducks"));
+        Assert.Empty(mappings.Snapshot(LearnedMappingKind.Workflow));
+    }
+
+    [Fact]
     public void AmbiguousOpenUsesDurablePreferenceButExplicitCurrentChoiceWins()
     {
         Directory.CreateDirectory(_root);

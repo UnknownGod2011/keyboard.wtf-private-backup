@@ -2098,9 +2098,9 @@ public sealed class JarvisAutomationService : IDisposable
         alias = "";
         var patterns = new[]
         {
-            @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward))\s+(?:open|use|launch)\s+(?<alias>.+?)\s+(?:on|in|using)\s+(?:the\s+)?(?:web|browser|web\s+version)(?:\s+instead)?[.!?]*$",
+            @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward))\s+(?:open|use|launch)\s+(?<alias>.+?)\s+(?:on|in|using)\s+(?:the\s+)?(?:web|browser|web\s+version)(?:\s+instead)?(?:\s+from\s+now\s+on)?[.!?]*$",
             @"^remember\s+that\s+i\s+(?:use|open)\s+(?<alias>.+?)\s+(?:on|in|using)\s+(?:the\s+)?(?:web|browser|web\s+version)[.!?]*$",
-            @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward))\s+(?:use|open)\s+(?:the\s+)?(?:web|browser|web\s+version)(?:\s+instead)?\s+(?:for|of)\s+(?<alias>.+?)[.!?]*$",
+            @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward))\s+(?:use|open)\s+(?:the\s+)?(?:web|browser|web\s+version)(?:\s+instead)?\s+(?:for|of)\s+(?<alias>.+?)(?:\s+from\s+now\s+on)?[.!?]*$",
             @"^(?:change|update)\s+(?:my\s+|the\s+)?(?:saved\s+)?preference\s+for\s+(?<alias>.+?)\s+to\s+(?:the\s+)?(?:web|browser|web\s+version)[.!?]*$",
         };
         foreach (var pattern in patterns)
@@ -2114,7 +2114,7 @@ public sealed class JarvisAutomationService : IDisposable
 
         if (!Regex.IsMatch(
                 request,
-                @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward))\s+(?:use|open)\s+(?:it\s+)?(?:(?:on|in)\s+)?(?:the\s+)?(?:web|browser|web\s+version)(?:\s+instead)?[.!?]*$",
+                @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward))\s+(?:use|open)\s+(?:it\s+)?(?:(?:on|in)\s+)?(?:the\s+)?(?:web|browser|web\s+version)(?:\s+instead)?(?:\s+from\s+now\s+on)?[.!?]*$",
                 RegexOptions.IgnoreCase))
             return false;
         alias = RecentOpenTarget();
@@ -2126,8 +2126,8 @@ public sealed class JarvisAutomationService : IDisposable
         alias = "";
         var patterns = new[]
         {
-            @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward))\s+(?:open|use|launch)\s+(?<alias>.+?)\s+as\s+(?:an?\s+)?(?:native\s+)?(?:app|application)[.!?]*$",
-            @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward))\s+(?:use|open)\s+(?:the\s+)?(?:native\s+)?(?:app|application)\s+(?:for|of)\s+(?<alias>.+?)[.!?]*$",
+            @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward))\s+(?:open|use|launch)\s+(?<alias>.+?)\s+as\s+(?:an?\s+)?(?:native\s+)?(?:app|application)(?:\s+from\s+now\s+on)?[.!?]*$",
+            @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward))\s+(?:use|open)\s+(?:the\s+)?(?:native\s+)?(?:app|application)\s+(?:for|of)\s+(?<alias>.+?)(?:\s+from\s+now\s+on)?[.!?]*$",
             @"^(?:change|update)\s+(?:my\s+|the\s+)?(?:saved\s+)?preference\s+for\s+(?<alias>.+?)\s+to\s+(?:the\s+)?(?:native\s+)?(?:app|application)[.!?]*$",
         };
         foreach (var pattern in patterns)
@@ -2334,6 +2334,19 @@ public sealed class JarvisAutomationService : IDisposable
             .TrimEnd('.', '!', '?');
         if (request.Length == 0)
             return false;
+
+        var deleteWorkflow = Regex.Match(
+            request,
+            @"^(?:delete|forget)\s+(?:my\s+|the\s+)?(?:(?:workflow|routine)\s+(?<prefix>.+)|(?<suffix>.+?)\s+(?:workflow|routine))$",
+            RegexOptions.IgnoreCase);
+        if (deleteWorkflow.Success)
+        {
+            var reference = deleteWorkflow.Groups["prefix"].Success
+                ? deleteWorkflow.Groups["prefix"].Value
+                : deleteWorkflow.Groups["suffix"].Value;
+            result = DeleteWorkflow(ResolveWorkflowReference(reference));
+            return true;
+        }
 
         var aliasEdit = Regex.Match(
             request,
