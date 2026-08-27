@@ -93,6 +93,8 @@ var
   NativeHostRegistrationPaused: Boolean;
   NativeHostRegistrationRestored: Boolean;
 
+procedure StopOwnedProcessesForInstallOrUninstall(); forward;
+
 function RestoreNativeHostRegistration(): Boolean;
 begin
   Result := True;
@@ -121,17 +123,22 @@ begin
     NativeHostRegistryPath,
     '',
     PreviousNativeHostManifest);
-  if not NativeHostRegistrationPaused then
-    Exit;
-
-  if not RegDeleteValue(HKCU, NativeHostRegistryPath, '') then
+  if NativeHostRegistrationPaused and
+     not RegDeleteValue(HKCU, NativeHostRegistryPath, '') then
   begin
     NativeHostRegistrationPaused := False;
     Result := 'Chrome Helper could not be paused for this update. Close Chrome and keyboard.wtf, then try again.';
     Exit;
   end;
 
-  Log('Temporarily paused the existing Chrome native-messaging host registration for safe file replacement.');
+  if NativeHostRegistrationPaused then
+    Log('Temporarily paused the existing Chrome native-messaging host registration for safe file replacement.');
+
+  { Chrome can launch the native host immediately before its registry value is
+    paused. Stop only processes whose executable path belongs to this exact
+    installation so Restart Manager cannot lose that race, while preserving
+    side-by-side candidates and unrelated executables with the same name. }
+  StopOwnedProcessesForInstallOrUninstall();
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -193,7 +200,7 @@ begin
   StringChangeEx(Result, '''', '''''', True);
 end;
 
-procedure StopOwnedProcessesForUninstall();
+procedure StopOwnedProcessesForInstallOrUninstall();
 var
   ResultCode: Integer;
   TargetExecutable: String;
@@ -225,7 +232,7 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
   begin
-    StopOwnedProcessesForUninstall();
+    StopOwnedProcessesForInstallOrUninstall();
     UnregisterOwnedNativeHost();
   end;
 

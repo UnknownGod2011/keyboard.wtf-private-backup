@@ -16,6 +16,7 @@ public sealed class InstallerRegressionTests
         Assert.Contains("procedure DeinitializeSetup", installer, StringComparison.Ordinal);
         Assert.Contains("RestoreNativeHostRegistration", installer, StringComparison.Ordinal);
         Assert.Contains("RegWriteStringValue", installer, StringComparison.Ordinal);
+        Assert.Contains("StopOwnedProcessesForInstallOrUninstall();", installer, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -36,10 +37,10 @@ public sealed class InstallerRegressionTests
         var root = FindRepositoryRoot();
         var installer = File.ReadAllText(Path.Combine(root, "installer", "keyboard-wtf.iss"));
 
-        Assert.Contains("procedure StopOwnedProcessesForUninstall", installer, StringComparison.Ordinal);
+        Assert.Contains("procedure StopOwnedProcessesForInstallOrUninstall", installer, StringComparison.Ordinal);
         Assert.Contains("TargetExecutable := ExpandConstant('{app}\\{#MyAppExeName}')", installer, StringComparison.Ordinal);
         Assert.Contains("[IO.Path]::GetFullPath($_.Path) -eq $target", installer, StringComparison.Ordinal);
-        Assert.Contains("StopOwnedProcessesForUninstall();", installer, StringComparison.Ordinal);
+        Assert.Contains("StopOwnedProcessesForInstallOrUninstall();", installer, StringComparison.Ordinal);
         Assert.DoesNotContain("taskkill", installer, StringComparison.OrdinalIgnoreCase);
     }
 
