@@ -47,7 +47,7 @@ public sealed class VertexLiveProxyService
         "type_text", "press_key", "search_files", "save_note", "add_todo", "list_todos",
         "complete_todo", "set_timer", "cancel_timer", "list_timers", "system_control", "system_status",
         "play_media", "open_service_page", "open_camera", "take_photo", "take_screenshot", "inspect_screen",
-        "virtual_desktop_action", "windows_recording_action", "create_workflow", "remember_routine",
+        "virtual_desktop_action", "windows_recording_action", "create_workflow", "remember_routine", "edit_workflow",
         "list_workflows", "run_workflow", "delete_workflow", "remember_app_alias", "remember_path_alias",
         "remember_link_alias", "remember_workflow_alias", "list_learned_mappings", "forget_learned_mapping",
         "set_browser_preference", "request_sensitive_action", "confirm_sensitive_action",

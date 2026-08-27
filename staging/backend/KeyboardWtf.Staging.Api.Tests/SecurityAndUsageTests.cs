@@ -2488,6 +2488,15 @@ public sealed class SecurityAndUsageTests
             StringComparison.Ordinal);
 
     [Fact]
+    public void Live_proxy_accepts_the_edit_workflow_tool() =>
+        Assert.Contains(
+            "edit_workflow",
+            VertexLiveProxyService.RewriteSetup(
+                """{"setup":{"tools":[{"functionDeclarations":[{"name":"edit_workflow"}]}]}}""",
+                "projects/test/locations/test/publishers/google/models/test"),
+            StringComparison.Ordinal);
+
+    [Fact]
     public void Live_proxy_rejects_a_non_setup_first_message() =>
         Assert.Throws<ArgumentException>(() => VertexLiveProxyService.RewriteSetup(
             """{"clientContent":{"turnComplete":true}}""",
