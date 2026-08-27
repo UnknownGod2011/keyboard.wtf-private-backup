@@ -2053,7 +2053,9 @@ public sealed class JarvisAutomationService : IDisposable
             toolName = "open_app";
             arguments = JsonSerializer.SerializeToElement(new
             {
-                app_name = app.Target,
+                // Resolve the verified learned candidate by its durable alias;
+                // its stored launch target is not a human app-search query.
+                app_name = app.Alias,
                 target_kind = "native",
             });
             return true;

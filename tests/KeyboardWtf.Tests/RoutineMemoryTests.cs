@@ -446,6 +446,27 @@ public sealed class RoutineMemoryTests : IDisposable
             "open Discord on the web this time",
             out _,
             out _));
+
+        mappings.RememberExclusive(
+            LearnedMappingKind.App,
+            "ChatGPT",
+            "appx:OpenAI.ChatGPT_test!App",
+            "ChatGPT",
+            new[]
+            {
+                LearnedMappingKind.App,
+                LearnedMappingKind.Link,
+                LearnedMappingKind.File,
+                LearnedMappingKind.Folder,
+                LearnedMappingKind.Browser,
+            });
+        Assert.True(conversation.TryResolveDurableOpenPreference(
+            "open ChatGPT",
+            out tool,
+            out arguments));
+        Assert.Equal("open_app", tool);
+        Assert.Equal("ChatGPT", arguments.GetProperty("app_name").GetString());
+        Assert.Equal("native", arguments.GetProperty("target_kind").GetString());
     }
 
     [Fact]
