@@ -16,6 +16,7 @@ public sealed class VoiceModesRegressionTests
         Assert.Contains("real editorial cleanup", instruction, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("non-semantic fillers", instruction, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("accidental repeated", instruction, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("wordy speech scaffolding", instruction, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("discard the abandoned clause", instruction, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("correction markers", instruction, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("natural, grammatically correct written", instruction, StringComparison.OrdinalIgnoreCase);

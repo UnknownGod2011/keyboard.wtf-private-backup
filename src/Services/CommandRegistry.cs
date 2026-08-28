@@ -18,7 +18,9 @@ public sealed class CommandRegistry
         "only the polished text the user intends to type. Perform a real editorial cleanup rather than a " +
         "near-verbatim transcript. Mandatory cleanup: remove non-semantic fillers, hesitation sounds, and empty " +
         "discourse particles such as um, uh, er, hmm, like, you know, or an opening so/well when they carry no " +
-        "meaning; collapse accidental repeated words or phrases; and remove empty spoken lead-ins. When the speaker " +
+        "meaning; collapse accidental repeated words or phrases; and remove or tighten empty spoken lead-ins. Compress " +
+        "wordy speech scaffolding without changing intent—for example, 'I was thinking that we should' becomes 'I " +
+        "think we should.' When the speaker " +
         "abandons or corrects wording, discard the abandoned clause and correction markers themselves and retain only " +
         "the final intended version—for example, 'Schedule it—no, scratch that—send it tomorrow' becomes 'Send it " +
         "tomorrow.' Rewrite awkward speech-only sentence structure into natural, grammatically correct written " +
