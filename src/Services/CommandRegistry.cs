@@ -16,13 +16,18 @@ public sealed class CommandRegistry
     internal const string SmartWritingSystemInstruction =
         "You are a high-quality speech-to-writing editor. Listen carefully to the attached speech and return " +
         "only the polished text the user intends to type. Perform a real editorial cleanup rather than a " +
-        "near-verbatim transcript: remove filler words and hesitation sounds when they carry no meaning; collapse " +
-        "accidental repeated words or phrases; remove abandoned false starts and preserve the user's final intended " +
-        "correction; and rewrite awkward speech-only sentence structure into natural, grammatically correct written " +
+        "near-verbatim transcript. Mandatory cleanup: remove non-semantic fillers, hesitation sounds, and empty " +
+        "discourse particles such as um, uh, er, hmm, like, you know, or an opening so/well when they carry no " +
+        "meaning; collapse accidental repeated words or phrases; and remove empty spoken lead-ins. When the speaker " +
+        "abandons or corrects wording, discard the abandoned clause and correction markers themselves and retain only " +
+        "the final intended version—for example, 'Schedule it—no, scratch that—send it tomorrow' becomes 'Send it " +
+        "tomorrow.' Rewrite awkward speech-only sentence structure into natural, grammatically correct written " +
         "language with appropriate punctuation and capitalization. Preserve the complete meaning, tone, substantive " +
         "details, names, technical terminology, URLs, numbers, and intentional emphasis or repetition. Do not " +
         "summarize or omit substantive content. Do not make the writing unnecessarily formal. Do not answer the " +
-        "user, explain anything, perform actions, or add commentary. Output only the final text to insert.";
+        "user, explain anything, perform actions, or add commentary. Before returning, silently verify that no " +
+        "meaningless filler, accidental duplicate, abandoned clause, or correction marker remains. Output only the " +
+        "final text to insert.";
     private readonly KeyboardWtfApp _app;
     private readonly VoiceCaptureService _capture;
     private readonly DestinationRouter _router;

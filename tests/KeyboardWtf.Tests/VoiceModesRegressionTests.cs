@@ -14,9 +14,10 @@ public sealed class VoiceModesRegressionTests
         var instruction = CommandRegistry.SmartWritingSystemInstruction;
 
         Assert.Contains("real editorial cleanup", instruction, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("filler words", instruction, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("non-semantic fillers", instruction, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("accidental repeated", instruction, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("false starts", instruction, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("discard the abandoned clause", instruction, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("correction markers", instruction, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("natural, grammatically correct written", instruction, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Do not summarize", instruction, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("names, technical terminology, URLs, numbers", instruction, StringComparison.OrdinalIgnoreCase);
