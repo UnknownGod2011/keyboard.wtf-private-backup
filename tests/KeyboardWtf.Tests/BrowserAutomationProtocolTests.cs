@@ -1610,6 +1610,22 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Theory]
+    [InlineData(4, 4, false)]
+    [InlineData(4, 5, true)]
+    [InlineData(5, 4, false)]
+    public void Only_a_changed_correction_revision_supersedes_an_in_flight_result(
+        int capturedRevision,
+        int currentRevision,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            BrowserAutomationCoordinator.InFlightResultWasSuperseded(
+                capturedRevision,
+                currentRevision));
+    }
+
+    [Theory]
     [InlineData("What do you think about adding a community feature?")]
     [InlineData("Which approach would you recommend?")]
     [InlineData("This page gave me an idea for a discussion area.")]

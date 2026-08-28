@@ -60,6 +60,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         public bool SuppressCancellationAnnouncement { get; set; }
         public bool MissingTabRecoveryAttempted { get; set; }
         public int GuidanceRevision;
+        public int CorrectionRevision;
         public string PendingDestinationCorrectionLabel { get; set; } = "";
         public string PendingDestinationCorrectionUrl { get; set; } = "";
         public string CorrectedDestinationUrl { get; set; } = "";
@@ -164,6 +165,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     ? $"Latest explicit user correction: {guidance.Trim()}"
                     : $"User guidance: {guidance.Trim()}");
             _active.GuidanceRevision++;
+            if (explicitCorrection)
+                Interlocked.Increment(ref _active.CorrectionRevision);
             var previousDestination = "";
             if (explicitCorrection)
             {
@@ -425,6 +428,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     out var explicitDestinationLabel,
                     out var explicitDestinationUrl))
             {
+                var destinationCorrectionRevision = Volatile.Read(
+                    ref runtime.CorrectionRevision);
                 var destinationEstablished = await EstablishAuthoritativeDestinationAsync(
                     runtime,
                     explicitDestinationLabel,
@@ -433,11 +438,21 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     token);
                 if (!destinationEstablished)
                 {
-                    Fail(
-                        runtime,
-                        BrowserAutomationOutcome.Failed,
-                        $"The explicitly requested {explicitDestinationLabel} destination could not be established safely.");
-                    return;
+                    if (InFlightResultWasSuperseded(
+                            destinationCorrectionRevision,
+                            Volatile.Read(ref runtime.CorrectionRevision)))
+                    {
+                        runtime.History.Add(
+                            "Ignored the original destination result because a newer explicit correction is authoritative.");
+                    }
+                    else
+                    {
+                        Fail(
+                            runtime,
+                            BrowserAutomationOutcome.Failed,
+                            $"The explicitly requested {explicitDestinationLabel} destination could not be established safely.");
+                        return;
+                    }
                 }
             }
 
@@ -571,6 +586,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         out var correctedDestinationLabel,
                         out var correctedDestinationUrl))
                 {
+                    var correctionRevision = Volatile.Read(
+                        ref runtime.CorrectionRevision);
                     var correctionEstablished = await EstablishAuthoritativeDestinationAsync(
                         runtime,
                         correctedDestinationLabel,
@@ -579,6 +596,14 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         token);
                     if (!correctionEstablished)
                     {
+                        if (InFlightResultWasSuperseded(
+                                correctionRevision,
+                                Volatile.Read(ref runtime.CorrectionRevision)))
+                        {
+                            runtime.History.Add(
+                                "Ignored a corrected destination result because an even newer explicit correction is authoritative.");
+                            continue;
+                        }
                         Fail(
                             runtime,
                             BrowserAutomationOutcome.Failed,
@@ -590,6 +615,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
 
                 SetState(runtime, BrowserTaskState.Planning, $"Planning step {step}");
                 var plannerGuidanceRevision = Volatile.Read(ref runtime.GuidanceRevision);
+                var plannerCorrectionRevision = Volatile.Read(ref runtime.CorrectionRevision);
                 lastDecision = await _planner.PlanAsync(
                     runtime.Request,
                     runtime.Page,
@@ -1258,6 +1284,14 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 }
                 runtime.ConsecutiveRejectedStrategies = 0;
                 var receipt = await ExecutePlannerActionAsync(runtime, lastDecision.Action, token);
+                if (InFlightResultWasSuperseded(
+                        plannerCorrectionRevision,
+                        Volatile.Read(ref runtime.CorrectionRevision)))
+                {
+                    runtime.History.Add(
+                        "Ignored the in-flight browser action result because a newer explicit correction is authoritative.");
+                    continue;
+                }
                 runtime.Receipts.Add(receipt);
                 var actionVerification = _verifier.VerifyAction(lastDecision.Action, receipt);
                 runtime.History.Add(actionVerification.Verified
@@ -2559,7 +2593,16 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         }
 
         SetState(runtime, BrowserTaskState.Executing, $"Opening the requested {label} destination");
+        var correctionRevision = Volatile.Read(ref runtime.CorrectionRevision);
         var receipt = await ExecutePlannerActionAsync(runtime, action, token);
+        if (InFlightResultWasSuperseded(
+                correctionRevision,
+                Volatile.Read(ref runtime.CorrectionRevision)))
+        {
+            runtime.History.Add(
+                $"Ignored the in-flight {source} result because a newer explicit correction is authoritative.");
+            return false;
+        }
         runtime.Receipts.Add(receipt);
         if (ShouldStabilizeProtectedBootstrapNavigation(
                 runtime.InitialTabWasProtectedOrBlank,
@@ -3189,6 +3232,11 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         && !string.IsNullOrWhiteSpace(supersededDestinationUrl)
         && SameHost(action.Url, supersededDestinationUrl)
         && !SameHost(action.Url, correctedDestinationUrl);
+
+    internal static bool InFlightResultWasSuperseded(
+        int capturedCorrectionRevision,
+        int currentCorrectionRevision) =>
+        currentCorrectionRevision > capturedCorrectionRevision;
 
     internal static bool IsRelevantManualAnswer(
         string requestedUserAction,
