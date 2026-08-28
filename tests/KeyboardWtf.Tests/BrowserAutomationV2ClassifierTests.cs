@@ -98,6 +98,35 @@ public sealed class BrowserAutomationV2ClassifierTests
     }
 
     [Theory]
+    [InlineData("Answer the question")]
+    [InlineData("Solve this Coursera quiz question")]
+    [InlineData("Explain this question on the current page")]
+    public void Incremental_answer_fragments_wait_for_possible_selected_context(string request) =>
+        Assert.True(BrowserAutomationTaskClassifier.ShouldDeferIncrementalContentRouting(request));
+
+    [Theory]
+    [InlineData("Fill this form")]
+    [InlineData("I selected these questions; solve and fill the quiz")]
+    [InlineData("Use browser automation to answer this question")]
+    [InlineData("Click the answer on this page")]
+    public void Explicit_page_actions_are_not_deferred_as_selected_content(string request) =>
+        Assert.False(BrowserAutomationTaskClassifier.ShouldDeferIncrementalContentRouting(request));
+
+    [Fact]
+    public void Only_incremental_voice_pre_route_defers_an_ambiguous_answer_request()
+    {
+        Assert.True(CommandRegistry.ShouldDeferIncrementalBrowserPreRoute(
+            "Answer the question on this page",
+            fromLocalTextSubmission: false));
+        Assert.False(CommandRegistry.ShouldDeferIncrementalBrowserPreRoute(
+            "Answer the question on this page",
+            fromLocalTextSubmission: true));
+        Assert.False(CommandRegistry.ShouldDeferIncrementalBrowserPreRoute(
+            "Fill the answer into this page",
+            fromLocalTextSubmission: false));
+    }
+
+    [Theory]
     [InlineData("Click Oldest.")]
     [InlineData("Fill the fields.")]
     [InlineData("Continue filling the answerable fields from the live page state.")]

@@ -14,11 +14,15 @@ public sealed class CommandRegistry
 {
     internal static readonly TimeSpan SmartWritingTimeout = TimeSpan.FromSeconds(40);
     internal const string SmartWritingSystemInstruction =
-        "You are a speech-to-writing engine. Listen carefully to the attached speech and return only " +
-        "the text the user intends to type. Preserve names, terminology, meaning, wording, and tone as " +
-        "accurately as possible. Remove obvious filler words and abandoned self-corrections only where " +
-        "appropriate. Fix punctuation, capitalization, and basic grammar. Do not answer the user. Do not " +
-        "explain anything. Do not perform actions. Do not add commentary. Output only the final text to insert.";
+        "You are a high-quality speech-to-writing editor. Listen carefully to the attached speech and return " +
+        "only the polished text the user intends to type. Perform a real editorial cleanup rather than a " +
+        "near-verbatim transcript: remove filler words and hesitation sounds when they carry no meaning; collapse " +
+        "accidental repeated words or phrases; remove abandoned false starts and preserve the user's final intended " +
+        "correction; and rewrite awkward speech-only sentence structure into natural, grammatically correct written " +
+        "language with appropriate punctuation and capitalization. Preserve the complete meaning, tone, substantive " +
+        "details, names, technical terminology, URLs, numbers, and intentional emphasis or repetition. Do not " +
+        "summarize or omit substantive content. Do not make the writing unnecessarily formal. Do not answer the " +
+        "user, explain anything, perform actions, or add commentary. Output only the final text to insert.";
     private readonly KeyboardWtfApp _app;
     private readonly VoiceCaptureService _capture;
     private readonly DestinationRouter _router;
@@ -524,6 +528,18 @@ public sealed class CommandRegistry
         if (classification.Decision != BrowserAutomationDecision.BrowserAutomation)
             return false;
 
+        // Gemini Live input transcription arrives incrementally. An early
+        // "answer/solve" fragment can look like a page interaction before a
+        // later "selected/highlighted text" fragment arrives. Defer only that
+        // ambiguous voice pre-route to the completed Live turn. Explicit page
+        // mutation and explicit Browser Automation requests still start here.
+        if (ShouldDeferIncrementalBrowserPreRoute(userTurn, fromLocalTextSubmission))
+        {
+            AppLog.Info(
+                "Browser pre-route deferred until the complete Live turn because the request may refer to selected content.");
+            return false;
+        }
+
         var result = _browserAutomation.Start(userTurn);
         if (!result.Started || string.IsNullOrWhiteSpace(result.TaskId))
             return false;
@@ -545,6 +561,12 @@ public sealed class CommandRegistry
             $"Browser pre-route: task={result.TaskId} started={result.Started} current={classification.RefersToCurrentPage}");
         return true;
     }
+
+    internal static bool ShouldDeferIncrementalBrowserPreRoute(
+        string text,
+        bool fromLocalTextSubmission) =>
+        !fromLocalTextSubmission
+        && BrowserAutomationTaskClassifier.ShouldDeferIncrementalContentRouting(text);
 
     internal static bool IsExplicitBrowserTaskStopOrPause(string text) =>
         Regex.IsMatch(

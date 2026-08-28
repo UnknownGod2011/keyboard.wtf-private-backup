@@ -226,4 +226,13 @@ public sealed class BrowserAutomationTaskClassifier
         HasExplicitPageMutation(text)
         || (FormOrAssessmentTarget.IsMatch(text)
             && SelectedContentQuestion.IsMatch(text));
+
+    // Live input transcription is incremental. Until an answer/explain-style
+    // utterance is complete, it may still resolve to selected-text context.
+    // This affects only eager voice pre-routing; the completed turn can still
+    // choose Browser Automation through the normal classifier/tool path.
+    internal static bool ShouldDeferIncrementalContentRouting(string text) =>
+        SelectedContentQuestion.IsMatch(text ?? "")
+        && !ExplicitAutomation.IsMatch(text ?? "")
+        && !HasExplicitPageMutation(text ?? "");
 }

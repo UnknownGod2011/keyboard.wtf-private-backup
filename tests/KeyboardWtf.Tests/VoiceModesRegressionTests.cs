@@ -9,6 +9,21 @@ using Xunit;
 public sealed class VoiceModesRegressionTests
 {
     [Fact]
+    public void Smart_writing_instruction_requires_editorial_cleanup_without_losing_meaning()
+    {
+        var instruction = CommandRegistry.SmartWritingSystemInstruction;
+
+        Assert.Contains("real editorial cleanup", instruction, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("filler words", instruction, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("accidental repeated", instruction, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("false starts", instruction, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("natural, grammatically correct written", instruction, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Do not summarize", instruction, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("names, technical terminology, URLs, numbers", instruction, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("only the final text", instruction, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Smart_writing_has_a_bounded_end_to_end_post_transcription_timeout() =>
         Assert.InRange(CommandRegistry.SmartWritingTimeout, TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(40));
 
