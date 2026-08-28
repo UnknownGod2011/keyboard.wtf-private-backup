@@ -32,7 +32,6 @@ builder.Services.AddOptions<PaidSystemOptions>()
     .Validate(options => options.MaxRetries is >= 0 and <= 3, "Retry count is unsafe.")
     .Validate(options => options.ModelRoutingCacheSeconds is >= 30 and <= 900, "Model-routing cache lifetime is unsafe.")
     .Validate(options => options.LiveSessionMaxSeconds is >= 30 and <= 900, "Live session lifetime is unsafe.")
-    .Validate(options => options.LiveSessionIdleSeconds is >= 15 and <= 120, "Live idle lifetime is unsafe.")
     .Validate(options => options.LiveSessionCreditMicrosCap > 0, "Live session budget must be positive.")
     .Validate(options => options.LiveReservationWindowCreditMicros > 0
         && options.LiveReservationWindowCreditMicros <= options.LiveSessionCreditMicrosCap,

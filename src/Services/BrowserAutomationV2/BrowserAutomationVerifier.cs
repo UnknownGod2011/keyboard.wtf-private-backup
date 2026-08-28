@@ -51,6 +51,9 @@ public sealed class BrowserAutomationVerifier
                     : Failed("The checked state did not change."),
             "click" or "press_key" =>
                 receipt.Navigation
+                && IsLikelyNavigationRegression(receipt.BeforeUrl, receipt.AfterUrl)
+                    ? Failed("The action navigated backward to a less specific state.")
+                    : receipt.Navigation
                 || receipt.SelectedChanged
                 || receipt.CheckedChanged
                 || !receipt.NoVisibleChange
@@ -68,6 +71,17 @@ public sealed class BrowserAutomationVerifier
         IReadOnlyList<BrowserActionReceipt> receipts)
     {
         var text = IntentText(request);
+
+        if (!RequestAllowsNavigationRegression(text)
+            && receipts.Any(receipt =>
+                receipt?.Ok == true
+                && !receipt.Stale
+                && receipt.Navigation
+                && IsLikelyNavigationRegression(receipt.AfterUrl, page?.Url)))
+        {
+            return Failed(
+                "The final page discarded a more specific verified state reached earlier in this task.");
+        }
 
         if (RequestsClipboardOutput(text))
         {
@@ -414,6 +428,13 @@ public sealed class BrowserAutomationVerifier
             || (beforePath.Length > afterPath.Length
                 && afterQueryParts <= beforeQueryParts);
     }
+
+    internal static bool RequestAllowsNavigationRegression(string request) =>
+        Regex.IsMatch(
+            request ?? "",
+            @"\b(?:go back|return home|start over|restart|reset)\b"
+            + @"|\b(?:open|go to|navigate to|visit)\b.{0,80}\b(?:home|homepage|landing page|main page)\b",
+            RegexOptions.IgnoreCase);
 
     private static bool IsDestinationEditorReceipt(
         string requestIntent,

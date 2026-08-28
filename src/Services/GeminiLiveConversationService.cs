@@ -12,12 +12,16 @@ using NAudio.Wave;
 public sealed class GeminiLiveConversationService : IDisposable
 {
     private const string Model = "gemini-3.1-flash-live-preview";
-    private const int PaidActivationBufferChunks = 64;
+    private const int PaidActivationBufferChunks = 160;
     private const int MaxPaidReconnectAttempts = 2;
+    private const int MaxSessionResumptionHandleCharacters = 8192;
     private const int RolloverContextEntries = 12;
     private const int RolloverContextCharacters = 4000;
     private const int RolloverContextEntryCharacters = 600;
     private static readonly TimeSpan PreviousTurnGracePeriod = TimeSpan.FromSeconds(8);
+    internal static readonly TimeSpan PaidPhysicalSessionSoftTarget = TimeSpan.FromMinutes(9.5);
+    internal static readonly TimeSpan ReconnectUiDelay = TimeSpan.FromMilliseconds(1500);
+    private static readonly TimeSpan SafeRolloverQuietPeriod = TimeSpan.FromMilliseconds(300);
     internal static readonly TimeSpan PlaybackBufferDuration = TimeSpan.FromSeconds(45);
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly SemaphoreSlim _audioSendLock = new(1, 1);
@@ -48,6 +52,7 @@ public sealed class GeminiLiveConversationService : IDisposable
     private TaskCompletionSource<bool> _turnComplete = CompletedTurn();
     private Task _paidActivationTask = Task.CompletedTask;
     private Task _paidReconnectTask = Task.CompletedTask;
+    private Task _paidSoftRolloverTask = Task.CompletedTask;
     private int _autoEnding;
     private bool _paidLiveReady;
     private bool _suppressPaidActivationAudio;
@@ -57,6 +62,9 @@ public sealed class GeminiLiveConversationService : IDisposable
     private int _paidActivationFailures;
     private string _logicalSessionId = "";
     private int _providerSocketSequence;
+    private int _intentionalRolloverSocketSequence;
+    private int _activeToolCalls;
+    private string _sessionResumptionHandle = "";
 
     public GeminiLiveConversationService(
         NotificationService notifications,
@@ -251,12 +259,18 @@ public sealed class GeminiLiveConversationService : IDisposable
             throw new OperationCanceledException("The Jarvis session changed before connection completed.");
         }
 
+        string resumptionHandle;
+        lock (_paidActivationLock)
+            resumptionHandle = _sessionResumptionHandle;
+        var usedSessionResumption = !string.IsNullOrWhiteSpace(resumptionHandle);
+
         _socket = socket;
         var diagnostics = new ProviderSocketDiagnostics(
             _logicalSessionId,
             Interlocked.Increment(ref _providerSocketSequence),
             DateTimeOffset.UtcNow,
-            Volatile.Read(ref _paidActivationFailures));
+            Volatile.Read(ref _paidActivationFailures),
+            usedSessionResumption);
         _receiveTask = Task.Run(
             () => ReceiveLoopAsync(socket, expectedSession, setupReady, diagnostics, token),
             token);
@@ -279,6 +293,11 @@ public sealed class GeminiLiveConversationService : IDisposable
                 tools = BuildTools(),
                 inputAudioTranscription = new { },
                 outputAudioTranscription = new { },
+                sessionResumption = BuildSessionResumptionConfig(resumptionHandle),
+                contextWindowCompression = new
+                {
+                    slidingWindow = new { },
+                },
                 realtimeInputConfig = new
                 {
                     automaticActivityDetection = new
@@ -299,12 +318,16 @@ public sealed class GeminiLiveConversationService : IDisposable
         }, token);
 
         await setupReady.Task.WaitAsync(TimeSpan.FromSeconds(12), token);
-        await SendRolloverContextIfPresentAsync(token);
+        if (!usedSessionResumption)
+            await SendRolloverContextIfPresentAsync(token);
         StartPlayback();
+        if (_paidAccount?.Enabled == true)
+            SchedulePaidSoftRollover(socket, expectedSession, diagnostics);
         AppLog.Info(
             $"Jarvis transport timing: logicalSession={_logicalSessionId} " +
             $"socketConnectedMs={socketConnectedMs} " +
-            $"setupReadyMs={(long)System.Diagnostics.Stopwatch.GetElapsedTime(connectionStarted).TotalMilliseconds}");
+            $"setupReadyMs={(long)System.Diagnostics.Stopwatch.GetElapsedTime(connectionStarted).TotalMilliseconds} " +
+            $"resumed={usedSessionResumption}");
     }
 
     private void ShowConversationReady(bool announce)
@@ -686,8 +709,175 @@ public sealed class GeminiLiveConversationService : IDisposable
             Interlocked.Exchange(ref _paidActivationStarted, 0);
             _paidActivationFailures = 0;
             _paidReconnectTask = Task.CompletedTask;
+            _paidSoftRolloverTask = Task.CompletedTask;
+            _sessionResumptionHandle = "";
+            _intentionalRolloverSocketSequence = 0;
+        }
+        Interlocked.Exchange(ref _activeToolCalls, 0);
+    }
+
+    internal static Dictionary<string, string> BuildSessionResumptionConfig(string handle)
+    {
+        var config = new Dictionary<string, string>(StringComparer.Ordinal);
+        var clean = (handle ?? "").Trim();
+        if (clean.Length is > 0 and <= MaxSessionResumptionHandleCharacters)
+            config["handle"] = clean;
+        return config;
+    }
+
+    private void SchedulePaidSoftRollover(
+        ClientWebSocket socket,
+        CancellationTokenSource expectedSession,
+        ProviderSocketDiagnostics diagnostics)
+    {
+        lock (_paidActivationLock)
+        {
+            _paidSoftRolloverTask = Task.Run(
+                () => MonitorPaidPhysicalSessionAsync(
+                    socket,
+                    expectedSession,
+                    diagnostics,
+                    expectedSession.Token),
+                expectedSession.Token);
         }
     }
+
+    private async Task MonitorPaidPhysicalSessionAsync(
+        ClientWebSocket socket,
+        CancellationTokenSource expectedSession,
+        ProviderSocketDiagnostics diagnostics,
+        CancellationToken token)
+    {
+        try
+        {
+            var remaining = PaidPhysicalSessionSoftTarget
+                - (DateTimeOffset.UtcNow - diagnostics.StartedAt);
+            var softTarget = remaining <= TimeSpan.Zero
+                ? Task.CompletedTask
+                : Task.Delay(remaining, token);
+            var firstSignal = await Task.WhenAny(
+                softTarget,
+                diagnostics.GoAway.Task);
+            var providerRequestedHandoff = firstSignal != softTarget;
+
+            AppLog.Info(
+                $"Jarvis Live rollover pending: logicalSession={diagnostics.LogicalSessionId} " +
+                $"physicalSocket={diagnostics.Sequence} reason=" +
+                $"{(providerRequestedHandoff ? "provider_go_away" : "soft_age_target")}");
+
+            while (ReferenceEquals(_sessionCts, expectedSession)
+                && !token.IsCancellationRequested
+                && ReferenceEquals(_socket, socket))
+            {
+                var providerGoAway = diagnostics.GoAway.Task.IsCompletedSuccessfully;
+                if (IsSafePhysicalRollover(
+                        CurrentTurnIsComplete(),
+                        Volatile.Read(ref _activeToolCalls),
+                        _playbackBuffer?.BufferedBytes ?? 0))
+                {
+                    await Task.Delay(SafeRolloverQuietPeriod, token);
+                    if (ReferenceEquals(_socket, socket)
+                        && IsSafePhysicalRollover(
+                            CurrentTurnIsComplete(),
+                            Volatile.Read(ref _activeToolCalls),
+                            _playbackBuffer?.BufferedBytes ?? 0))
+                    {
+                        await BeginSequentialPaidRolloverAsync(
+                            socket,
+                            expectedSession,
+                            diagnostics,
+                            providerGoAway ? "provider_go_away" : "soft_safe_turn",
+                            token);
+                        return;
+                    }
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(100), token);
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            // A proactive handoff failure must not kill a still-healthy socket.
+            // The normal receive-loop recovery remains authoritative if the
+            // provider or transport later closes it.
+            AppLog.Warning(
+                ex,
+                $"Jarvis safe rollover monitor ended: logicalSession={diagnostics.LogicalSessionId} " +
+                $"physicalSocket={diagnostics.Sequence}");
+        }
+    }
+
+    private async Task BeginSequentialPaidRolloverAsync(
+        ClientWebSocket socket,
+        CancellationTokenSource expectedSession,
+        ProviderSocketDiagnostics diagnostics,
+        string reason,
+        CancellationToken token)
+    {
+        lock (_paidActivationLock)
+        {
+            if (!ReferenceEquals(_sessionCts, expectedSession)
+                || !ReferenceEquals(_socket, socket)
+                || !_paidLiveReady)
+                return;
+            _paidLiveReady = false;
+            _suppressPaidActivationAudio = false;
+            Volatile.Write(ref _intentionalRolloverSocketSequence, diagnostics.Sequence);
+        }
+
+        await _audioSendLock.WaitAsync(token);
+        try
+        {
+            if (!ReferenceEquals(_sessionCts, expectedSession)
+                || !ReferenceEquals(_socket, socket))
+                return;
+
+            AppLog.Info(
+                $"Jarvis Live safe rollover started: logicalSession={diagnostics.LogicalSessionId} " +
+                $"physicalSocket={diagnostics.Sequence} reason={reason} " +
+                $"socketAgeMs={(long)(DateTimeOffset.UtcNow - diagnostics.StartedAt).TotalMilliseconds}");
+            try
+            {
+                using var close = CancellationTokenSource.CreateLinkedTokenSource(token);
+                close.CancelAfter(TimeSpan.FromSeconds(2));
+                if (socket.State == WebSocketState.Open)
+                {
+                    await socket.CloseOutputAsync(
+                        WebSocketCloseStatus.NormalClosure,
+                        "Safe physical-session rollover",
+                        close.Token);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !token.IsCancellationRequested)
+            {
+                AppLog.Warning(
+                    ex,
+                    $"Jarvis safe rollover close handshake failed: physicalSocket={diagnostics.Sequence}");
+                try { socket.Abort(); } catch { }
+            }
+        }
+        finally
+        {
+            _audioSendLock.Release();
+        }
+    }
+
+    private bool CurrentTurnIsComplete()
+    {
+        lock (_turnStateLock)
+            return _turnComplete.Task.IsCompleted;
+    }
+
+    internal static bool IsSafePhysicalRollover(
+        bool turnComplete,
+        int activeToolCalls,
+        int bufferedPlaybackBytes) =>
+        turnComplete
+        && activeToolCalls == 0
+        && bufferedPlaybackBytes == 0;
 
     private void StartPlayback()
     {
@@ -756,7 +946,7 @@ public sealed class GeminiLiveConversationService : IDisposable
                 }
                 if (string.IsNullOrWhiteSpace(received.Text))
                     continue;
-                await HandleServerMessageAsync(received.Text, setupReady, token);
+                await HandleServerMessageAsync(received.Text, setupReady, diagnostics, token);
             }
         }
         catch (OperationCanceledException) { }
@@ -768,11 +958,14 @@ public sealed class GeminiLiveConversationService : IDisposable
         }
         finally
         {
+            var intentionalRollover = diagnostics.Sequence
+                == Volatile.Read(ref _intentionalRolloverSocketSequence);
             var closeCategory = ClassifyProviderSocketClose(
                 token.IsCancellationRequested,
                 closeMessage?.CloseStatus,
                 endedBy,
-                DateTimeOffset.UtcNow - diagnostics.StartedAt);
+                DateTimeOffset.UtcNow - diagnostics.StartedAt,
+                intentionalRollover);
             AppLog.Info(
                 $"Jarvis Live socket closed: logicalSession={diagnostics.LogicalSessionId} " +
                 $"physicalSocket={diagnostics.Sequence} socketAgeMs=" +
@@ -793,7 +986,11 @@ public sealed class GeminiLiveConversationService : IDisposable
                 {
                     if (setupReady.Task.IsCompletedSuccessfully)
                     {
-                        PrepareForNextPaidProviderSession(socket, endedBy);
+                        PrepareForNextPaidProviderSession(
+                            socket,
+                            expectedSession,
+                            diagnostics,
+                            endedBy);
                         SchedulePaidReconnect(expectedSession);
                     }
                     else
@@ -831,6 +1028,8 @@ public sealed class GeminiLiveConversationService : IDisposable
 
     private void PrepareForNextPaidProviderSession(
         ClientWebSocket endedSocket,
+        CancellationTokenSource expectedSession,
+        ProviderSocketDiagnostics diagnostics,
         Exception endedBy)
     {
         CommitCurrentConversationTurn();
@@ -840,7 +1039,6 @@ public sealed class GeminiLiveConversationService : IDisposable
                 _socket = null;
             _paidLiveReady = false;
             _suppressPaidActivationAudio = false;
-            _paidActivationAudio.Clear();
             _paidActivationTask = Task.CompletedTask;
             Interlocked.Exchange(ref _paidActivationStarted, 0);
             _paidActivationFailures = 0;
@@ -848,17 +1046,38 @@ public sealed class GeminiLiveConversationService : IDisposable
         try { endedSocket.Dispose(); } catch { }
         MarkTurnCompleted();
         StopPlayback();
-        if (IsActive && _sessionCts is { IsCancellationRequested: false })
-        {
-            KeyboardWtfState.SetUi(
-                VoiceUiPhase.Thinking,
-                "Reconnecting",
-                "Refreshing the secure Live connection...");
-        }
+        ScheduleReconnectUiIfNeeded(expectedSession, diagnostics.Sequence);
         AppLog.Info(
             $"Jarvis provider session ended; logical session remains active category=" +
             $"{(endedBy is null ? "provider_close" : endedBy.GetType().Name)}");
-        _ = RefreshAccountAfterProviderSessionAsync();
+    }
+
+    private void ScheduleReconnectUiIfNeeded(
+        CancellationTokenSource expectedSession,
+        int endedSocketSequence)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(ReconnectUiDelay, expectedSession.Token);
+                if (ReferenceEquals(_sessionCts, expectedSession)
+                    && !expectedSession.IsCancellationRequested
+                    && !IsProviderConnected)
+                {
+                    KeyboardWtfState.SetUi(
+                        VoiceUiPhase.Thinking,
+                        "Reconnecting",
+                        "Refreshing the secure Live connection...");
+                    AppLog.Info(
+                        $"Jarvis reconnect UI shown after noticeable delay: logicalSession={_logicalSessionId} " +
+                        $"endedPhysicalSocket={endedSocketSequence}");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        });
     }
 
     private void SchedulePaidReconnect(CancellationTokenSource expectedSession)
@@ -892,6 +1111,7 @@ public sealed class GeminiLiveConversationService : IDisposable
                     expectedSession.Token);
                 AppLog.Info(
                     $"Jarvis Live transport recovered: logicalSession={_logicalSessionId} retry={attempt}");
+                _ = RefreshAccountAfterProviderSessionAsync();
                 return;
             }
             catch (OperationCanceledException) when (expectedSession.IsCancellationRequested)
@@ -947,6 +1167,7 @@ public sealed class GeminiLiveConversationService : IDisposable
     private async Task HandleServerMessageAsync(
         string json,
         TaskCompletionSource<bool> setupReady,
+        ProviderSocketDiagnostics diagnostics,
         CancellationToken token)
     {
         using var doc = JsonDocument.Parse(json);
@@ -968,6 +1189,48 @@ public sealed class GeminiLiveConversationService : IDisposable
         {
             AppLog.Info($"Jarvis connected using {Model}");
             setupReady.TrySetResult(true);
+            return;
+        }
+
+        if (root.TryGetProperty("sessionResumptionUpdate", out var resumptionUpdate))
+        {
+            var isResumable = resumptionUpdate.TryGetProperty("resumable", out var resumable)
+                && resumable.ValueKind == JsonValueKind.True;
+            if (isResumable
+                && resumptionUpdate.TryGetProperty("newHandle", out var newHandleElement))
+            {
+                var newHandle = (newHandleElement.GetString() ?? "").Trim();
+                if (newHandle.Length is > 0 and <= MaxSessionResumptionHandleCharacters)
+                {
+                    lock (_paidActivationLock)
+                        _sessionResumptionHandle = newHandle;
+                    diagnostics.ResumptionHandleObserved = true;
+                }
+            }
+            else
+            {
+                // The API explicitly warns that resuming from an older handle
+                // while the reported state is non-resumable can lose data. A
+                // bounded transcript handoff is safer until a fresh valid
+                // handle arrives for this physical session.
+                lock (_paidActivationLock)
+                    _sessionResumptionHandle = "";
+                diagnostics.ResumptionHandleObserved = false;
+            }
+            return;
+        }
+
+        if (root.TryGetProperty("goAway", out var goAway))
+        {
+            diagnostics.GoAway.TrySetResult(true);
+            var timeLeft = goAway.TryGetProperty("timeLeft", out var timeLeftElement)
+                ? timeLeftElement.ToString()
+                : "unknown";
+            if (timeLeft.Length > 80)
+                timeLeft = timeLeft[..80];
+            AppLog.Info(
+                $"Jarvis Live GoAway received: logicalSession={diagnostics.LogicalSessionId} " +
+                $"physicalSocket={diagnostics.Sequence} timeLeft={timeLeft}");
             return;
         }
 
@@ -1064,34 +1327,42 @@ public sealed class GeminiLiveConversationService : IDisposable
         if (!toolCall.TryGetProperty("functionCalls", out var calls) || calls.ValueKind != JsonValueKind.Array)
             return;
 
-        var responses = new List<object>();
-        foreach (var call in calls.EnumerateArray())
+        Interlocked.Increment(ref _activeToolCalls);
+        try
         {
-            var id = call.TryGetProperty("id", out var idEl) ? idEl.GetString() : Guid.NewGuid().ToString("N");
-            var name = call.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : "";
-            var args = call.TryGetProperty("args", out var argsEl) ? argsEl : default;
-
-            Dictionary<string, object> response;
-            if (!_toolAttemptGuard.TryGetSuppressed(name, args, out response))
+            var responses = new List<object>();
+            foreach (var call in calls.EnumerateArray())
             {
-                response = await ExecuteToolAsync(name, args, token);
-                _toolAttemptGuard.Record(name, args, response);
+                var id = call.TryGetProperty("id", out var idEl) ? idEl.GetString() : Guid.NewGuid().ToString("N");
+                var name = call.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : "";
+                var args = call.TryGetProperty("args", out var argsEl) ? argsEl : default;
+
+                Dictionary<string, object> response;
+                if (!_toolAttemptGuard.TryGetSuppressed(name, args, out response))
+                {
+                    response = await ExecuteToolAsync(name, args, token);
+                    _toolAttemptGuard.Record(name, args, response);
+                }
+                responses.Add(new
+                {
+                    id,
+                    name,
+                    response,
+                });
             }
-            responses.Add(new
-            {
-                id,
-                name,
-                response,
-            });
-        }
 
-        await SendJsonAsync(new
-        {
-            toolResponse = new
+            await SendJsonAsync(new
             {
-                functionResponses = responses,
-            },
-        }, token);
+                toolResponse = new
+                {
+                    functionResponses = responses,
+                },
+            }, token);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _activeToolCalls);
+        }
     }
 
     private async Task<Dictionary<string, object>> ExecuteToolAsync(string name, JsonElement args, CancellationToken token)
@@ -1264,24 +1535,27 @@ public sealed class GeminiLiveConversationService : IDisposable
         bool clientCancelled,
         WebSocketCloseStatus? closeStatus,
         Exception exception,
-        TimeSpan socketAge)
+        TimeSpan socketAge,
+        bool intentionalRollover = false)
     {
         if (clientCancelled)
             return "client_cancel";
+        if (intentionalRollover)
+            return "safe_physical_rollover";
         if (exception is OperationCanceledException)
             return "transport_cancel";
         if (exception is WebSocketException)
-            return socketAge >= TimeSpan.FromSeconds(110)
-                ? "cloud_run_request_rollover"
+            return socketAge >= PaidPhysicalSessionSoftTarget
+                ? "provider_connection_rollover"
                 : "transport_error";
         if (closeStatus is WebSocketCloseStatus.PolicyViolation)
             return "policy_or_auth_rejection";
         if (closeStatus is WebSocketCloseStatus.NormalClosure)
-            return socketAge >= TimeSpan.FromSeconds(110)
-                ? "cloud_run_request_rollover"
+            return socketAge >= PaidPhysicalSessionSoftTarget
+                ? "provider_connection_rollover"
                 : "remote_normal_close";
-        return socketAge >= TimeSpan.FromSeconds(110)
-            ? "cloud_run_request_rollover"
+        return socketAge >= PaidPhysicalSessionSoftTarget
+            ? "provider_connection_rollover"
             : "remote_close";
     }
 
@@ -2185,11 +2459,31 @@ public sealed class GeminiLiveConversationService : IDisposable
         bool IsClose,
         WebSocketCloseStatus? CloseStatus);
 
-    private sealed record ProviderSocketDiagnostics(
-        string LogicalSessionId,
-        int Sequence,
-        DateTimeOffset StartedAt,
-        int RetryNumber);
+    private sealed class ProviderSocketDiagnostics
+    {
+        public ProviderSocketDiagnostics(
+            string logicalSessionId,
+            int sequence,
+            DateTimeOffset startedAt,
+            int retryNumber,
+            bool usedSessionResumption)
+        {
+            LogicalSessionId = logicalSessionId;
+            Sequence = sequence;
+            StartedAt = startedAt;
+            RetryNumber = retryNumber;
+            UsedSessionResumption = usedSessionResumption;
+        }
+
+        public string LogicalSessionId { get; }
+        public int Sequence { get; }
+        public DateTimeOffset StartedAt { get; }
+        public int RetryNumber { get; }
+        public bool UsedSessionResumption { get; }
+        public bool ResumptionHandleObserved { get; set; }
+        public TaskCompletionSource<bool> GoAway { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 }
 
 internal sealed class ToolAttemptGuard

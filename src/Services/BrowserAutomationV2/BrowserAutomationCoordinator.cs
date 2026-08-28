@@ -2560,7 +2560,82 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             }
         }
 
+        receipt = await PreserveProgressAfterUnexpectedNavigationAsync(
+            runtime,
+            action,
+            receipt,
+            token);
         AttachExpectedState(receipt, action);
+        return receipt;
+    }
+
+    private async Task<BrowserActionReceipt> PreserveProgressAfterUnexpectedNavigationAsync(
+        Runtime runtime,
+        BrowserPlannerAction action,
+        BrowserActionReceipt receipt,
+        CancellationToken token)
+    {
+        if (receipt?.Ok != true
+            || !receipt.Navigation
+            || !BrowserAutomationVerifier.IsLikelyNavigationRegression(
+                receipt.BeforeUrl,
+                receipt.AfterUrl)
+            || BrowserAutomationVerifier.RequestAllowsNavigationRegression(runtime.Request))
+        {
+            return receipt;
+        }
+
+        var progressedUrl = receipt.BeforeUrl;
+        var regressed = await _bridge.ObserveAsync(
+            runtime.TaskId,
+            receipt.TabId ?? runtime.Page.TabId,
+            token);
+        AddControlledTab(runtime, regressed);
+        if (!BrowserAutomationVerifier.IsLikelyNavigationRegression(
+                progressedUrl,
+                regressed.Url))
+        {
+            // The action continued asynchronously to a different useful state;
+            // do not overwrite newer live progress based on an intermediate
+            // receipt URL.
+            runtime.Page = regressed;
+            return receipt;
+        }
+
+        runtime.History.Add(
+            "A stale browser action navigated to a less specific same-site state. "
+            + "Restoring the last verified page before allowing another plan.");
+        var restore = await _bridge.ExecuteAsync(
+            new BrowserActionRequest
+            {
+                TaskId = runtime.TaskId,
+                Type = "navigate",
+                WindowId = regressed.WindowId,
+                TabId = regressed.TabId,
+                GraphVersion = regressed.GraphVersion,
+                DomEpoch = regressed.DomEpoch,
+                Url = progressedUrl,
+            },
+            token);
+        LogActionReceipt(runtime.TaskId, restore);
+        var restored = await _bridge.ObserveAsync(
+            runtime.TaskId,
+            restore.TabId ?? regressed.TabId,
+            token);
+        AddControlledTab(runtime, restored);
+        runtime.Page = restored;
+
+        receipt.Ok = false;
+        receipt.Stale = true;
+        receipt.Navigation = false;
+        receipt.NoVisibleChange = true;
+        receipt.AfterUrl = restored.Url;
+        receipt.AfterFingerprint = restored.Fingerprint;
+        receipt.GraphVersion = restored.GraphVersion;
+        receipt.DomEpoch = restored.DomEpoch;
+        receipt.Error = restore.Ok
+            ? "The action tried to discard a more specific verified page and was safely rolled back."
+            : "The action discarded a more specific verified page, and the previous page could not be restored automatically.";
         return receipt;
     }
 
@@ -3073,10 +3148,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             || !BrowserAutomationVerifier.IsLikelyNavigationRegression(
                 page?.Url,
                 action.Url)
-            || Regex.IsMatch(
-                request ?? "",
-                @"\b(?:go back|return home|start over|restart|reset)\b",
-                RegexOptions.IgnoreCase))
+            || BrowserAutomationVerifier.RequestAllowsNavigationRegression(request))
         {
             return false;
         }

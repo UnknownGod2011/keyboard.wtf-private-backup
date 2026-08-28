@@ -38,7 +38,7 @@ public sealed class PaidLiveStartupPolicyTests
     [Theory]
     [InlineData(true, null, 10, "client_cancel")]
     [InlineData(false, System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, 30, "remote_normal_close")]
-    [InlineData(false, System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, 119, "cloud_run_request_rollover")]
+    [InlineData(false, System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, 600, "provider_connection_rollover")]
     public void Provider_close_diagnostics_distinguish_user_stop_from_rollover(
         bool clientCancelled,
         System.Net.WebSockets.WebSocketCloseStatus? closeStatus,
@@ -51,6 +51,40 @@ public sealed class PaidLiveStartupPolicyTests
                 closeStatus,
                 null,
                 TimeSpan.FromSeconds(socketAgeSeconds)));
+
+    [Fact]
+    public void Intentional_safe_rollover_has_an_authoritative_diagnostic_category() =>
+        Assert.Equal(
+            "safe_physical_rollover",
+            GeminiLiveConversationService.ClassifyProviderSocketClose(
+                false,
+                System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
+                null,
+                TimeSpan.FromMinutes(9.5),
+                intentionalRollover: true));
+
+    [Fact]
+    public void Physical_rollover_requires_a_completed_quiet_turn_without_tools()
+    {
+        Assert.True(GeminiLiveConversationService.IsSafePhysicalRollover(
+            turnComplete: true,
+            activeToolCalls: 0,
+            bufferedPlaybackBytes: 0));
+        Assert.False(GeminiLiveConversationService.IsSafePhysicalRollover(true, 1, 0));
+        Assert.False(GeminiLiveConversationService.IsSafePhysicalRollover(true, 0, 960));
+        Assert.False(GeminiLiveConversationService.IsSafePhysicalRollover(false, 0, 0));
+    }
+
+    [Fact]
+    public void Session_resumption_handle_is_bounded_and_omitted_for_a_new_logical_session()
+    {
+        Assert.Empty(GeminiLiveConversationService.BuildSessionResumptionConfig(""));
+        Assert.Equal(
+            "resume-safe-123",
+            GeminiLiveConversationService.BuildSessionResumptionConfig(" resume-safe-123 ")["handle"]);
+        Assert.Empty(GeminiLiveConversationService.BuildSessionResumptionConfig(
+            new string('x', 9000)));
+    }
 
     [Theory]
     [InlineData(true, true, true, true)]

@@ -1,6 +1,6 @@
 # Smart Writing and Raw Dictation
 
-This document describes the Windows 1.4.16 production implementation. It is based on the code paths that ship in the desktop build, not on planned behavior.
+This document describes the Windows 1.4.17 production implementation. It is based on the code paths that ship in the desktop build, not on planned behavior.
 
 ## The three interaction modes
 

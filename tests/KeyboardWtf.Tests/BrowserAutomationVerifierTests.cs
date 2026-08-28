@@ -512,6 +512,53 @@ public sealed class BrowserAutomationVerifierTests
         Assert.Contains("destination editor", result.Error, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void Click_that_navigates_back_to_a_same_site_parent_is_not_progress()
+    {
+        var result = _verifier.VerifyAction(
+            new BrowserPlannerAction { Type = "click", TargetName = "Browse" },
+            new BrowserActionReceipt
+            {
+                Ok = true,
+                Action = "click",
+                Navigation = true,
+                NoVisibleChange = false,
+                BeforeUrl = "https://example.test/results/revenuecat",
+                AfterUrl = "https://example.test/",
+            });
+
+        Assert.False(result.Verified);
+        Assert.Contains("backward", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Terminal_verification_rejects_a_homepage_that_discarded_verified_detail_progress()
+    {
+        var result = _verifier.VerifyTerminal(
+            "Open the requested result page.",
+            new BrowserPlannerDecision { Done = true, ResultSummary = "Done" },
+            new BrowserPageSnapshot
+            {
+                Url = "https://example.test/",
+                PageText = "Home",
+            },
+            new[]
+            {
+                new BrowserActionReceipt
+                {
+                    Ok = true,
+                    Action = "click",
+                    Navigation = true,
+                    NoVisibleChange = false,
+                    BeforeUrl = "https://example.test/results",
+                    AfterUrl = "https://example.test/results/revenuecat",
+                },
+            });
+
+        Assert.False(result.Verified);
+        Assert.Contains("discarded", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static BrowserActionReceipt Changed(
         string action,
         string targetId,

@@ -2599,7 +2599,7 @@ public sealed class SecurityAndUsageTests
         const string expectedModel =
             "projects/keyboard-wtf-staging/locations/us-central1/publishers/google/models/gemini-live-test";
         var rewritten = VertexLiveProxyService.RewriteSetup(
-            """{"setup":{"model":"models/untrusted","generationConfig":{"responseModalities":["TEXT"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Puck"}}}},"tools":[{"functionDeclarations":[{"name":"open_app","description":"Open an app"}]}],"systemInstruction":{"parts":[{"text":"client context"}]},"contextWindowCompression":{"triggerTokens":1}}}""",
+            """{"setup":{"model":"models/untrusted","generationConfig":{"responseModalities":["TEXT"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Puck"}}}},"tools":[{"functionDeclarations":[{"name":"open_app","description":"Open an app"}]}],"systemInstruction":{"parts":[{"text":"client context"}]},"sessionResumption":{"handle":"resume-safe-123"},"contextWindowCompression":{"triggerTokens":1}}}""",
             expectedModel);
         using var document = JsonDocument.Parse(rewritten);
         var setup = document.RootElement.GetProperty("setup");
@@ -2613,7 +2613,11 @@ public sealed class SecurityAndUsageTests
             .GetProperty("voiceName").GetString());
         Assert.Contains("client context", setup.GetProperty("systemInstruction")
             .GetProperty("parts")[0].GetProperty("text").GetString(), StringComparison.Ordinal);
-        Assert.False(setup.TryGetProperty("contextWindowCompression", out _));
+        Assert.True(setup.GetProperty("contextWindowCompression")
+            .TryGetProperty("slidingWindow", out _));
+        Assert.Equal(
+            "resume-safe-123",
+            setup.GetProperty("sessionResumption").GetProperty("handle").GetString());
         Assert.True(setup.TryGetProperty("inputAudioTranscription", out _));
         Assert.True(setup.TryGetProperty("outputAudioTranscription", out _));
     }
@@ -2641,6 +2645,12 @@ public sealed class SecurityAndUsageTests
                 """{"setup":{"tools":[{"functionDeclarations":[{"name":"edit_workflow"}]}]}}""",
                 "projects/test/locations/test/publishers/google/models/test"),
             StringComparison.Ordinal);
+
+    [Fact]
+    public void Live_proxy_rejects_unbounded_session_resumption_fields() =>
+        Assert.Throws<ArgumentException>(() => VertexLiveProxyService.RewriteSetup(
+            """{"setup":{"tools":[{"functionDeclarations":[{"name":"open_app"}]}],"sessionResumption":{"handle":"ok","unexpected":true}}}""",
+            "projects/test/locations/test/publishers/google/models/test"));
 
     [Fact]
     public void Live_proxy_rejects_a_non_setup_first_message() =>
@@ -2728,11 +2738,12 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
-    public void Default_live_socket_lifetime_leaves_cloud_edge_cleanup_headroom()
+    public void Default_live_socket_lifetime_supports_provider_resumption_before_the_platform_edge()
     {
         var options = new PaidSystemOptions();
-        Assert.Equal(110, options.LiveSessionMaxSeconds);
-        Assert.InRange(options.LiveSessionMaxSeconds, 30, 119);
+        Assert.Equal(720, options.LiveSessionMaxSeconds);
+        Assert.Equal(10_000_000, options.LiveSessionCreditMicrosCap);
+        Assert.InRange(options.LiveSessionMaxSeconds, 600, 899);
     }
 
     [Fact]
@@ -2863,21 +2874,6 @@ public sealed class SecurityAndUsageTests
         { [100, 200, 200, 200], 200 },
         { [100, 300, 200], 300 },
     };
-
-    [Fact]
-    public void Live_idle_begins_only_after_a_completed_turn_and_resets_on_new_activity()
-    {
-        var activity = new LiveActivityTracker();
-        activity.ObserveProvider("""{"serverContent":{"turnComplete":true}}""");
-        Assert.NotNull(activity.LastCompletedTurnAt);
-
-        activity.ObserveProvider("""{"serverContent":{"inputTranscription":{"text":"continue"}}}""");
-        Assert.Null(activity.LastCompletedTurnAt);
-
-        activity.ObserveProvider("""{"serverContent":{"turnComplete":true}}""");
-        activity.ObserveProvider("""{"serverContent":{"modelTurn":{"parts":[{"text":"answer"}]}}}""");
-        Assert.Null(activity.LastCompletedTurnAt);
-    }
 
     [Theory]
     [InlineData(0, 1_000_000, 5_000_000, 1_000_000)]

@@ -124,9 +124,9 @@ $routes = [ordered]@{
     browser_planner = New-Route -Lifecycle "Fast GA planner with a stronger compatible GA fallback." -MaxInput 200000 -MaxOutput 2048 -Timeout 75 -Thinking 512 -Primary $flashLitePrimary -Fallback $browserFallback
     screen_reasoning = New-Route -Lifecycle "Gemini 3.5 Flash GA multimodal reasoning route." -MaxInput 200000 -MaxOutput 2048 -Timeout 90 -Thinking 1024 -Primary $flashPrimary -Fallback $flashFallback
     live_audio = New-Route -Lifecycle "Gemini Live 2.5 Flash Native Audio GA; retirement 2026-12-13." -MaxInput 20000 -MaxOutput 1 -Timeout 100 -Thinking 0 -Primary $livePrimary -LivePolicy ([ordered]@{
-        maxSessionSeconds = 110L
+        maxSessionSeconds = 720L
         reservationWindowCreditMicros = 1000000L
-        maxSessionCostCreditMicros = 5000000L
+        maxSessionCostCreditMicros = 10000000L
     })
 }
 

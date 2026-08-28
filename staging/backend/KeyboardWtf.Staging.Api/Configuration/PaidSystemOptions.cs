@@ -47,12 +47,11 @@ public sealed class PaidSystemOptions
     public long MaxAccountCreditMicros { get; init; } = 10_000_000_000;
     public int GlobalUsageShardCount { get; init; } = 32;
     public long DefaultTaskCreditMicrosCap { get; init; } = 25_000_000;
-    public long LiveSessionCreditMicrosCap { get; init; } = 5_000_000;
+    public long LiveSessionCreditMicrosCap { get; init; } = 10_000_000;
     public long LiveReservationWindowCreditMicros { get; init; } = 1_000_000;
-    // Keep each physical provider socket below the 120-second Cloud Run edge
-    // timeout so close/accounting cleanup completes before transparent rollover.
-    public int LiveSessionMaxSeconds { get; init; } = 110;
-    public int LiveSessionIdleSeconds { get; init; } = 30;
+    // This is an emergency backend bound above the desktop's soft handoff and
+    // below the Cloud Run request edge, leaving cleanup/accounting headroom.
+    public int LiveSessionMaxSeconds { get; init; } = 720;
     public long LiveSessionMaxTrafficBytes { get; init; } = 64 * 1024 * 1024;
     public int LiveUsageCheckpointSeconds { get; init; } = 30;
     public int LiveEstimateSafetyBasisPoints { get; init; } = 12_500;

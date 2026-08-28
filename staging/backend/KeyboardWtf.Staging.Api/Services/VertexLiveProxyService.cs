@@ -32,6 +32,7 @@ public sealed class VertexLiveProxyService
     private const int MaxMessageBytes = 2 * 1024 * 1024;
     private const int MaxSystemInstructionCharacters = 20_000;
     private const int MaxToolDeclarations = 64;
+    private const int MaxSessionResumptionHandleCharacters = 8192;
     private const string ServerSafetyInstruction =
         "This is keyboard.wtf Jarvis. Follow the user's current request, but never expose credentials, " +
         "bypass authentication or security controls, or claim a local action succeeded without a tool result. " +
@@ -200,11 +201,9 @@ public sealed class VertexLiveProxyService
                 usage.ObserveClient(message);
                 await EnsureBudgetAsync(token);
             }, session.Token);
-            var activity = new LiveActivityTracker();
             var toClient = RelayAsync(provider, client, acceptBinary: true, async (message, token) =>
             {
                 usage.ObserveProvider(message);
-                activity.ObserveProvider(message);
                 await EnsureBudgetAsync(token);
             }, session.Token);
             var checkpoints = CheckpointUsageAsync(
@@ -214,16 +213,17 @@ public sealed class VertexLiveProxyService
                 selectedCandidate.Pricing,
                 accountingGate,
                 session.Token);
-            var idle = WaitForPostTurnIdleAsync(
-                activity,
-                TimeSpan.FromSeconds(_options.LiveSessionIdleSeconds),
-                session.Token);
-            await Task.WhenAny(toProvider, toClient, checkpoints, idle);
+            // A completed model turn is a normal idle point inside one logical
+            // conversation, not a reason to tear down a healthy socket. The old
+            // post-turn idle task deliberately closed every connection after 30
+            // seconds and forced the desktop through visible reconnects. End a
+            // physical session only when either peer closes, the rolling budget
+            // fails, or the bounded emergency lifetime expires.
+            await Task.WhenAny(toProvider, toClient, checkpoints);
             session.Cancel();
             await IgnoreExpectedRelayEndAsync(toProvider);
             await IgnoreExpectedRelayEndAsync(toClient);
             await IgnoreExpectedCheckpointEndAsync(checkpoints);
-            await IgnoreExpectedCheckpointEndAsync(idle);
             outcome = cancellationToken.IsCancellationRequested ? "cancelled" : "completed";
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -249,97 +249,106 @@ public sealed class VertexLiveProxyService
         finally
         {
             await CloseQuietlyAsync(provider, WebSocketCloseStatus.NormalClosure, "Session ended.");
-            await CloseQuietlyAsync(client, WebSocketCloseStatus.NormalClosure, "Session ended.");
             provider?.Dispose();
-            client?.Dispose();
-
-            var measured = usage.Snapshot();
-            switch (DetermineAccountingDisposition(providerDispatchStarted, measured.TotalTokens))
+            try
             {
-            case LiveAccountingDisposition.Settle:
-            {
-                var (providerCost, charge) = _catalog.CalculateLiveActualCost(
-                    selectedCandidate.Pricing,
-                    measured,
-                    _options.LiveEstimateSafetyBasisPoints);
-                try
+                var measured = usage.Snapshot();
+                switch (DetermineAccountingDisposition(providerDispatchStarted, measured.TotalTokens))
                 {
-                    await _store.RecordProviderCompletionAsync(
-                        caller.UserId,
-                        requestId,
+                case LiveAccountingDisposition.Settle:
+                {
+                    var (providerCost, charge) = _catalog.CalculateLiveActualCost(
+                        selectedCandidate.Pricing,
                         measured,
-                        charge,
-                        providerCost,
-                        outcome,
-                        CancellationToken.None,
-                        selectedCandidate.Model,
-                        selectedCandidate.Pricing.Version);
-                }
-                catch (Exception exception)
-                {
-                    await _store.MarkReservationForReconciliationAsync(
-                        caller.UserId,
-                        requestId,
-                        "live_provider_completion_evidence_write_failed",
-                        CancellationToken.None);
-                    throw new InvalidOperationException(
-                        "Live usage was incurred but its durable accounting evidence is pending reconciliation.",
-                        exception);
-                }
-                Exception? settlementError = null;
-                for (var attempt = 0; attempt <= _options.MaxRetries; attempt++)
-                {
+                        _options.LiveEstimateSafetyBasisPoints);
                     try
                     {
-                        await _store.SettleAsync(
+                        await _store.RecordProviderCompletionAsync(
                             caller.UserId,
                             requestId,
                             measured,
                             charge,
                             providerCost,
                             outcome,
-                            CancellationToken.None);
-                        settlementError = null;
-                        break;
+                            CancellationToken.None,
+                            selectedCandidate.Model,
+                            selectedCandidate.Pricing.Version);
                     }
                     catch (Exception exception)
                     {
-                        settlementError = exception;
-                        if (attempt < _options.MaxRetries)
-                            await Task.Delay(TimeSpan.FromMilliseconds(150 * (attempt + 1)));
+                        await _store.MarkReservationForReconciliationAsync(
+                            caller.UserId,
+                            requestId,
+                            "live_provider_completion_evidence_write_failed",
+                            CancellationToken.None);
+                        throw new InvalidOperationException(
+                            "Live usage was incurred but its durable accounting evidence is pending reconciliation.",
+                            exception);
                     }
+                    Exception? settlementError = null;
+                    for (var attempt = 0; attempt <= _options.MaxRetries; attempt++)
+                    {
+                        try
+                        {
+                            await _store.SettleAsync(
+                                caller.UserId,
+                                requestId,
+                                measured,
+                                charge,
+                                providerCost,
+                                outcome,
+                                CancellationToken.None);
+                            settlementError = null;
+                            break;
+                        }
+                        catch (Exception exception)
+                        {
+                            settlementError = exception;
+                            if (attempt < _options.MaxRetries)
+                                await Task.Delay(TimeSpan.FromMilliseconds(150 * (attempt + 1)));
+                        }
+                    }
+                    if (settlementError is not null)
+                        throw new InvalidOperationException(
+                            "Live usage was incurred but its accounting settlement is pending reconciliation.",
+                            settlementError);
+                    break;
                 }
-                if (settlementError is not null)
-                    throw new InvalidOperationException(
-                        "Live usage was incurred but its accounting settlement is pending reconciliation.",
-                        settlementError);
-                break;
+                case LiveAccountingDisposition.Reconcile:
+                {
+                    // A successful provider connection plus dispatched setup can
+                    // still be billable even when the Live API supplies no usage
+                    // metadata (for example when the client disconnects before a
+                    // model turn).  Do not issue an automatic refund here: mark
+                    // the reservation for the maintenance resolver, which keeps
+                    // the ledger auditable and releases it only with proof that
+                    // no billable provider work occurred.
+                    await _store.MarkReservationForReconciliationAsync(
+                        caller.UserId,
+                        requestId,
+                        "live_provider_dispatch_without_usage_metadata",
+                        CancellationToken.None);
+                    break;
+                }
+                default:
+                {
+                    await _store.ReleaseReservationAsync(
+                        caller.UserId,
+                        requestId,
+                        outcome,
+                        CancellationToken.None);
+                    break;
+                }
+                }
             }
-            case LiveAccountingDisposition.Reconcile:
+            finally
             {
-                // A successful provider connection plus dispatched setup can
-                // still be billable even when the Live API supplies no usage
-                // metadata (for example when the client disconnects before a
-                // model turn).  Do not issue an automatic refund here: mark
-                // the reservation for the maintenance resolver, which keeps
-                // the ledger auditable and releases it only with proof that
-                // no billable provider work occurred.
-                await _store.MarkReservationForReconciliationAsync(
-                    caller.UserId,
-                    requestId,
-                    "live_provider_dispatch_without_usage_metadata",
-                    CancellationToken.None);
-                break;
-            }
-            default:
-            {
-                await _store.ReleaseReservationAsync(
-                    caller.UserId,
-                    requestId,
-                    outcome,
-                    CancellationToken.None);
-                break;
-            }
+                // Finish the authoritative slot mutation before acknowledging
+                // the close to the desktop. The next sequential physical
+                // connection can then reserve immediately instead of racing an
+                // old session that is still settling and surfacing HTTP 409.
+                await CloseQuietlyAsync(client, WebSocketCloseStatus.NormalClosure, "Session ended.");
+                client?.Dispose();
             }
         }
     }
@@ -387,6 +396,7 @@ public sealed class VertexLiveProxyService
         var voiceName = ReadVoiceName(setup);
         var clientInstruction = ReadSystemInstruction(setup);
         var tools = ValidateAndCloneTools(setup["tools"]);
+        var sessionResumption = ValidateSessionResumption(setup["sessionResumption"]);
         var rewritten = new JsonObject
         {
             ["setup"] = new JsonObject
@@ -412,6 +422,14 @@ public sealed class VertexLiveProxyService
                 // by a modified desktop client.
                 ["inputAudioTranscription"] = new JsonObject(),
                 ["outputAudioTranscription"] = new JsonObject(),
+                ["sessionResumption"] = sessionResumption,
+                // Long logical conversations are resumed across sequential
+                // physical connections. Keep the provider context bounded so
+                // continuity does not cause unbounded token growth.
+                ["contextWindowCompression"] = new JsonObject
+                {
+                    ["slidingWindow"] = new JsonObject(),
+                },
                 ["realtimeInputConfig"] = new JsonObject
                 {
                     ["automaticActivityDetection"] = new JsonObject
@@ -432,6 +450,32 @@ public sealed class VertexLiveProxyService
             },
         };
         return rewritten.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
+    }
+
+    private static JsonObject ValidateSessionResumption(JsonNode? node)
+    {
+        if (node is null)
+            return new JsonObject();
+        if (node is not JsonObject config
+            || config.Any(pair => pair.Key != "handle"))
+        {
+            throw new ArgumentException("The Live session-resumption configuration is invalid.");
+        }
+
+        var result = new JsonObject();
+        if (config["handle"] is null)
+            return result;
+        if (config["handle"] is not JsonValue handleValue
+            || !handleValue.TryGetValue<string>(out var handle))
+        {
+            throw new ArgumentException("The Live session-resumption handle is invalid.");
+        }
+
+        handle = (handle ?? "").Trim();
+        if (handle.Length is <= 0 or > MaxSessionResumptionHandleCharacters)
+            throw new ArgumentException("The Live session-resumption handle is invalid.");
+        result["handle"] = handle;
+        return result;
     }
 
     private static string ReadVoiceName(JsonObject setup)
@@ -674,20 +718,6 @@ public sealed class VertexLiveProxyService
         }
     }
 
-    private static async Task WaitForPostTurnIdleAsync(
-        LiveActivityTracker activity,
-        TimeSpan idleTimeout,
-        CancellationToken cancellationToken)
-    {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
-        while (await timer.WaitForNextTickAsync(cancellationToken))
-        {
-            var completedAt = activity.LastCompletedTurnAt;
-            if (completedAt is not null && DateTimeOffset.UtcNow - completedAt >= idleTimeout)
-                return;
-        }
-    }
-
     private static async Task CloseQuietlyAsync(
         WebSocket? socket,
         WebSocketCloseStatus status,
@@ -731,51 +761,6 @@ internal enum LiveAccountingDisposition
     Settle,
     Reconcile,
     Release,
-}
-
-internal sealed class LiveActivityTracker
-{
-    private long _completedTurnUnixMilliseconds;
-
-    public DateTimeOffset? LastCompletedTurnAt
-    {
-        get
-        {
-            var value = Interlocked.Read(ref _completedTurnUnixMilliseconds);
-            return value <= 0 ? null : DateTimeOffset.FromUnixTimeMilliseconds(value);
-        }
-    }
-
-    public void ObserveProvider(string json)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(json);
-            var root = document.RootElement;
-            if (!root.TryGetProperty("serverContent", out var server))
-                return;
-
-            // A transcript or model turn means the conversation is active
-            // again. Raw microphone packets are deliberately ignored because
-            // they continue while the user is silent.
-            if (server.TryGetProperty("inputTranscription", out var transcription)
-                && transcription.TryGetProperty("text", out var text)
-                && !string.IsNullOrWhiteSpace(text.GetString()))
-                Interlocked.Exchange(ref _completedTurnUnixMilliseconds, 0);
-            if (server.TryGetProperty("modelTurn", out _))
-                Interlocked.Exchange(ref _completedTurnUnixMilliseconds, 0);
-            if (server.TryGetProperty("turnComplete", out var complete)
-                && complete.ValueKind == JsonValueKind.True)
-                Interlocked.Exchange(
-                    ref _completedTurnUnixMilliseconds,
-                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        }
-        catch (JsonException)
-        {
-            // Relay validation/accounting handles malformed provider frames;
-            // idle tracking must never make the WebSocket loop less reliable.
-        }
-    }
 }
 
 internal sealed class LiveUsageAccumulator
