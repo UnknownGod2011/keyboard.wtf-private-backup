@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Google.Apis.Auth.OAuth2;
+using Grpc.Core;
 using KeyboardWtf.Staging.Api.Configuration;
 using KeyboardWtf.Staging.Api.Domain;
 using KeyboardWtf.Staging.Api.Infrastructure;
@@ -563,8 +564,12 @@ public sealed class VertexLiveProxyService
     private static async Task IgnoreExpectedCheckpointEndAsync(Task task)
     {
         try { await task; }
-        catch (OperationCanceledException) { }
+        catch (Exception exception) when (IsExpectedCheckpointEnd(exception)) { }
     }
+
+    internal static bool IsExpectedCheckpointEnd(Exception exception) =>
+        exception is OperationCanceledException
+        || exception is RpcException { StatusCode: StatusCode.Cancelled };
 
     private async Task CheckpointUsageAsync(
         string userId,
@@ -656,7 +661,13 @@ public sealed class VertexLiveProxyService
         try
         {
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
-                await socket.CloseAsync(status, description, CancellationToken.None);
+            {
+                // A peer that does not finish the close handshake must not hold
+                // the user's Live slot while durable accounting is waiting to
+                // settle. Disposal immediately follows this bounded attempt.
+                using var close = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+                await socket.CloseAsync(status, description, close.Token);
+            }
         }
         catch { }
     }

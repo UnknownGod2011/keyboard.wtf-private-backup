@@ -1,6 +1,7 @@
 namespace KeyboardWtf.Services.BrowserAutomationV2;
 
 using KeyboardWtf.Helpers;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using KeyboardWtf.Services.PaidStaging;
@@ -27,6 +28,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         public CancellationTokenSource Cancellation { get; init; } = new();
         public AsyncPauseGate PauseGate { get; } = new();
         public List<string> History { get; } = new();
+        public ConcurrentQueue<string> PendingGuidance { get; } = new();
         public List<string> VerifiedCheckpoints { get; } = new();
         public List<BrowserActionReceipt> Receipts { get; } = new();
         public Dictionary<string, int> ActionAttempts { get; } = new(StringComparer.Ordinal);
@@ -57,6 +59,9 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         public BrowserTaskState? LastAnnouncedState { get; set; }
         public bool SuppressCancellationAnnouncement { get; set; }
         public bool MissingTabRecoveryAttempted { get; set; }
+        public int GuidanceRevision;
+        public string PendingDestinationCorrectionLabel { get; set; } = "";
+        public string PendingDestinationCorrectionUrl { get; set; } = "";
         public Task Execution { get; set; }
     }
 
@@ -143,6 +148,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 return false;
             }
 
+            var explicitCorrection = IsExplicitTaskCorrection(guidance);
             if (!IsClearlyTaskRelevantGuidance(guidance)
                 && !(_active.State == BrowserTaskState.NeedsUserAction
                     && IsRelevantManualAnswer(_active.CurrentAction, guidance)))
@@ -151,7 +157,20 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 return false;
             }
 
-            _active.History.Add($"User guidance: {guidance.Trim()}");
+            _active.PendingGuidance.Enqueue(
+                explicitCorrection
+                    ? $"Latest explicit user correction: {guidance.Trim()}"
+                    : $"User guidance: {guidance.Trim()}");
+            _active.GuidanceRevision++;
+            if (explicitCorrection
+                && TryResolveTaskCorrectionDestination(
+                    guidance,
+                    out var destinationLabel,
+                    out var destinationUrl))
+            {
+                _active.PendingDestinationCorrectionLabel = destinationLabel;
+                _active.PendingDestinationCorrectionUrl = destinationUrl;
+            }
             _active.UserPaused = false;
             _active.PauseGate.Resume();
             Publish(_active);
@@ -380,6 +399,27 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 : "Started from the active Chrome window; open one task-owned tab if a new site is required.");
             SetState(runtime, BrowserTaskState.Planning, "Planning the next browser step");
 
+            if (TryResolveExplicitDestination(
+                    runtime.Request,
+                    out var explicitDestinationLabel,
+                    out var explicitDestinationUrl))
+            {
+                var destinationEstablished = await EstablishAuthoritativeDestinationAsync(
+                    runtime,
+                    explicitDestinationLabel,
+                    explicitDestinationUrl,
+                    "the explicit destination in the original request",
+                    token);
+                if (!destinationEstablished)
+                {
+                    Fail(
+                        runtime,
+                        BrowserAutomationOutcome.Failed,
+                        $"The explicitly requested {explicitDestinationLabel} destination could not be established safely.");
+                    return;
+                }
+            }
+
             if (currentPageIntent
                 && TryBuildDirectActiveCursorPasteAction(
                     runtime.Request,
@@ -504,7 +544,31 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 await runtime.PauseGate.WaitAsync(token);
                 token.ThrowIfCancellationRequested();
 
+                DrainPendingGuidance(runtime);
+                if (TryTakePendingDestinationCorrection(
+                        runtime,
+                        out var correctedDestinationLabel,
+                        out var correctedDestinationUrl))
+                {
+                    var correctionEstablished = await EstablishAuthoritativeDestinationAsync(
+                        runtime,
+                        correctedDestinationLabel,
+                        correctedDestinationUrl,
+                        "the latest explicit user correction",
+                        token);
+                    if (!correctionEstablished)
+                    {
+                        Fail(
+                            runtime,
+                            BrowserAutomationOutcome.Failed,
+                            $"The corrected {correctedDestinationLabel} destination could not be established safely.");
+                        return;
+                    }
+                    continue;
+                }
+
                 SetState(runtime, BrowserTaskState.Planning, $"Planning step {step}");
+                var plannerGuidanceRevision = Volatile.Read(ref runtime.GuidanceRevision);
                 lastDecision = await _planner.PlanAsync(
                     runtime.Request,
                     runtime.Page,
@@ -513,6 +577,12 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     token);
                 await runtime.PauseGate.WaitAsync(token);
                 token.ThrowIfCancellationRequested();
+                if (plannerGuidanceRevision != Volatile.Read(ref runtime.GuidanceRevision))
+                {
+                    runtime.History.Add(
+                        "Discarded a planner decision because newer explicit task guidance arrived before execution.");
+                    continue;
+                }
                 runtime.History.Add(
                     $"Planner ({_planner.LastModel}) evaluated: {Short(lastDecision.Evaluation, 360)}; next goal: {Short(lastDecision.NextGoal, 240)}");
                 CapturePreparedDraft(runtime, lastDecision);
@@ -1084,6 +1154,13 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         runtime.TaskId,
                         runtime.Page.TabId,
                         token);
+                    continue;
+                }
+
+                if (plannerGuidanceRevision != Volatile.Read(ref runtime.GuidanceRevision))
+                {
+                    runtime.History.Add(
+                        "Discarded a pending browser action because newer explicit task guidance superseded it.");
                     continue;
                 }
 
@@ -2419,6 +2496,94 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         return receipt;
     }
 
+    private async Task<bool> EstablishAuthoritativeDestinationAsync(
+        Runtime runtime,
+        string label,
+        string url,
+        string source,
+        CancellationToken token)
+    {
+        if (SameHost(runtime.Page?.Url, url))
+        {
+            runtime.History.Add(
+                $"Verified {source}: the live page is already on {label} ({BrowserAutomationText.RedactUrlForProvider(url)}).");
+            return true;
+        }
+
+        var action = new BrowserPlannerAction
+        {
+            Type = "navigate",
+            Url = url,
+            TargetName = label,
+        };
+        var safety = _safety.EvaluateAction(runtime.Request, action);
+        if (!safety.MayStart)
+        {
+            runtime.History.Add(
+                $"Could not establish {source} safely: {safety.Reason}");
+            return false;
+        }
+
+        SetState(runtime, BrowserTaskState.Executing, $"Opening the requested {label} destination");
+        var receipt = await ExecutePlannerActionAsync(runtime, action, token);
+        runtime.Receipts.Add(receipt);
+        if (ShouldStabilizeProtectedBootstrapNavigation(
+                runtime.InitialTabWasProtectedOrBlank,
+                runtime.BootstrapNavigationStabilized,
+                action.Type,
+                receipt))
+        {
+            runtime.BootstrapNavigationStabilized = true;
+            SetState(runtime, BrowserTaskState.WaitingForPage, "Waiting for the requested website to become ready");
+            await Task.Delay(TimeSpan.FromSeconds(2), token);
+        }
+
+        runtime.Page = await _bridge.ObserveAsync(
+            runtime.TaskId,
+            receipt.TabId ?? runtime.Page.TabId,
+            token);
+        AddControlledTab(runtime, runtime.Page);
+        // A verified navigation may legitimately end on the destination's
+        // sign-in or canonical redirect host. What matters here is that the
+        // exact requested URL—not a fuzzy planner substitute—caused the live
+        // navigation. The planner still receives the fresh redirected page.
+        var established = receipt.Ok
+            && receipt.Navigation
+            && !IsProtectedOrBlankUrl(runtime.Page.Url);
+        if (established)
+        {
+            runtime.History.Add(
+                $"Established {source}: navigation to the exact {label} URL was verified. The live page is {BrowserAutomationText.RedactUrlForProvider(runtime.Page.Url)}; continue there and do not substitute a similar service.");
+        }
+        else
+        {
+            runtime.History.Add(
+                $"Failed to establish {source} ({label}): {Short(receipt.Error, 180)}");
+        }
+        return established;
+    }
+
+    private static void DrainPendingGuidance(Runtime runtime)
+    {
+        while (runtime.PendingGuidance.TryDequeue(out var guidance))
+            runtime.History.Add(guidance);
+    }
+
+    private bool TryTakePendingDestinationCorrection(
+        Runtime runtime,
+        out string label,
+        out string url)
+    {
+        lock (_sync)
+        {
+            label = runtime.PendingDestinationCorrectionLabel;
+            url = runtime.PendingDestinationCorrectionUrl;
+            runtime.PendingDestinationCorrectionLabel = "";
+            runtime.PendingDestinationCorrectionUrl = "";
+            return !string.IsNullOrWhiteSpace(url);
+        }
+    }
+
     internal static bool IsProtectedOrBlankUrl(string url)
     {
         if (string.IsNullOrWhiteSpace(url))
@@ -2859,10 +3024,109 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             return false;
         }
 
+        if (IsExplicitTaskCorrection(text))
+            return true;
+
         return Regex.IsMatch(
             text,
             @"^(?:please )?(?:continue|resume|pause|cancel|stop|wait|do(?: not|n't) submit|i (?:have )?(?:completed|finished|signed in|logged in)|use (?:the )?(?:first|second|third|other|different) (?:result|option)|click (?:the )?(?:first|second|third|other|different) (?:result|option)|try (?:the )?(?:other|different)|keep .{0,120} open|stop before .{0,120})\b",
             RegexOptions.IgnoreCase);
+    }
+
+    internal static bool TryResolveExplicitDestination(
+        string request,
+        out string label,
+        out string url)
+    {
+        label = "";
+        url = "";
+        var text = request ?? "";
+        if (text.Length == 0)
+            return false;
+
+        // Ground only the destination syntactically attached to an explicit
+        // navigation verb. This intentionally avoids fuzzy service matching:
+        // an unrelated current page or a similar product name is not evidence
+        // for substituting a different destination.
+        var matches = Regex.Matches(
+            text,
+            @"\b(?:go\s+to|navigate\s+to|visit|open)\s+(?:the\s+)?(?<destination>[^,;!?]{1,100}?)(?=\s+(?:and|then)\s+(?:search|find|look\s+for|locate|click|press|choose|select|fill|read|inspect|open)\b|[,;!?]|\.\s|$)",
+            RegexOptions.IgnoreCase);
+        foreach (Match match in matches.Cast<Match>().Reverse())
+        {
+            if (JarvisAutomationService.TryResolveKnownWebDestination(
+                    match.Groups["destination"].Value,
+                    out label,
+                    out url))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    internal static bool IsExplicitTaskCorrection(string guidance)
+    {
+        var text = NormalizeControlText(guidance);
+        if (text.Length == 0)
+            return false;
+
+        var correctionSignal = Regex.IsMatch(
+            text,
+            @"^(?:no\b|actually\b|wrong\b|not\s+(?:that|this)\b|i\s+meant\b)|\b(?:instead|rather\s+than)\b|^(?:do\s+not|don't)\b",
+            RegexOptions.IgnoreCase);
+        if (!correctionSignal)
+            return false;
+
+        var taskReference = Regex.IsMatch(
+            text,
+            @"\b(?:website|site|page|tab|result|destination|search|find|click|open|navigate|go\s+to|use|back|that|this)\b",
+            RegexOptions.IgnoreCase);
+        return taskReference
+            || JarvisAutomationService.TryResolveKnownWebDestinationMention(
+                guidance,
+                out _,
+                out _);
+    }
+
+    internal static bool TryResolveTaskCorrectionDestination(
+        string guidance,
+        out string label,
+        out string url)
+    {
+        label = "";
+        url = "";
+        if (!IsExplicitTaskCorrection(guidance))
+            return false;
+
+        // Prefer the positive replacement clause over a negated old target,
+        // e.g. "not that site; use X instead". The resolver itself accepts
+        // only exact known services or explicit domains.
+        var replacements = Regex.Matches(
+            guidance ?? "",
+            @"\b(?:i\s+meant|use|open|go\s+to|navigate\s+to|on)\s+(?:the\s+)?(?<destination>[^,;!?]{1,100}?)(?:\s+instead)?(?=[,;!?]|\.\s|$)",
+            RegexOptions.IgnoreCase);
+        foreach (Match replacement in replacements.Cast<Match>().Reverse())
+        {
+            var candidate = Regex.Replace(
+                replacement.Groups["destination"].Value,
+                @"\s+instead\s*$",
+                "",
+                RegexOptions.IgnoreCase).Trim();
+            if (JarvisAutomationService.TryResolveKnownWebDestinationMention(
+                    candidate,
+                    out label,
+                    out url))
+            {
+                return true;
+            }
+        }
+
+        return JarvisAutomationService.TryResolveKnownWebDestinationMention(
+            guidance,
+            out label,
+            out url);
     }
 
     internal static bool IsRelevantManualAnswer(

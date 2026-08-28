@@ -1548,6 +1548,56 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Theory]
+    [InlineData("Use Browser Automation, go to Devpost and search RevenueCat", "devpost.com")]
+    [InlineData("Navigate to Google Drive, then open the shared folder", "drive.google.com")]
+    [InlineData("Visit https://example.org and inspect the first link", "example.org")]
+    public void Explicit_cross_site_destination_is_grounded_before_page_interaction(
+        string request,
+        string expectedHost)
+    {
+        Assert.True(BrowserAutomationCoordinator.TryResolveExplicitDestination(
+            request,
+            out _,
+            out var url));
+        Assert.Equal(expectedHost, new Uri(url).Host);
+    }
+
+    [Theory]
+    [InlineData("Use Browser Automation, go to Developer Post and search RevenueCat")]
+    [InlineData("Search this current page for RevenueCat")]
+    public void Unknown_or_current_page_text_is_not_fuzzily_substituted_as_a_destination(
+        string request) =>
+        Assert.False(BrowserAutomationCoordinator.TryResolveExplicitDestination(
+            request,
+            out _,
+            out _));
+
+    [Theory]
+    [InlineData("No, I meant devpost.com.", "devpost.com")]
+    [InlineData("Wrong website; use GitHub instead.", "github.com")]
+    public void Explicit_active_task_correction_resolves_the_positive_replacement(
+        string correction,
+        string expectedHost)
+    {
+        Assert.True(BrowserAutomationCoordinator.IsExplicitTaskCorrection(correction));
+        Assert.True(BrowserAutomationCoordinator.TryResolveTaskCorrectionDestination(
+            correction,
+            out _,
+            out var url));
+        Assert.Equal(expectedHost, new Uri(url).Host);
+    }
+
+    [Theory]
+    [InlineData("What do you think about adding a community feature?")]
+    [InlineData("Which approach would you recommend?")]
+    [InlineData("This page gave me an idea for a discussion area.")]
+    public void Unrelated_conversation_does_not_mutate_an_active_browser_task(string utterance)
+    {
+        Assert.False(BrowserAutomationCoordinator.IsExplicitTaskCorrection(utterance));
+        Assert.False(BrowserAutomationCoordinator.IsClearlyTaskRelevantGuidance(utterance));
+    }
+
+    [Theory]
     [InlineData("Switch to the last tab.", false)]
     [InlineData("Go to the second last tab.", false)]
     [InlineData("Switch to the second-to-last tab.", false)]

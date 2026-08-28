@@ -6,6 +6,7 @@ using KeyboardWtf.Staging.Api.Infrastructure;
 using KeyboardWtf.Staging.Api.Services;
 using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Firestore;
+using Grpc.Core;
 using Microsoft.Extensions.Options;
 using System.Net;
 using System.Net.WebSockets;
@@ -2662,6 +2663,25 @@ public sealed class SecurityAndUsageTests
             VertexLiveProxyService.DetermineAccountingDisposition(
                 providerDispatchStarted,
                 totalTokens));
+    }
+
+    [Fact]
+    public void Expected_firestore_cancellation_during_live_rollover_does_not_escape_cleanup()
+    {
+        Assert.True(VertexLiveProxyService.IsExpectedCheckpointEnd(
+            new OperationCanceledException()));
+        Assert.True(VertexLiveProxyService.IsExpectedCheckpointEnd(
+            new RpcException(new Status(StatusCode.Cancelled, "rollover"))));
+        Assert.False(VertexLiveProxyService.IsExpectedCheckpointEnd(
+            new RpcException(new Status(StatusCode.Unavailable, "real failure"))));
+    }
+
+    [Fact]
+    public void Default_live_socket_lifetime_leaves_cloud_edge_cleanup_headroom()
+    {
+        var options = new PaidSystemOptions();
+        Assert.Equal(110, options.LiveSessionMaxSeconds);
+        Assert.InRange(options.LiveSessionMaxSeconds, 30, 119);
     }
 
     [Fact]

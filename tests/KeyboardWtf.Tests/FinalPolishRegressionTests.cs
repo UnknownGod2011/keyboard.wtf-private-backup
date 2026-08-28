@@ -95,6 +95,31 @@ public sealed class FinalPolishRegressionTests : IDisposable
     }
 
     [Theory]
+    [InlineData("Open Account & Billing in keyboard.wtf Settings.", "account-billing")]
+    [InlineData("Show me your hotkey settings.", "hotkeys")]
+    [InlineData("Open Jarvis assistant settings.", "assistant")]
+    [InlineData("Open keyboard.wtf settings.", "")]
+    public void Explicit_keyboard_wtf_settings_requests_resolve_to_one_local_route(
+        string request,
+        string expectedSection)
+    {
+        Assert.True(SettingsSectionRegistry.TryResolveKeyboardWtfNavigationRequest(
+            request,
+            out var section));
+        Assert.Equal(expectedSection, section);
+    }
+
+    [Theory]
+    [InlineData("Open settings.")]
+    [InlineData("Open Windows Settings.")]
+    [InlineData("What do you think about the keyboard.wtf settings design?")]
+    public void Non_local_or_conversational_settings_mentions_do_not_claim_the_privileged_route(
+        string request) =>
+        Assert.False(SettingsSectionRegistry.TryResolveKeyboardWtfNavigationRequest(
+            request,
+            out _));
+
+    [Theory]
     [InlineData("native", true)]
     [InlineData("app", true)]
     [InlineData("application", true)]

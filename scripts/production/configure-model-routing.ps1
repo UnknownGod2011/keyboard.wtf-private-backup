@@ -127,7 +127,7 @@ $live = Route "live_audio" "gemini-live-2.5-flash-native-audio" "us-central1" `
     "" "" ([ordered]@{}) 1 100 0 `
     "GA bounded Live audio route with cumulative high-water accounting."
 $live.maxInputCharacters = 20000
-$live.maxSessionSeconds = 600
+$live.maxSessionSeconds = 110
 $live.reservationWindowCreditMicros = 1000000L
 $live.maxSessionCostCreditMicros = 5000000L
 $live.primaryLiveInputTextUsdMicrosPerMillionTokens = 500000L

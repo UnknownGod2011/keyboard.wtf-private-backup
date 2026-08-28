@@ -847,6 +847,13 @@ public sealed class GeminiLiveConversationService : IDisposable
         try { endedSocket.Dispose(); } catch { }
         MarkTurnCompleted();
         StopPlayback();
+        if (IsActive && _sessionCts is { IsCancellationRequested: false })
+        {
+            KeyboardWtfState.SetUi(
+                VoiceUiPhase.Thinking,
+                "Reconnecting",
+                "Refreshing the secure Live connection...");
+        }
         AppLog.Info(
             $"Jarvis provider session ended; logical session remains active category=" +
             $"{(endedBy is null ? "provider_close" : endedBy.GetType().Name)}");

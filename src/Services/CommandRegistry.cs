@@ -410,6 +410,23 @@ public sealed class CommandRegistry
             return true;
         }
 
+        // A known keyboard.wtf Settings route is a complete local action. Run
+        // it before browser classification and retain its authoritative receipt
+        // so Gemini cannot launch a second browser task for the same turn.
+        if (SettingsSectionRegistry.TryResolveKeyboardWtfNavigationRequest(
+                userTurn,
+                out var settingsSection))
+        {
+            var settingsResult = OpenKeyboardWtfSettings(settingsSection);
+            RecordAuthoritativePreRoute(
+                userTurn,
+                "open_keyboard_wtf_settings",
+                settingsResult);
+            AppLog.Info(
+                $"Local Settings pre-route: section={settingsSection} ok={ToolSucceeded(settingsResult)}");
+            return true;
+        }
+
         if (_browserAutomation != null
             && JarvisAutomationService.TryGetBrowserTabSelection(
                 text,
@@ -1777,7 +1794,7 @@ public sealed class CommandRegistry
                     ? "The exact durable workflow trigger was resolved and executed locally; no alternate planner action was run."
                     : IsDurableMutationTool(receipt.ToolName)
                         ? "The explicit durable change was persisted and read back locally; no alternate planner action was run."
-                        : "The current durable preference was resolved and executed locally; no alternate planner action was run.",
+                        : "The authoritative local capability completed this turn; no alternate planner action was run.",
             };
             _browserPreRouteReceipt = null;
             _browserPreRouteOwnsCurrentTurn = false;

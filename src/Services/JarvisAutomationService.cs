@@ -501,6 +501,106 @@ public sealed class JarvisAutomationService : IDisposable
         NormalizeWords(value) is "keyboard.wtf settings" or "keyboard wtf settings"
             or "jarvis settings" or "your settings";
 
+    internal static bool TryResolveKnownWebDestination(
+        string value,
+        out string label,
+        out string url)
+    {
+        label = "";
+        url = "";
+        var candidate = (value ?? "").Trim().Trim('"', '\'', '.', ',', ';', ':');
+        if (candidate.Length == 0)
+            return false;
+
+        if (TryNormalizeExplicitWebUrl(candidate, out url))
+        {
+            label = candidate;
+            return true;
+        }
+
+        candidate = Regex.Replace(
+            candidate,
+            @"^(?:the\s+)?(?:website|web\s+site|site|webpage|page)\s+|\s+(?:website|web\s+site|site|webpage|page)$",
+            "",
+            RegexOptions.IgnoreCase).Trim();
+        var normalized = NormalizePhraseText(candidate);
+        if (KnownWebApps.TryGetValue(normalized, out url))
+        {
+            label = candidate;
+            return true;
+        }
+
+        var compact = Regex.Replace(normalized, @"[^a-z0-9]", "");
+        var exactCompact = KnownWebApps.FirstOrDefault(entry =>
+            string.Equals(
+                Regex.Replace(NormalizePhraseText(entry.Key), @"[^a-z0-9]", ""),
+                compact,
+                StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(exactCompact.Key))
+        {
+            label = candidate;
+            url = exactCompact.Value;
+            return true;
+        }
+
+        return false;
+    }
+
+    internal static bool TryResolveKnownWebDestinationMention(
+        string value,
+        out string label,
+        out string url)
+    {
+        label = "";
+        url = "";
+        var text = value ?? "";
+        var domainMatches = Regex.Matches(
+            text,
+            @"(?<![\w@])(?:https?://)?(?:www\.)?[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)+(?:/[^\s,;]*)?",
+            RegexOptions.IgnoreCase);
+        if (domainMatches.Count > 0
+            && TryResolveKnownWebDestination(
+                domainMatches[^1].Value,
+                out label,
+                out url))
+        {
+            return true;
+        }
+
+        var normalized = NormalizePhraseText(text);
+        foreach (var entry in KnownWebApps.OrderByDescending(pair => pair.Key.Length))
+        {
+            if (!ContainsPhrase(normalized, entry.Key))
+                continue;
+            label = entry.Key;
+            url = entry.Value;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryNormalizeExplicitWebUrl(string value, out string url)
+    {
+        url = "";
+        var candidate = value.Trim();
+        if (!candidate.Contains('.'))
+            return false;
+        if (!candidate.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            && !candidate.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            candidate = "https://" + candidate;
+        }
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+            || string.IsNullOrWhiteSpace(uri.Host))
+        {
+            return false;
+        }
+        url = uri.ToString();
+        return true;
+    }
+
     private Dictionary<string, object> OpenKnownFolder(string folder)
     {
         var name = NormalizeWords(folder);
