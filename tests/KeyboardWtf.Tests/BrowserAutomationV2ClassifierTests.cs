@@ -64,6 +64,30 @@ public sealed class BrowserAutomationV2ClassifierTests
     }
 
     [Theory]
+    [InlineData("Maybe we could add a community area where users can post recipes.")]
+    [InlineData("Let's brainstorm which of these product ideas would be best.")]
+    [InlineData("What do you think about a discussion feature for this idea?")]
+    [InlineData("The selected text suggests people could publish their own examples.")]
+    public void Brainstorming_and_hypothetical_page_topics_stay_with_normal_jarvis(string request)
+    {
+        var result = _classifier.Classify(request);
+
+        Assert.Equal(BrowserAutomationDecision.SimpleTool, result.Decision);
+    }
+
+    [Theory]
+    [InlineData("Open the discussion tab.")]
+    [InlineData("Go to the community section.")]
+    [InlineData("Search this website for the eligibility criteria.")]
+    [InlineData("Go to this page and find the application link.")]
+    public void Clear_page_navigation_requests_still_use_browser_automation(string request)
+    {
+        var result = _classifier.Classify(request);
+
+        Assert.Equal(BrowserAutomationDecision.BrowserAutomation, result.Decision);
+    }
+
+    [Theory]
     [InlineData("Answer this")]
     [InlineData("Solve these questions")]
     [InlineData("Explain this")]

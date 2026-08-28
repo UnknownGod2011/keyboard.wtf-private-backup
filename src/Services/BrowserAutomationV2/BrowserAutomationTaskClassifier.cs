@@ -24,8 +24,35 @@ public sealed class BrowserAutomationTaskClassifier
         @"^\s*(?:please\s+)?(?:(?:continue|resume)\s+)?(?:click|press|choose|select|unselect|check|uncheck|fill(?:ing)?|type|enter|paste|write|insert|place|put|scroll|dismiss|close\s+(?:the\s+)?(?:popup|banner|modal))\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex DirectInteractionRequest = new(
+        @"^\s*(?:please\s+)?(?:(?:(?:can|could|would|will)\s+you|i\s+(?:need|want|would\s+like)\s+you\s+to|let(?:'s|\s+us))\s+(?:please\s+)?)?(?:open|go\s+to|navigate\s+to|visit|search|find|look\s+for|locate|click|press|choose|select|unselect|check|uncheck|fill|answer|solve|type|enter|paste|copy|read|inspect|summari[sz]e|scroll|dismiss|reload|refresh|send|post|publish|delete|add|play|upload|download|compare|show)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex BrowserTabSelection = new(
+        @"\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last|next|previous|second[- ]to[- ]last|second\s+last|\d+(?:st|nd|rd|th)?)\s+(?:browser\s+)?tab\b|\btab\s+\d+\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // A page-related noun or an interactive-sounding verb inside an idea is
+    // not itself an instruction to operate the browser. This is intentionally
+    // narrow: clear imperative/polite action requests still win below.
+    private static readonly Regex ConversationalProposal = new(
+        @"\b(?:brainstorm(?:ing)?|idea|concept|feature|proposal|what\s+do\s+you\s+think)\b|\b(?:maybe|perhaps)\b|\bwe\s+(?:could|might|should|would)\b|\b(?:users?|people)\s+(?:can|could|might|would)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly Regex PageInteraction = new(
         @"\b(click|press|choose|select|unselect|check|uncheck|fill(?:ing)?|answer(?:ing)?|solv(?:e|ing)|type|enter|paste|copy|summari[sz]e|extract|report|read|inspect|scroll|dismiss|send|post|publish|delete|what is on|close .{0,40}\b(?:popup|banner|modal)|add .{0,80}\bto (?:my |the )?cart|open the (?:first|second|third|oldest|latest|newest|highest|lowest|best)|play the (?:oldest|latest|newest|most recent)|upload|download)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex PageSectionNavigation = new(
+        @"\b(?:open|go\s+to|navigate\s+to|visit|show)\s+(?:the\s+)?[^.!?]{1,80}\b(?:tab|section|panel|menu|area)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex CurrentPageSearch = new(
+        @"\b(?:search|find|look\s+for|locate)\s+(?:(?:on|in|within)\s+)?(?:this|the\s+current|the\s+active)\s+(?:page|site|website|tab)\b|\b(?:search|find|look\s+for|locate)\b.{0,100}\b(?:on|in|within)\s+(?:this|the\s+current|the\s+active)\s+(?:page|site|website|tab)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex DestinationThenInteraction = new(
+        @"\b(?:open|go\s+to|navigate\s+to|visit)\b.{1,140}\b(?:and|then)\b.{0,80}\b(?:search|find|look\s+for|locate|click|press|choose|select|fill|read|inspect|open)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex DocumentMutation = new(
@@ -50,6 +77,10 @@ public sealed class BrowserAutomationTaskClassifier
 
     private static readonly Regex ComparativeResearch = new(
         @"\b(?:find|compare|identify|choose|show)\b.{0,180}\b(?:cheapest|lowest|highest|best|earliest|latest|shortest|fastest|largest|smallest|top|second[- ]largest)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex LiveResearchContext = new(
+        @"\b(?:flight|fare|hotel|ticket|product|price|priced|deal|listing|restaurant|store|shop|result)\w*\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex RankedBrowserInteraction = new(
@@ -106,13 +137,23 @@ public sealed class BrowserAutomationTaskClassifier
                 "A deterministic draft/message capability should prepare this for review without starting browser automation.");
         }
 
+        if (BrowserTabSelection.IsMatch(text))
+        {
+            return Result(
+                BrowserAutomationDecision.SimpleTool,
+                "An exact browser-tab shortcut is sufficient.");
+        }
+
         var current = CurrentContext.IsMatch(text)
             || DirectCurrentControl.IsMatch(text);
         var interaction = PageInteraction.IsMatch(text)
             || CartInteraction.IsMatch(text)
             || DocumentMutation.IsMatch(text)
             || ComparativeResearch.IsMatch(text)
-            || RankedBrowserInteraction.IsMatch(text);
+            || RankedBrowserInteraction.IsMatch(text)
+            || PageSectionNavigation.IsMatch(text)
+            || CurrentPageSearch.IsMatch(text)
+            || DestinationThenInteraction.IsMatch(text);
         if (ExplicitAutomation.IsMatch(text))
             return Result(
                 BrowserAutomationDecision.BrowserAutomation,
@@ -123,6 +164,8 @@ public sealed class BrowserAutomationTaskClassifier
         var selectedContext = ExplicitSelectedContext.IsMatch(text);
         var explicitMutation = HasExplicitPageMutation(text);
         var formOrAssessment = FormOrAssessmentTarget.IsMatch(text);
+        var directActionRequest = DirectCurrentControl.IsMatch(text)
+            || DirectInteractionRequest.IsMatch(text);
 
         if (contentQuestion
             && !explicitMutation
@@ -147,7 +190,21 @@ public sealed class BrowserAutomationTaskClassifier
                 prefersSelectedContent: true);
         }
 
-        if (current && interaction)
+        if (ConversationalProposal.IsMatch(text)
+            && !directActionRequest)
+        {
+            return Result(
+                BrowserAutomationDecision.SimpleTool,
+                "The turn is discussion or brainstorming, not a request to interact with the webpage.",
+                current,
+                prefersSelectedContent: selectedContext);
+        }
+
+        if (current
+            && interaction
+            && (directActionRequest
+                || explicitMutation
+                || Regex.IsMatch(text, @"\bwhat\s+is\s+on\b", RegexOptions.IgnoreCase)))
             return Result(
                 BrowserAutomationDecision.BrowserAutomation,
                 "The outcome depends on the live state of the current page.",
@@ -159,7 +216,10 @@ public sealed class BrowserAutomationTaskClassifier
                 "The request asks Jarvis to interact with a form or assessment rather than only answer selected content.",
                 current);
 
-        if (ComparativeResearch.IsMatch(text))
+        if (ComparativeResearch.IsMatch(text)
+            && (current
+                || WebContext.IsMatch(text)
+                || LiveResearchContext.IsMatch(text)))
             return Result(
                 BrowserAutomationDecision.BrowserAutomation,
                 "The request requires comparing live results and selecting an outcome rather than opening a direct search URL.",
@@ -171,13 +231,27 @@ public sealed class BrowserAutomationTaskClassifier
                 "The request requires navigating live webpage state to choose an ordered result.",
                 current);
 
-        if (interaction && UnambiguouslyInteractive.IsMatch(text))
+        if ((PageSectionNavigation.IsMatch(text)
+                || DestinationThenInteraction.IsMatch(text))
+            && directActionRequest)
+        {
+            return Result(
+                BrowserAutomationDecision.BrowserAutomation,
+                "The request explicitly asks for multi-step page navigation or a live page section.",
+                current);
+        }
+
+        if (interaction
+            && UnambiguouslyInteractive.IsMatch(text)
+            && directActionRequest)
             return Result(
                 BrowserAutomationDecision.BrowserAutomation,
                 "The request requires a grounded interaction with a live webpage control.",
                 current);
 
-        if (interaction && WebContext.IsMatch(text))
+        if (interaction
+            && WebContext.IsMatch(text)
+            && directActionRequest)
             return Result(
                 BrowserAutomationDecision.BrowserAutomation,
                 "The request requires reading or changing live webpage state.",

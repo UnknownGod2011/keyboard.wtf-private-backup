@@ -27,8 +27,9 @@ public sealed class CommandRegistry
         "language with appropriate punctuation and capitalization. Preserve the complete meaning, tone, substantive " +
         "details, names, technical terminology, URLs, numbers, and intentional emphasis or repetition. Do not " +
         "summarize or omit substantive content. Do not make the writing unnecessarily formal. Do not answer the " +
-        "user, explain anything, perform actions, or add commentary. Before returning, silently verify that no " +
-        "meaningless filler, accidental duplicate, abandoned clause, or correction marker remains. Output only the " +
+        "user, explain anything, perform actions, or add commentary. After drafting, perform a separate silent final " +
+        "editorial pass over every sentence. Remove any remaining standalone um, uh, erm, hmm, meaningless filler, " +
+        "accidental duplicate, abandoned clause, or correction marker unless it is intentional quoted content. Output only the " +
         "final text to insert.";
     private readonly KeyboardWtfApp _app;
     private readonly VoiceCaptureService _capture;
@@ -857,6 +858,7 @@ public sealed class CommandRegistry
                 $"Smart Writing stage: operation={operation} stage=audio_polish_completed elapsedMs={polishMs} characters={result?.Length ?? 0}");
             token.ThrowIfCancellationRequested();
             ThrowIfSmartWritingOperationWasReplaced(ownedOperationId, token);
+            result = FinalizeSmartWritingText(result);
             if (string.IsNullOrWhiteSpace(result))
                 throw new InvalidOperationException("Gemini returned no text to insert.");
             KeyboardWtfState.SetTranscript(result);
@@ -919,6 +921,9 @@ public sealed class CommandRegistry
     internal static TimeSpan SmartWritingTimeoutFor(long recordingDurationMs) =>
         TimeSpan.FromSeconds(Math.Clamp(40d + recordingDurationMs / 20_000d, 40d, 55d));
 
+    internal static string FinalizeSmartWritingText(string value) =>
+        SmartWritingFinalEditor.Clean(value);
+
     private async Task HandleSmartWritingTranscriptAsync(string transcript)
     {
         ResetActionCancellation();
@@ -947,10 +952,12 @@ public sealed class CommandRegistry
                 $"Smart Writing stage: operation={operation} stage=polish_completed elapsedMs={polishMs}");
             token.ThrowIfCancellationRequested();
             ThrowIfSmartWritingOperationWasReplaced(ownedOperationId, token);
+            var deliveryText = FinalizeSmartWritingText(
+                string.IsNullOrWhiteSpace(result) ? transcript : result);
             var insertionStarted = Stopwatch.GetTimestamp();
             AppLog.Info($"Smart Writing stage: operation={operation} stage=insertion_started");
             await DeliverTextAsync(
-                string.IsNullOrWhiteSpace(result) ? transcript : result,
+                deliveryText,
                 token,
                 retainFinalTextOnClipboard: true);
             insertionMs = (long)Stopwatch.GetElapsedTime(insertionStarted).TotalMilliseconds;

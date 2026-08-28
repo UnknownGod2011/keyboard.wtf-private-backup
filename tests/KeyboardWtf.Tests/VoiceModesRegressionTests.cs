@@ -20,10 +20,29 @@ public sealed class VoiceModesRegressionTests
         Assert.Contains("discard the abandoned clause", instruction, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("correction markers", instruction, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("natural, grammatically correct written", instruction, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("separate silent final editorial pass", instruction, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Do not summarize", instruction, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("names, technical terminology, URLs, numbers", instruction, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("only the final text", instruction, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Theory]
+    [InlineData(
+        "Uh, I think, um, we should probably launch this next week.",
+        "I think we should probably launch this next week.")]
+    [InlineData(
+        "Erm—this is, hmm, the final draft.",
+        "this is the final draft.")]
+    public void Smart_writing_final_editor_removes_surviving_standalone_hesitations(
+        string modelOutput,
+        string expected) =>
+        Assert.Equal(expected, CommandRegistry.FinalizeSmartWritingText(modelOutput));
+
+    [Theory]
+    [InlineData("She said, \"Um, that was the original quote.\"")]
+    [InlineData("Use https://example.com/uh/reference for the ER workflow.")]
+    public void Smart_writing_final_editor_preserves_quotes_urls_and_abbreviations(string value) =>
+        Assert.Equal(value, CommandRegistry.FinalizeSmartWritingText(value));
 
     [Fact]
     public void Smart_writing_polishing_is_independent_of_the_local_filler_checkbox()

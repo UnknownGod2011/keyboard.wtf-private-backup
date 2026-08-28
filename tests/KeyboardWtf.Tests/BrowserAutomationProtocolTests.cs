@@ -1945,6 +1945,36 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Planner_must_ground_an_explicit_destination_before_using_current_page_controls()
+    {
+        var prompt = BrowserAutomationPlanner.BuildPrompt(
+            "Use browser automation, go to Devpost and search RevenueCat.",
+            new BrowserPageSnapshot
+            {
+                Url = "https://www.youtube.com/",
+                Title = "YouTube",
+                Controls = new[]
+                {
+                    new BrowserControl
+                    {
+                        Id = "search",
+                        Role = "searchbox",
+                        AccessibleName = "Search",
+                        Visible = true,
+                        Enabled = true,
+                        Editable = true,
+                    },
+                },
+            },
+            Array.Empty<string>(),
+            Array.Empty<BrowserControl>());
+
+        Assert.Contains("current page is unrelated", prompt);
+        Assert.Contains("establish that requested destination first", prompt);
+        Assert.Contains("Never use a convenient search box", prompt);
+    }
+
+    [Fact]
     public void Enter_is_grounded_to_the_unique_search_control_for_a_search_goal()
     {
         var action = new BrowserPlannerAction
