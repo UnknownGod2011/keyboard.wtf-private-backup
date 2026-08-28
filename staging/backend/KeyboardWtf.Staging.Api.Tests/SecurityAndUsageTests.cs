@@ -2677,6 +2677,57 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
+    public async Task Live_accounting_already_in_flight_survives_media_session_cancellation()
+    {
+        using var gate = new SemaphoreSlim(1, 1);
+        using var session = new CancellationTokenSource();
+        var started = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var finish = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var accounting = VertexLiveProxyService.RunShutdownSafeAccountingAsync(
+            gate,
+            async accountingToken =>
+            {
+                Assert.False(accountingToken.CanBeCanceled);
+                started.SetResult();
+                await finish.Task;
+                return 17;
+            },
+            session.Token);
+
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        session.Cancel();
+        finish.SetResult();
+
+        Assert.Equal(17, await accounting.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.Equal(1, gate.CurrentCount);
+    }
+
+    [Fact]
+    public async Task Live_accounting_waiting_for_the_gate_still_honors_session_shutdown()
+    {
+        using var gate = new SemaphoreSlim(0, 1);
+        using var session = new CancellationTokenSource();
+        var operationStarted = false;
+        var accounting = VertexLiveProxyService.RunShutdownSafeAccountingAsync(
+            gate,
+            _ =>
+            {
+                operationStarted = true;
+                return Task.CompletedTask;
+            },
+            session.Token);
+
+        session.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => accounting);
+        Assert.False(operationStarted);
+        Assert.Equal(0, gate.CurrentCount);
+    }
+
+    [Fact]
     public void Default_live_socket_lifetime_leaves_cloud_edge_cleanup_headroom()
     {
         var options = new PaidSystemOptions();

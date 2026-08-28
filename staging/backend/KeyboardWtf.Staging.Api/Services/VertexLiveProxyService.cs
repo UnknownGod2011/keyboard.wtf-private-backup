@@ -179,7 +179,7 @@ public sealed class VertexLiveProxyService
                     livePolicy.MaxSessionCostCreditMicros);
                 if (target <= Interlocked.Read(ref reservedCreditMicros))
                     return;
-                var ensured = await RunSerializedAccountingAsync(accountingGate, async () =>
+                var ensured = await RunShutdownSafeAccountingAsync(accountingGate, async accountingToken =>
                 {
                     // Both WebSocket relay directions observe usage. Recheck
                     // after entering the gate so only one rolling-reservation
@@ -190,7 +190,7 @@ public sealed class VertexLiveProxyService
                         caller.UserId,
                         requestId,
                         target,
-                        token);
+                        accountingToken);
                 }, token);
                 Max(ref reservedCreditMicros, ensured);
             }
@@ -589,7 +589,7 @@ public sealed class VertexLiveProxyService
                 pricing,
                 measured,
                 _options.LiveEstimateSafetyBasisPoints);
-            await RunSerializedAccountingAsync(accountingGate, async () =>
+            await RunShutdownSafeAccountingAsync(accountingGate, async accountingToken =>
             {
                 // Checkpoints touch the same reservation/account documents as
                 // rolling budget extensions. Serialize those mutations while
@@ -600,8 +600,45 @@ public sealed class VertexLiveProxyService
                     measured,
                     charge,
                     providerCost,
-                    cancellationToken);
+                    accountingToken);
             }, cancellationToken);
+        }
+    }
+
+    internal static async Task RunShutdownSafeAccountingAsync(
+        SemaphoreSlim gate,
+        Func<CancellationToken, Task> operation,
+        CancellationToken sessionCancellationToken)
+    {
+        await gate.WaitAsync(sessionCancellationToken);
+        try
+        {
+            // Once a durable Firestore accounting transaction has started, a
+            // media-session rollover must not cancel it mid-commit. A cancelled
+            // transaction response is ambiguous (the write may have committed)
+            // and can delay final settlement and Live-slot release. Firestore's
+            // own RPC/transaction deadlines remain the bounded failure policy.
+            await operation(CancellationToken.None);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    internal static async Task<T> RunShutdownSafeAccountingAsync<T>(
+        SemaphoreSlim gate,
+        Func<CancellationToken, Task<T>> operation,
+        CancellationToken sessionCancellationToken)
+    {
+        await gate.WaitAsync(sessionCancellationToken);
+        try
+        {
+            return await operation(CancellationToken.None);
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 
