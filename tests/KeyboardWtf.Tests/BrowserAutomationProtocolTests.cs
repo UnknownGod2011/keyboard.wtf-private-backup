@@ -1587,6 +1587,28 @@ public sealed class BrowserAutomationProtocolTests
         Assert.Equal(expectedHost, new Uri(url).Host);
     }
 
+    [Fact]
+    public void Latest_correction_becomes_the_authoritative_planner_request()
+    {
+        var corrected = BrowserAutomationCoordinator.BuildCorrectedTaskRequest(
+            "Use Browser Automation, go to GitHub and search for voice projects.",
+            "No, I meant devpost.com. Search for voice AI projects there instead.");
+
+        Assert.True(BrowserAutomationCoordinator.TryResolveExplicitDestination(
+            corrected,
+            out _,
+            out var destination));
+        Assert.Equal("devpost.com", new Uri(destination).Host);
+        Assert.True(BrowserAutomationCoordinator.IsNavigationToSupersededDestination(
+            new BrowserPlannerAction { Type = "navigate", Url = "https://github.com/search?q=voice" },
+            "https://devpost.com/",
+            "https://github.com/"));
+        Assert.False(BrowserAutomationCoordinator.IsNavigationToSupersededDestination(
+            new BrowserPlannerAction { Type = "navigate", Url = "https://devpost.com/hackathons" },
+            "https://devpost.com/",
+            "https://github.com/"));
+    }
+
     [Theory]
     [InlineData("What do you think about adding a community feature?")]
     [InlineData("Which approach would you recommend?")]

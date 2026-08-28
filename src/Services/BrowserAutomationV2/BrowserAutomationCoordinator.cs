@@ -23,7 +23,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
     private sealed class Runtime
     {
         public string TaskId { get; init; } = Guid.NewGuid().ToString("N");
-        public string Request { get; init; } = "";
+        public string Request { get; set; } = "";
         public DateTime StartedUtc { get; init; } = DateTime.UtcNow;
         public CancellationTokenSource Cancellation { get; init; } = new();
         public AsyncPauseGate PauseGate { get; } = new();
@@ -62,6 +62,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         public int GuidanceRevision;
         public string PendingDestinationCorrectionLabel { get; set; } = "";
         public string PendingDestinationCorrectionUrl { get; set; } = "";
+        public string CorrectedDestinationUrl { get; set; } = "";
+        public string SupersededDestinationUrl { get; set; } = "";
         public Task Execution { get; set; }
     }
 
@@ -162,12 +164,31 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     ? $"Latest explicit user correction: {guidance.Trim()}"
                     : $"User guidance: {guidance.Trim()}");
             _active.GuidanceRevision++;
+            var previousDestination = "";
+            if (explicitCorrection)
+            {
+                previousDestination = _active.CorrectedDestinationUrl;
+                if (string.IsNullOrWhiteSpace(previousDestination))
+                {
+                    TryResolveExplicitDestination(
+                        _active.Request,
+                        out _,
+                        out previousDestination);
+                }
+                _active.Request = BuildCorrectedTaskRequest(_active.Request, guidance);
+            }
             if (explicitCorrection
                 && TryResolveTaskCorrectionDestination(
                     guidance,
                     out var destinationLabel,
                     out var destinationUrl))
             {
+                if (!string.IsNullOrWhiteSpace(previousDestination)
+                    && !SameHost(previousDestination, destinationUrl))
+                {
+                    _active.SupersededDestinationUrl = previousDestination;
+                }
+                _active.CorrectedDestinationUrl = destinationUrl;
                 _active.PendingDestinationCorrectionLabel = destinationLabel;
                 _active.PendingDestinationCorrectionUrl = destinationUrl;
             }
@@ -1091,6 +1112,19 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                             "The browser remains at the last useful state, but the planner repeatedly tried to discard current progress.");
                         return;
                     }
+                    continue;
+                }
+                if (IsNavigationToSupersededDestination(
+                        lastDecision.Action,
+                        runtime.CorrectedDestinationUrl,
+                        runtime.SupersededDestinationUrl))
+                {
+                    runtime.History.Add(
+                        "Rejected a stale navigation back to the destination superseded by the latest explicit user correction.");
+                    SetState(
+                        runtime,
+                        BrowserTaskState.Planning,
+                        "Keeping the corrected browser destination");
                     continue;
                 }
                 if (TryGetExplicitConstraintConflict(
@@ -3128,6 +3162,33 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             out label,
             out url);
     }
+
+    internal static string BuildCorrectedTaskRequest(
+        string existingRequest,
+        string correction)
+    {
+        var correctedDestination = TryResolveTaskCorrectionDestination(
+            correction,
+            out _,
+            out var destinationUrl)
+            ? $"\nEstablish the corrected destination first: navigate to {destinationUrl}."
+            : "";
+        return BrowserAutomationText.Truncate(
+            $"Earlier task objective (retain only details compatible with the correction): {(existingRequest ?? "").Trim()}\n"
+            + $"Latest explicit user correction (authoritative): {(correction ?? "").Trim()}"
+            + correctedDestination,
+            4000);
+    }
+
+    internal static bool IsNavigationToSupersededDestination(
+        BrowserPlannerAction action,
+        string correctedDestinationUrl,
+        string supersededDestinationUrl) =>
+        action?.Type is "navigate" or "open_tab"
+        && !string.IsNullOrWhiteSpace(correctedDestinationUrl)
+        && !string.IsNullOrWhiteSpace(supersededDestinationUrl)
+        && SameHost(action.Url, supersededDestinationUrl)
+        && !SameHost(action.Url, correctedDestinationUrl);
 
     internal static bool IsRelevantManualAnswer(
         string requestedUserAction,
