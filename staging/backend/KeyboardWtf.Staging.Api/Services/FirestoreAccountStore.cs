@@ -12,6 +12,7 @@ public sealed class FirestoreAccountStore : IAccountStore
     private const int RecentDeviceLimit = 10;
     private const int RecentUsageLimit = 10;
     private const int RecentPurchaseLimit = 5;
+    internal static readonly TimeSpan SettledUsageDetailRetention = TimeSpan.FromDays(30);
     private readonly FirestoreDb _db;
     private readonly IClock _clock;
     private readonly PaidSystemOptions _options;
@@ -134,7 +135,10 @@ public sealed class FirestoreAccountStore : IAccountStore
                 Date(data, "createdAt"),
                 String(data, "platform", "Windows"));
         }).ToArray();
-        var usage = usageTask.Result.Documents.Select(UsageFrom).ToArray();
+        var usage = usageTask.Result.Documents
+            .Where(document => IsUsageDetailVisible(document, _clock.UtcNow))
+            .Select(UsageFrom)
+            .ToArray();
         var stalePurchaseUpdates = new List<Task>();
         var purchases = purchasesTask.Result.Documents.Select(document =>
         {
@@ -192,9 +196,14 @@ public sealed class FirestoreAccountStore : IAccountStore
         }
         var page = await query.Limit(limit + 1).GetSnapshotAsync(cancellationToken);
         var hasMore = page.Count > limit;
-        var visibleDocuments = page.Documents.Take(limit).ToArray();
+        var scannedDocuments = page.Documents.Take(limit).ToArray();
+        var visibleDocuments = scannedDocuments
+            .Where(document => IsUsageDetailVisible(document, _clock.UtcNow))
+            .ToArray();
         var items = visibleDocuments.Select(UsageFrom).ToArray();
-        var nextCursor = hasMore ? visibleDocuments[^1].Id : null;
+        var nextCursor = hasMore && scannedDocuments.Length > 0
+            ? scannedDocuments[^1].Id
+            : null;
         return new UsagePageSnapshot(items, nextCursor);
     }
 
@@ -563,6 +572,7 @@ public sealed class FirestoreAccountStore : IAccountStore
                 availableDelta = released - additionalAvailableCharge;
             }
             var overage = Math.Max(0, charged - reserved);
+            var detailExpiresAt = UsageDetailExpiresAt(account, now);
             var eventId = $"settle_{SafeId(requestId)}";
             transaction.Create(accountRef.Collection("ledger").Document(eventId), LedgerMap(new LedgerEntry(
                 eventId,
@@ -610,6 +620,7 @@ public sealed class FirestoreAccountStore : IAccountStore
                 ["overageCreditMicros"] = overage,
                 ["creditDebtAddedMicros"] = debtAdded,
                 ["createdAt"] = Ts(now),
+                ["detailExpiresAt"] = Ts(detailExpiresAt),
             });
             transaction.Create(idempotencyRef, new Dictionary<string, object>
             {
@@ -2521,6 +2532,28 @@ public sealed class FirestoreAccountStore : IAccountStore
             || cleaned.Any(character => !(char.IsAsciiLetterOrDigit(character) || character is '_' or '-')))
             throw new ArgumentException("The activity type is invalid.", nameof(value));
         return cleaned;
+    }
+
+    internal static DateTimeOffset UsageDetailExpiresAt(
+        IDictionary<string, object> account,
+        DateTimeOffset settledAt)
+    {
+        var cycleEndsAt = Date(account, "cycleEndsAt");
+        var retentionAnchor = cycleEndsAt > settledAt ? cycleEndsAt : settledAt;
+        return retentionAnchor.Add(SettledUsageDetailRetention);
+    }
+
+    internal static bool IsUsageDetailVisible(
+        DocumentSnapshot document,
+        DateTimeOffset now) =>
+        IsUsageDetailVisible(document.ToDictionary(), now);
+
+    internal static bool IsUsageDetailVisible(
+        IDictionary<string, object> data,
+        DateTimeOffset now)
+    {
+        var expiresAt = Date(data, "detailExpiresAt");
+        return expiresAt == DateTimeOffset.UnixEpoch || expiresAt > now;
     }
 
     private static bool IsLiveActivity(string? activityType) =>

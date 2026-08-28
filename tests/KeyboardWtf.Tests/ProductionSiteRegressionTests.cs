@@ -20,6 +20,19 @@ public sealed class ProductionSiteRegressionTests
     }
 
     [Fact]
+    public void Authoritative_usage_categories_have_clear_labels_in_settings_and_account()
+    {
+        var root = FindRepositoryRoot();
+        var settings = File.ReadAllText(Path.Combine(root, "src", "Resources", "web", "settings.html"));
+        var account = File.ReadAllText(Path.Combine(root, "production", "site", "account.js"));
+
+        Assert.Contains("smart_writing: 'Smart Writing'", settings, StringComparison.Ordinal);
+        Assert.Contains("selected_text: 'Selected text'", settings, StringComparison.Ordinal);
+        Assert.Contains("smart_writing: \"Smart Writing\"", account, StringComparison.Ordinal);
+        Assert.Contains("selected_text: \"Selected text\"", account, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Backend_auth_rejection_clears_rendered_account_data()
     {
         var root = FindRepositoryRoot();

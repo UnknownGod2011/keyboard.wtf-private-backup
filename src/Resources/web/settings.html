@@ -460,8 +460,8 @@
     </div>
     <nav id="sidebar-nav">
       <a href="#getting-started" class="paid-only" style="display:none">Getting Started</a>
-      <a href="#account-billing" class="paid-only" style="display:none">Account &amp; Billing</a>
       <a href="#voice-capture">Voice Capture</a>
+      <a href="#account-billing" class="paid-only" style="display:none">Account &amp; Billing</a>
       <a href="#hotkeys">Hotkeys</a>
       <a href="#assistant">Assistant</a>
       <a href="#browser-automation">Browser Automation</a>
@@ -577,7 +577,7 @@
           <input type="checkbox" id="useFillerWordCleaner" onchange="settingChanged()" style="width:18px;height:18px;cursor:pointer">
           Strip filler sounds from transcripts (um, uh, hmm, er, äh)
         </label>
-        <div class="hint">Removes common hesitation sounds. Does not remove real words.</div>
+        <div class="hint">Optional local transcript cleanup for Raw Dictation and other local speech modes. Smart Writing always applies its own Gemini editing.</div>
       </div>
 
       <div class="field">
@@ -1418,8 +1418,13 @@ let paidLastSignInState = 'idle';
 // ── Scroll-spy ──────────────────────────────────────────────────────────────
 (function () {
   const mainEl  = document.getElementById('main-scroll');
-  const navLinks = Array.from(document.querySelectorAll('#sidebar-nav a'));
   const sectionById = new Map(Array.from(document.querySelectorAll('.main section[id]')).map(section => [section.id, section]));
+  const sectionOrder = new Map(Array.from(sectionById.keys()).map((id, index) => [id, index]));
+  const sidebarNav = document.getElementById('sidebar-nav');
+  const navLinks = Array.from(sidebarNav.querySelectorAll('a')).sort((left, right) =>
+    (sectionOrder.get(left.getAttribute('href').slice(1)) ?? Number.MAX_SAFE_INTEGER)
+      - (sectionOrder.get(right.getAttribute('href').slice(1)) ?? Number.MAX_SAFE_INTEGER));
+  navLinks.forEach(link => sidebarNav.appendChild(link));
   const routeAliases = new Map([
     ['general', 'voice-capture'],
     ['account', 'account-billing'],
@@ -2774,6 +2779,7 @@ function formatPaidActivity(activityType) {
   return ({
     fast_text: 'Jarvis command',
     agent_planner: 'Jarvis command',
+    smart_writing: 'Smart Writing',
     selected_text: 'Selected text',
     browser_planner: 'Browser task',
     screen_reasoning: 'Screen reasoning',

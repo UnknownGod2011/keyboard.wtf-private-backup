@@ -117,6 +117,7 @@ public sealed class AiUsageService
             reservationPrompt,
             request.MaxOutputTokens,
             taskCap);
+        var activityType = ResolveActivityType(request.TaskKind, route.Name);
         var reservationStarted = Stopwatch.GetTimestamp();
         var reservation = await _store.ReserveAsync(
             caller,
@@ -129,7 +130,7 @@ public sealed class AiUsageService
             _options.MaxConcurrentRequestsPerUser,
             _options.GlobalDailyCreditMicrosCap,
             cancellationToken,
-            route.Name);
+            activityType);
         var reservationMs = Stopwatch.GetElapsedTime(reservationStarted).TotalMilliseconds;
         if (!reservation.Created)
             throw new InvalidOperationException("This request ID has already been used.");
@@ -339,6 +340,14 @@ public sealed class AiUsageService
         // plausibly help. Authentication/authorization rejections are also
         // non-billable, but retrying them against another model is pointless.
         statusCode is 400 or 404 or 408 or 409 or 429 or 500 or 502 or 503 or 504;
+
+    internal static string ResolveActivityType(string? taskKind, string routeName) =>
+        string.Equals(
+            taskKind?.Trim(),
+            "smart-writing-audio",
+            StringComparison.OrdinalIgnoreCase)
+            ? "smart_writing"
+            : routeName;
 
     internal static bool IsDefinitivelyNonBillable(int statusCode) =>
         // Vertex pricing explicitly states that only successful HTTP 200

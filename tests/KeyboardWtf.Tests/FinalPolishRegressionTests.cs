@@ -31,6 +31,27 @@ public sealed class FinalPolishRegressionTests : IDisposable
     }
 
     [Fact]
+    public void Settings_sidebar_uses_the_same_canonical_order_as_rendered_content()
+    {
+        var root = FindRepositoryRoot();
+        var html = File.ReadAllText(Path.Combine(root, "src", "Resources", "web", "settings.html"));
+        var nav = System.Text.RegularExpressions.Regex.Match(
+            html,
+            "(?s)<nav id=\"sidebar-nav\">(.*?)</nav>").Groups[1].Value;
+        var navIds = System.Text.RegularExpressions.Regex.Matches(nav, "href=\"#([^\"]+)\"")
+            .Select(match => match.Groups[1].Value)
+            .ToArray();
+        var sectionIds = System.Text.RegularExpressions.Regex.Matches(html, "<section id=\"([^\"]+)\"")
+            .Select(match => match.Groups[1].Value)
+            .ToArray();
+
+        Assert.Equal(sectionIds, navIds);
+        Assert.True(Array.IndexOf(navIds, "voice-capture") < Array.IndexOf(navIds, "account-billing"));
+        Assert.Contains("const sectionOrder = new Map(Array.from(sectionById.keys())", html, StringComparison.Ordinal);
+        Assert.Contains("navLinks.forEach(link => sidebarNav.appendChild(link));", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Initial_settings_deep_link_remains_authoritative_while_account_layout_loads()
     {
         var root = FindRepositoryRoot();

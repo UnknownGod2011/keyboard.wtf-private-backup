@@ -109,12 +109,18 @@ credentials, and user page content.
 - Firestore point-in-time recovery is enabled for the default staging database.
 - A daily scheduled Firestore backup is retained for seven days and a weekly
   backup for fourteen weeks when supported by the selected database edition.
-- Financial ledger, purchase, payment-event, reconciliation and audit records
-  have no TTL policy.
-- Before deleting old operational usage details, export the database to an
-  access-controlled Cloud Storage archive and verify the export. Financial and
-  audit records remain online unless a separately reviewed retention policy
-  preserves an immutable archived copy.
+- Financial ledger, account-cycle aggregate, allowance-bucket, reservation,
+  idempotency, purchase, payment-event, reconciliation and audit records have no
+  TTL policy.
+- Only `accounts/{uid}/usage/{requestId}` itemized Recent Usage details carry the
+  `detailExpiresAt` TTL field. New settled details expire thirty days after the
+  later of settlement or the account's current cycle end. Legacy settled details
+  are backfilled conservatively to sixty-one days after settlement. Pending,
+  ambiguous and quarantined operations never receive this field.
+- Removing a settled usage-detail document is display-history cleanup only. The
+  ledger, account cycle total, allowance buckets, daily/global aggregates,
+  reservation settlement and idempotency evidence remain authoritative and
+  online.
 - Quarterly, restore the newest backup into an isolated staging recovery
   project, run `--maintenance-job=invariants`, and record the result. Never test
   restore by overwriting the active database.

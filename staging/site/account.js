@@ -41,6 +41,7 @@ const escape = (value) => String(value ?? "").replace(
 
 const activityLabels = {
   fast_text: "Jarvis command",
+  smart_writing: "Smart Writing",
   selected_text: "Selected text",
   agent_planner: "Jarvis command",
   browser_planner: "Browser task",

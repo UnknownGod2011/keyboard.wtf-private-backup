@@ -26,6 +26,30 @@ public sealed class VoiceModesRegressionTests
     }
 
     [Fact]
+    public void Smart_writing_polishing_is_independent_of_the_local_filler_checkbox()
+    {
+        var root = FindRepositoryRoot();
+        var captureSource = File.ReadAllText(Path.Combine(root, "src", "Services", "VoiceCaptureService.cs"));
+        var commandSource = File.ReadAllText(Path.Combine(root, "src", "Services", "CommandRegistry.cs"));
+        var settingsPage = File.ReadAllText(Path.Combine(root, "src", "Resources", "web", "settings.html"));
+
+        Assert.Contains(
+            "ToggleAudioModeAsync(RecordingMode.VoiceAssistant, handleAudio)",
+            captureSource,
+            StringComparison.Ordinal);
+        Assert.Contains("paidProvider.ReformatAudioAsync(", commandSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("UseFillerWordCleaner", commandSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "Optional local transcript cleanup for Raw Dictation",
+            settingsPage,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Smart Writing always applies its own Gemini editing",
+            settingsPage,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Smart_writing_has_a_bounded_end_to_end_post_transcription_timeout() =>
         Assert.InRange(CommandRegistry.SmartWritingTimeout, TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(40));
 
@@ -141,6 +165,18 @@ public sealed class VoiceModesRegressionTests
         Assert.False(VoiceCaptureService.RecordingModeUsesAiPostProcessing(RecordingMode.Dictate));
         Assert.True(VoiceCaptureService.RecordingModeUsesAiPostProcessing(RecordingMode.VoiceAssistant));
         Assert.True(VoiceCaptureService.RecordingModeUsesAiPostProcessing(RecordingMode.JarvisPreflight));
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "KeyboardWtf.sln")))
+                return directory.FullName;
+            directory = directory.Parent;
+        }
+        throw new DirectoryNotFoundException("Could not find the keyboard.wtf repository root.");
     }
 
     [Theory]

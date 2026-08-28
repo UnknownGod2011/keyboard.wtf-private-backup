@@ -123,6 +123,21 @@ function Ensure-CollectionGroupField {
         -ContentType "application/json" -Body $body)
 }
 
+function Ensure-TtlPolicy {
+    param([string]$CollectionGroup, [string]$Field)
+    $ttlJson = & $gcloud firestore fields ttls list --project=$ProjectId `
+        --database=$Database --collection-group=$CollectionGroup --format=json | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "Reading the $CollectionGroup TTL policy failed." }
+    $policies = @($ttlJson | ConvertFrom-Json | ForEach-Object { $_ })
+    $suffix = "/collectionGroups/$CollectionGroup/fields/$Field"
+    if ($policies | Where-Object { $_.name.EndsWith($suffix, [StringComparison]::Ordinal) }) {
+        return
+    }
+    & $gcloud firestore fields ttls update $Field --project=$ProjectId `
+        --database=$Database --collection-group=$CollectionGroup --enable-ttl --async --quiet | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Enabling the $CollectionGroup.$Field TTL policy failed." }
+}
+
 try {
     Deploy-DenyAllRules
     & $gcloud firestore databases update --project=$ProjectId --database=$Database `
@@ -151,6 +166,7 @@ try {
         Ensure-CollectionGroupField "purchases" $field
     }
     Ensure-CollectionGroupField "reservations" "status"
+    Ensure-TtlPolicy "usage" "detailExpiresAt"
 
     $verifiedScheduleJson = & $gcloud firestore backups schedules list --project=$ProjectId `
         --database=$Database --format=json | Out-String
@@ -162,12 +178,16 @@ try {
     $indexNames = @(& $gcloud firestore indexes composite list --project=$ProjectId `
         --database=$Database --format="value(name)")
     if ($LASTEXITCODE -ne 0) { throw "Reading production composite indexes failed." }
+    $ttlPolicies = @(& $gcloud firestore fields ttls list --project=$ProjectId `
+        --database=$Database --format="value(name)")
+    if ($LASTEXITCODE -ne 0) { throw "Reading production TTL policies failed." }
     [pscustomobject]@{
         ClientRules = "deny-all"
         DeleteProtection = $databaseStatus.deleteProtectionState
         PointInTimeRecovery = $databaseStatus.pointInTimeRecoveryEnablement
         BackupSchedules = $verifiedSchedules.Count
         CompositeIndexes = $indexNames.Count
+        TtlPolicies = $ttlPolicies.Count
     } | ConvertTo-Json
 }
 finally {

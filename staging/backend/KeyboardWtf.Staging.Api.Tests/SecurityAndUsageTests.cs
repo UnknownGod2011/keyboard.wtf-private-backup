@@ -250,6 +250,47 @@ public sealed class SecurityAndUsageTests
         Assert.Equal(expected, ModelRoutingService.ResolveRouteName(taskKind));
 
     [Fact]
+    public void Smart_writing_keeps_selected_text_model_route_but_has_its_own_usage_activity()
+    {
+        Assert.Equal("selected_text", ModelRoutingService.ResolveRouteName("smart-writing-audio"));
+        Assert.Equal(
+            "smart_writing",
+            AiUsageService.ResolveActivityType("smart-writing-audio", "selected_text"));
+        Assert.Equal(
+            "selected_text",
+            AiUsageService.ResolveActivityType("desktop-reformat", "selected_text"));
+    }
+
+    [Fact]
+    public void Settled_usage_detail_retention_starts_after_the_cycle_end_without_hiding_unexpired_rows()
+    {
+        var settledAt = DateTimeOffset.Parse("2026-08-15T10:00:00Z");
+        var cycleEndsAt = DateTimeOffset.Parse("2026-09-01T00:00:00Z");
+        var account = new Dictionary<string, object>
+        {
+            ["cycleEndsAt"] = Timestamp.FromDateTime(cycleEndsAt.UtcDateTime),
+        };
+        var expiresAt = FirestoreAccountStore.UsageDetailExpiresAt(account, settledAt);
+
+        Assert.Equal(cycleEndsAt.AddDays(30), expiresAt);
+        Assert.True(FirestoreAccountStore.IsUsageDetailVisible(
+            new Dictionary<string, object>
+            {
+                ["detailExpiresAt"] = Timestamp.FromDateTime(expiresAt.UtcDateTime),
+            },
+            expiresAt.AddSeconds(-1)));
+        Assert.False(FirestoreAccountStore.IsUsageDetailVisible(
+            new Dictionary<string, object>
+            {
+                ["detailExpiresAt"] = Timestamp.FromDateTime(expiresAt.UtcDateTime),
+            },
+            expiresAt));
+        Assert.True(FirestoreAccountStore.IsUsageDetailVisible(
+            new Dictionary<string, object>(),
+            expiresAt.AddYears(1)));
+    }
+
+    [Fact]
     public void Vertex_global_location_uses_the_global_service_host_and_resource_path()
     {
         var endpoint = VertexAiClient.BuildGenerateContentEndpoint(
@@ -1675,6 +1716,110 @@ public sealed class SecurityAndUsageTests
         {
             await DeleteIntegrationAccountAsync(db, first.UserId);
             await DeleteIntegrationAccountAsync(db, second.UserId);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "FirestoreIntegration")]
+    public async Task Firestore_deleting_expired_settled_usage_detail_cannot_change_authoritative_billing_when_enabled()
+    {
+        var accessToken = Environment.GetEnvironmentVariable("KEYBOARD_WTF_FIRESTORE_TEST_ACCESS_TOKEN");
+        if (string.IsNullOrWhiteSpace(accessToken))
+            return;
+
+        var db = new FirestoreDbBuilder
+        {
+            ProjectId = "keyboard-wtf-staging",
+            Credential = GoogleCredential.FromAccessToken(accessToken),
+        }.Build();
+        var suffix = Guid.NewGuid().ToString("N");
+        var caller = new CallerIdentity(
+            $"integration-retention-{suffix}",
+            $"retention-{suffix}@example.invalid",
+            "Integration Retention",
+            "test");
+        var settledAt = DateTimeOffset.Parse("2026-08-15T10:00:00Z");
+        var cycleEndsAt = DateTimeOffset.Parse("2026-09-01T00:00:00Z");
+        var requestId = $"retention-{suffix}";
+        var idempotencyId = Crypto.Sha256($"usage-settle:{caller.UserId}:{requestId}");
+        var accountRef = db.Collection("accounts").Document(caller.UserId);
+        var store = new FirestoreAccountStore(db, new FixedClock(settledAt), Options.Create(TestOptions()));
+        try
+        {
+            await store.EnsureAccountAsync(caller, CancellationToken.None);
+            await store.GrantCreditsAsync(
+                caller.UserId,
+                1_000_000,
+                "integration retention",
+                $"grant-{suffix}",
+                "integration-test",
+                CancellationToken.None);
+            await accountRef.UpdateAsync(new Dictionary<string, object>
+            {
+                ["planId"] = "monthly_integration",
+                ["subscriptionStatus"] = "active",
+                ["cycleEndsAt"] = Timestamp.FromDateTime(cycleEndsAt.UtcDateTime),
+            });
+            await store.ReserveAsync(
+                caller,
+                requestId,
+                "gemini-test",
+                "test",
+                100_000,
+                500_000,
+                12,
+                1,
+                1_000_000_000,
+                CancellationToken.None,
+                "smart_writing");
+            await store.MarkReservationProviderStartedAsync(caller.UserId, requestId, CancellationToken.None);
+            var usage = new ProviderUsage(40, 10, 0, 0, 25, 25, 75, "retention-test");
+            await store.RecordProviderCompletionAsync(
+                caller.UserId,
+                requestId,
+                usage,
+                20,
+                5,
+                "completed",
+                CancellationToken.None);
+            await store.SettleAsync(
+                caller.UserId,
+                requestId,
+                usage,
+                20,
+                5,
+                "completed",
+                CancellationToken.None);
+
+            var before = await store.GetAccountAsync(caller.UserId, CancellationToken.None);
+            var usageRef = accountRef.Collection("usage").Document(requestId);
+            var detail = await usageRef.GetSnapshotAsync();
+            Assert.True(detail.Exists);
+            Assert.Equal("smart_writing", detail.GetValue<string>("activityType"));
+            Assert.Equal(
+                cycleEndsAt.AddDays(30),
+                new DateTimeOffset(detail.GetValue<Timestamp>("detailExpiresAt").ToDateTime()));
+
+            await usageRef.DeleteAsync();
+
+            var after = await store.GetAccountAsync(caller.UserId, CancellationToken.None);
+            Assert.Equal(before.AvailableCreditMicros, after.AvailableCreditMicros);
+            Assert.Equal(before.ReservedCreditMicros, after.ReservedCreditMicros);
+            Assert.Equal(before.CycleUsageCreditMicros, after.CycleUsageCreditMicros);
+            Assert.Equal(before.PlanId, after.PlanId);
+            Assert.Equal(before.SubscriptionStatus, after.SubscriptionStatus);
+            Assert.Empty(after.RecentUsage);
+            var reservation = await accountRef.Collection("reservations").Document(requestId).GetSnapshotAsync();
+            Assert.Equal("settled", reservation.GetValue<string>("status"));
+            var ledger = await accountRef.Collection("ledger").GetSnapshotAsync();
+            Assert.Contains(ledger.Documents, document =>
+                document.GetValue<string>("type") == LedgerTypes.UsageSettlement
+                && document.GetValue<string>("referenceId") == requestId);
+        }
+        finally
+        {
+            await db.Collection("idempotency").Document(idempotencyId).DeleteAsync();
+            await DeleteIntegrationAccountAsync(db, caller.UserId);
         }
     }
 
