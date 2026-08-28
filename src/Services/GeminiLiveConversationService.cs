@@ -4,6 +4,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using KeyboardWtf.Helpers;
 using KeyboardWtf.Models;
 using KeyboardWtf.Services.PaidStaging;
 using NAudio.Wave;
@@ -1297,6 +1298,7 @@ public sealed class GeminiLiveConversationService : IDisposable
         return
             $"You are {name}, keyboard.wtf's Jarvis mode: a fast spoken assistant for Windows. " +
             ToneInstruction(KeyboardWtfState.AssistantTone) + " " +
+            SpeechPronunciation.LiveAudioInstruction + " " +
             permissionInstruction +
             "You can chat normally, but when the user asks you to do a supported computer action, call the matching tool immediately. " +
             "Treat an unqualified open Settings request as Windows Settings via open_app. When the user explicitly refers to keyboard.wtf, Jarvis, your settings, or one of keyboard.wtf's sections, call open_keyboard_wtf_settings with the matching section so the running local Settings service opens the correct page and port. " +

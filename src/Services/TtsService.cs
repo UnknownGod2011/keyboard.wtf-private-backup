@@ -7,6 +7,7 @@ using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
 using NAudio.Wave;
+using KeyboardWtf.Helpers;
 using KeyboardWtf.Models;
 
 /// <summary>
@@ -104,14 +105,15 @@ internal sealed class TtsService
     public void Speak(string text, string languageOverride = null)
     {
         if (string.IsNullOrWhiteSpace(text)) return;
+        var spokenText = SpeechPronunciation.ForSynthesis(text);
         var lang = string.IsNullOrEmpty(languageOverride) ? KeyboardWtfState.SelectedLanguage : languageOverride;
         switch (ActiveBackend)
         {
             case TtsBackend.Piper:
-                PiperSpeak(text, lang);
+                PiperSpeak(spokenText, lang);
                 break;
             case TtsBackend.Sapi:
-                SapiSpeak(text, lang);
+                SapiSpeak(spokenText, lang);
                 break;
             default:
                 AppLog.Warning("TTS: no backend available");
