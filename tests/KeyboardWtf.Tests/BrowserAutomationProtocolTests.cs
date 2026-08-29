@@ -564,6 +564,23 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Paid_planner_retries_only_one_malformed_structured_response()
+    {
+        Assert.True(BrowserAutomationPlanner.ShouldRetryMalformedPaidPlan(
+            new System.Text.Json.JsonException("truncated"),
+            attempt: 1));
+        Assert.True(BrowserAutomationPlanner.ShouldRetryMalformedPaidPlan(
+            new InvalidDataException("invalid action"),
+            attempt: 1));
+        Assert.False(BrowserAutomationPlanner.ShouldRetryMalformedPaidPlan(
+            new System.Text.Json.JsonException("truncated"),
+            attempt: 2));
+        Assert.False(BrowserAutomationPlanner.ShouldRetryMalformedPaidPlan(
+            new HttpRequestException("provider unavailable"),
+            attempt: 1));
+    }
+
+    [Fact]
     public void Context_free_calendar_day_is_rejected_for_an_explicit_date()
     {
         var action = new BrowserPlannerAction

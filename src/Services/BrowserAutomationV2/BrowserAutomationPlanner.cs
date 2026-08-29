@@ -224,9 +224,31 @@ public sealed class BrowserAutomationPlanner : IDisposable
             var rankedPaid = _ranker.Rank(request, page.Controls, 110);
             var paidPrompt = BuildPrompt(request, page, history, rankedPaid);
             _lastModel = "vertex-cloud";
-            var paidDecision = await SendPaidStructuredAsync(paidPrompt, null, token);
-            ValidateDecision(paidDecision);
-            return paidDecision;
+            Exception malformedResponse = null;
+            for (var attempt = 1; attempt <= 2; attempt++)
+            {
+                try
+                {
+                    var paidDecision = await SendPaidStructuredAsync(
+                        paidPrompt,
+                        null,
+                        token);
+                    ValidateDecision(paidDecision);
+                    return paidDecision;
+                }
+                catch (Exception ex)
+                    when (ShouldRetryMalformedPaidPlan(ex, attempt))
+                {
+                    malformedResponse = ex;
+                    AppLog.Warning(
+                        ex,
+                        "Paid browser planner returned malformed structured output; retrying once within the same task");
+                }
+            }
+
+            throw malformedResponse
+                ?? new InvalidDataException(
+                    "Cloud AI returned invalid browser planner output.");
         }
         if (string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey))
             throw new InvalidOperationException("A Gemini API key is required for smart browser automation.");
@@ -259,6 +281,12 @@ public sealed class BrowserAutomationPlanner : IDisposable
 
         throw lastError ?? new InvalidOperationException("No healthy Gemini browser planner is available.");
     }
+
+    internal static bool ShouldRetryMalformedPaidPlan(
+        Exception error,
+        int attempt) =>
+        attempt < 2
+        && error is JsonException or InvalidDataException;
 
     public async Task<BrowserPlannerDecision> PlanWithVisionAsync(
         string request,
