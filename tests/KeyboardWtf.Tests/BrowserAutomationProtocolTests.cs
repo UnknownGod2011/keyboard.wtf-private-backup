@@ -428,6 +428,21 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Child_action_deadline_is_not_the_authoritative_five_minute_task_deadline()
+    {
+        // Reproduces the installed path where a navigation killed the old
+        // content script before its command acknowledgement returned at the
+        // per-command boundary, while the current task timer was still live.
+        Assert.True(BrowserAutomationCoordinator.IsChildOperationCancellation(
+            authoritativeTaskCancellationRequested: false));
+
+        // The real task deadline (or an explicit cancellation) remains
+        // authoritative and must not be recovered as a child timeout.
+        Assert.False(BrowserAutomationCoordinator.IsChildOperationCancellation(
+            authoritativeTaskCancellationRequested: true));
+    }
+
+    [Fact]
     public void Context_free_calendar_day_is_rejected_for_an_explicit_date()
     {
         var action = new BrowserPlannerAction

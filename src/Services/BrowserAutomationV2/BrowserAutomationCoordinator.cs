@@ -1308,7 +1308,42 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     return;
                 }
                 runtime.ConsecutiveRejectedStrategies = 0;
-                var receipt = await ExecutePlannerActionAsync(runtime, lastDecision.Action, token);
+                BrowserActionReceipt receipt;
+                try
+                {
+                    receipt = await ExecutePlannerActionAsync(
+                        runtime,
+                        lastDecision.Action,
+                        token);
+                }
+                catch (OperationCanceledException)
+                    when (IsChildOperationCancellation(token.IsCancellationRequested))
+                {
+                    // The Helper gives each command its own bounded acknowledgement
+                    // window. A page action can successfully navigate while its old
+                    // content script disappears before returning that acknowledgement.
+                    // That child deadline is not the task's five-minute deadline. Read
+                    // the authoritative tab again and let the same task continue from
+                    // whatever state Chrome actually reached.
+                    runtime.History.Add(
+                        "A browser action acknowledgement expired before the task deadline. "
+                        + "Refreshing the authoritative live tab before deciding whether the action progressed.");
+                    SetState(
+                        runtime,
+                        BrowserTaskState.WaitingForPage,
+                        "Reconciling the live page after a lost action acknowledgement");
+                    if (!await TryReconcileChildOperationCancellationAsync(
+                            runtime,
+                            token))
+                    {
+                        Fail(
+                            runtime,
+                            BrowserAutomationOutcome.Failed,
+                            "A Chrome Helper action acknowledgement timed out, and the live tab could not be read back safely.");
+                        return;
+                    }
+                    continue;
+                }
                 if (InFlightResultWasSuperseded(
                         plannerCorrectionRevision,
                         Volatile.Read(ref runtime.CorrectionRevision)))
@@ -1461,6 +1496,15 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 BrowserAutomationOutcome.Blocked,
                 "The task reached its bounded step limit without verified completion.");
         }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            Fail(
+                runtime,
+                BrowserAutomationOutcome.Failed,
+                "A bounded browser sub-operation was interrupted before its result could be confirmed. Chrome and its tabs were left open.");
+            AppLog.Warning(
+                $"Browser sub-operation was interrupted independently of the task deadline: task={runtime.TaskId} elapsedMs={(DateTime.UtcNow - runtime.StartedUtc).TotalMilliseconds:0}");
+        }
         catch (OperationCanceledException)
         {
             if (string.IsNullOrWhiteSpace(runtime.CancellationReason))
@@ -1468,8 +1512,9 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 Fail(
                     runtime,
                     BrowserAutomationOutcome.Failed,
-                    "The browser task reached its five-minute safety timeout. Chrome and its tabs were left open.");
-                AppLog.Warning($"Browser automation timed out: task={runtime.TaskId}");
+                    $"The browser task reached its {MaximumTaskRuntime.TotalMinutes:0}-minute safety timeout. Chrome and its tabs were left open.");
+                AppLog.Warning(
+                    $"Browser automation timed out: task={runtime.TaskId} elapsedMs={(DateTime.UtcNow - runtime.StartedUtc).TotalMilliseconds:0}");
             }
             else
             {
@@ -2592,6 +2637,46 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             token);
         AttachExpectedState(receipt, action);
         return receipt;
+    }
+
+    internal static bool IsChildOperationCancellation(
+        bool authoritativeTaskCancellationRequested) =>
+        !authoritativeTaskCancellationRequested;
+
+    private async Task<bool> TryReconcileChildOperationCancellationAsync(
+        Runtime runtime,
+        CancellationToken taskToken)
+    {
+        try
+        {
+            taskToken.ThrowIfCancellationRequested();
+            var refreshed = await _bridge.ObserveAsync(
+                runtime.TaskId,
+                runtime.Page.TabId,
+                taskToken);
+            var previousUrl = runtime.Page.Url;
+            var previousFingerprint = runtime.Page.Fingerprint;
+            runtime.Page = refreshed;
+            AddControlledTab(runtime, refreshed);
+            runtime.History.Add(
+                !SameLivePage(previousUrl, refreshed.Url)
+                || !string.Equals(
+                    previousFingerprint,
+                    refreshed.Fingerprint,
+                    StringComparison.Ordinal)
+                    ? $"The live read-back recovered browser progress at {refreshed.Url}."
+                    : "The live read-back found the same page; the planner may choose a different bounded strategy.");
+            return true;
+        }
+        catch (OperationCanceledException)
+            when (IsChildOperationCancellation(taskToken.IsCancellationRequested))
+        {
+            return false;
+        }
+        catch (TimeoutException)
+        {
+            return false;
+        }
     }
 
     private async Task<BrowserActionReceipt> PreserveProgressAfterUnexpectedNavigationAsync(
