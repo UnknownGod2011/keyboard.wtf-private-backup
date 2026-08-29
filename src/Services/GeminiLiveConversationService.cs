@@ -22,6 +22,7 @@ public sealed class GeminiLiveConversationService : IDisposable
     internal static readonly TimeSpan PaidPhysicalSessionSoftTarget = TimeSpan.FromMinutes(9.5);
     internal static readonly TimeSpan ReconnectUiDelay = TimeSpan.FromMilliseconds(1500);
     private static readonly TimeSpan SafeRolloverQuietPeriod = TimeSpan.FromMilliseconds(300);
+    private static readonly TimeSpan PhysicalShutdownWorkerTimeout = TimeSpan.FromSeconds(3);
     internal static readonly TimeSpan PlaybackBufferDuration = TimeSpan.FromSeconds(45);
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly SemaphoreSlim _audioSendLock = new(1, 1);
@@ -352,11 +353,27 @@ public sealed class GeminiLiveConversationService : IDisposable
             if (!hadLogicalSession)
                 return;
 
+            var expectedSession = _sessionCts;
+            var socket = _socket;
+            Task receiveTask;
+            Task activationTask;
+            Task softRolloverTask;
+            lock (_paidActivationLock)
+            {
+                receiveTask = _receiveTask;
+                activationTask = _paidActivationTask;
+                softRolloverTask = _paidSoftRolloverTask;
+                // Stop new audio immediately while retaining the worker task
+                // references needed to await this physical session's cleanup.
+                _paidLiveReady = false;
+                _suppressPaidActivationAudio = false;
+                _paidActivationAudio.Clear();
+            }
+
             // User stop is locally authoritative. Release microphone, playback,
             // reconnect workers, and the visible session before waiting for any
             // secondary browser-task cleanup.
-            _sessionCts?.Cancel();
-            ResetPaidActivation();
+            expectedSession?.Cancel();
             ResetConversationContext();
             _toolAttemptGuard.Reset();
             MarkTurnCompleted();
@@ -369,8 +386,8 @@ public sealed class GeminiLiveConversationService : IDisposable
                 _notifications.Info("Jarvis mode", "Conversation ended.");
             }
 
-            var socket = _socket;
             _socket = null;
+            var physicalShutdownStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             if (socket != null)
             {
                 try
@@ -390,6 +407,19 @@ public sealed class GeminiLiveConversationService : IDisposable
                 }
                 socket.Dispose();
             }
+
+            // Cancellation is not physical-session completion. Wait boundedly
+            // for the receive and rollover workers that own this exact socket,
+            // so a subsequent hotkey start cannot race stale cleanup or leave
+            // the backend slot/accounting lifecycle behind the visible stop.
+            await AwaitPhysicalShutdownWorkerAsync(receiveTask, "receive");
+            await AwaitPhysicalShutdownWorkerAsync(softRolloverTask, "soft-rollover");
+            await AwaitPhysicalShutdownWorkerAsync(activationTask, "activation");
+            ResetPaidActivation();
+            AppLog.Info(
+                $"Jarvis physical shutdown completed: logicalSession={_logicalSessionId} " +
+                $"hadProviderSocket={hadProviderSocket} elapsedMs=" +
+                $"{(long)System.Diagnostics.Stopwatch.GetElapsedTime(physicalShutdownStarted).TotalMilliseconds}");
 
             if (_sessionEndingObserver != null)
             {
@@ -581,6 +611,29 @@ public sealed class GeminiLiveConversationService : IDisposable
         }
     }
 
+    private static async Task AwaitPhysicalShutdownWorkerAsync(Task worker, string name)
+    {
+        if (worker is null)
+            return;
+
+        try
+        {
+            await worker.WaitAsync(PhysicalShutdownWorkerTimeout);
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected when the logical-session cancellation owns this worker.
+        }
+        catch (TimeoutException)
+        {
+            AppLog.Warning($"Jarvis {name} worker did not finish within the bounded shutdown wait.");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning(ex, $"Jarvis {name} worker ended during shutdown");
+        }
+    }
+
     internal static bool ShouldRefreshAccountAfterStop(
         bool usesPaidBackend,
         bool signedIn,
@@ -758,12 +811,19 @@ public sealed class GeminiLiveConversationService : IDisposable
             var firstSignal = await Task.WhenAny(
                 softTarget,
                 diagnostics.GoAway.Task);
-            var providerRequestedHandoff = firstSignal != softTarget;
+            var rolloverReason = ResolvePaidRolloverSignal(
+                token.IsCancellationRequested,
+                ReferenceEquals(_sessionCts, expectedSession),
+                ReferenceEquals(_socket, socket),
+                softTarget.IsCompletedSuccessfully,
+                diagnostics.GoAway.Task.IsCompletedSuccessfully);
+            if (rolloverReason is null)
+                return;
+            var providerRequestedHandoff = rolloverReason == "provider_go_away";
 
             AppLog.Info(
                 $"Jarvis Live rollover pending: logicalSession={diagnostics.LogicalSessionId} " +
-                $"physicalSocket={diagnostics.Sequence} reason=" +
-                $"{(providerRequestedHandoff ? "provider_go_away" : "soft_age_target")}");
+                $"physicalSocket={diagnostics.Sequence} reason={rolloverReason}");
 
             while (ReferenceEquals(_sessionCts, expectedSession)
                 && !token.IsCancellationRequested
@@ -808,6 +868,22 @@ public sealed class GeminiLiveConversationService : IDisposable
                 $"Jarvis safe rollover monitor ended: logicalSession={diagnostics.LogicalSessionId} " +
                 $"physicalSocket={diagnostics.Sequence}");
         }
+    }
+
+    internal static string ResolvePaidRolloverSignal(
+        bool cancellationRequested,
+        bool expectedSessionIsCurrent,
+        bool expectedSocketIsCurrent,
+        bool softTargetCompletedSuccessfully,
+        bool providerGoAwayCompletedSuccessfully)
+    {
+        if (cancellationRequested
+            || !expectedSessionIsCurrent
+            || !expectedSocketIsCurrent)
+            return null;
+        if (providerGoAwayCompletedSuccessfully)
+            return "provider_go_away";
+        return softTargetCompletedSuccessfully ? "soft_age_target" : null;
     }
 
     private async Task BeginSequentialPaidRolloverAsync(

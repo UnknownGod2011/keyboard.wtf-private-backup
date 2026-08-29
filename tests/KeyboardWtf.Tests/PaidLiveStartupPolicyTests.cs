@@ -75,6 +75,30 @@ public sealed class PaidLiveStartupPolicyTests
         Assert.False(GeminiLiveConversationService.IsSafePhysicalRollover(false, 0, 0));
     }
 
+    [Theory]
+    [InlineData(true, true, true, false, false, null)]
+    [InlineData(false, false, true, true, false, null)]
+    [InlineData(false, true, false, true, false, null)]
+    [InlineData(false, true, true, false, false, null)]
+    [InlineData(false, true, true, true, false, "soft_age_target")]
+    [InlineData(false, true, true, false, true, "provider_go_away")]
+    [InlineData(false, true, true, true, true, "provider_go_away")]
+    public void Cancelled_or_stale_rollover_signal_cannot_mark_handoff_pending(
+        bool cancellationRequested,
+        bool expectedSessionIsCurrent,
+        bool expectedSocketIsCurrent,
+        bool softTargetCompletedSuccessfully,
+        bool providerGoAwayCompletedSuccessfully,
+        string expected) =>
+        Assert.Equal(
+            expected,
+            GeminiLiveConversationService.ResolvePaidRolloverSignal(
+                cancellationRequested,
+                expectedSessionIsCurrent,
+                expectedSocketIsCurrent,
+                softTargetCompletedSuccessfully,
+                providerGoAwayCompletedSuccessfully));
+
     [Fact]
     public void Session_resumption_handle_is_bounded_and_omitted_for_a_new_logical_session()
     {
