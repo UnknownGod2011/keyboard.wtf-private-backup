@@ -324,6 +324,64 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Search_prerequisite_is_not_repeated_after_it_reaches_the_verified_target_page()
+    {
+        var page = new BrowserPageSnapshot
+        {
+            Url = "https://example.test/articles/ada-lovelace",
+            Title = "Ada Lovelace",
+        };
+        var receipts = new BrowserActionReceipt[]
+        {
+            new()
+            {
+                Ok = true,
+                Action = "type",
+                TargetRole = "searchbox",
+                TargetName = "Search",
+                ExpectedValue = "Ada Lovelace",
+                ValueMatches = true,
+            },
+            new()
+            {
+                Ok = true,
+                Action = "click",
+                TargetRole = "link",
+                TargetName = "Ada Lovelace — mathematician",
+                Navigation = true,
+                AfterUrl = "https://example.test/articles/ada-lovelace",
+            },
+        };
+
+        Assert.True(BrowserAutomationCoordinator.TryGetSatisfiedSearchPrerequisite(
+            page,
+            new BrowserPlannerAction
+            {
+                Type = "press_key",
+                TargetRole = "searchbox",
+                TargetName = "Search this site",
+                Key = "Enter",
+            },
+            "Submit the search query for Ada Lovelace.",
+            receipts,
+            out var reason));
+        Assert.Contains("already led", reason, StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(BrowserAutomationCoordinator.TryGetSatisfiedSearchPrerequisite(
+            page,
+            new BrowserPlannerAction
+            {
+                Type = "type",
+                TargetRole = "searchbox",
+                TargetName = "Search this site",
+                Text = "Analytical Engine",
+            },
+            "Search this site for Analytical Engine.",
+            receipts,
+            out _));
+    }
+
+    [Fact]
     public void Context_free_calendar_day_is_rejected_for_an_explicit_date()
     {
         var action = new BrowserPlannerAction

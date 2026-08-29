@@ -630,6 +630,37 @@ public sealed class BrowserAutomationVerifierTests
         Assert.Contains("discarded", result.Error, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void Grounded_final_information_outranks_an_obsolete_url_regression_receipt()
+    {
+        var result = _verifier.VerifyTerminal(
+            "Open the requested article and find the subject's date of birth.",
+            new BrowserPlannerDecision
+            {
+                Done = true,
+                ResultSummary = "The subject's date of birth is 10 December 1815.",
+            },
+            new BrowserPageSnapshot
+            {
+                Url = "https://example.test/articles/subject",
+                Title = "Subject",
+                PageText = "The subject was born on 10 December 1815.",
+            },
+            new[]
+            {
+                new BrowserActionReceipt
+                {
+                    Ok = true,
+                    Action = "click",
+                    Navigation = true,
+                    BeforeUrl = "https://example.test/search?query=subject",
+                    AfterUrl = "https://example.test/articles/subject?from=search",
+                },
+            });
+
+        Assert.True(result.Verified);
+    }
+
     private static BrowserActionReceipt Changed(
         string action,
         string targetId,

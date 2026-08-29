@@ -71,8 +71,12 @@ public sealed class BrowserAutomationVerifier
         IReadOnlyList<BrowserActionReceipt> receipts)
     {
         var text = IntentText(request);
+        var groundedInformationResult = RequestsGroundedInformation(text)
+            && !string.IsNullOrWhiteSpace(decision.ResultSummary)
+            && HasGroundedResultEvidence(page, decision.ResultSummary);
 
-        if (!RequestAllowsNavigationRegression(text)
+        if (!groundedInformationResult
+            && !RequestAllowsNavigationRegression(text)
             && receipts.Any(receipt =>
                 receipt?.Ok == true
                 && !receipt.Stale
@@ -213,8 +217,7 @@ public sealed class BrowserAutomationVerifier
 
         if (RequestsGroundedInformation(text))
         {
-            return !string.IsNullOrWhiteSpace(decision.ResultSummary)
-                && HasGroundedResultEvidence(page, decision.ResultSummary)
+            return groundedInformationResult
                     ? Passed($"Result is grounded in the final live page ({page.PageText.Length} characters observed).")
                     : Failed("The reported result is not supported by the final live page.");
         }
@@ -613,7 +616,7 @@ public sealed class BrowserAutomationVerifier
         return match.Success ? match.Groups[1].Value.Trim() : "";
     }
 
-    private static bool ContainsMeaningfulTokens(
+    internal static bool ContainsMeaningfulTokens(
         string observed,
         string expected,
         int minimumMatches)

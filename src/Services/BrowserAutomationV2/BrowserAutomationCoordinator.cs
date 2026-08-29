@@ -1038,6 +1038,31 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 var groundedControl = GroundActionIdentity(
                     runtime.Page,
                     lastDecision.Action);
+                if (TryGetSatisfiedSearchPrerequisite(
+                    runtime.Page,
+                    lastDecision.Action,
+                    lastDecision.NextGoal,
+                    runtime.Receipts,
+                    out var satisfiedSearchPrerequisite))
+                {
+                    runtime.ConsecutiveRejectedStrategies++;
+                    runtime.History.Add(
+                        $"Stale search prerequisite rejected: {satisfiedSearchPrerequisite} "
+                        + "Inspect the current progressed page and complete the remaining user goal without repeating the old search.");
+                    SetState(
+                        runtime,
+                        BrowserTaskState.Planning,
+                        "Preserving the verified search result page");
+                    if (runtime.ConsecutiveRejectedStrategies >= 3)
+                    {
+                        Fail(
+                            runtime,
+                            BrowserAutomationOutcome.Partial,
+                            "The browser remains on the verified result page, but the planner repeatedly tried to rerun an already completed search prerequisite.");
+                        return;
+                    }
+                    continue;
+                }
                 if (TryGetMissingRequiredDate(
                     BuildUserConstraintContext(runtime),
                     lastDecision.NextGoal,
@@ -3156,6 +3181,122 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         reason =
             "The proposed same-site navigation removes path/query state from the current page.";
         return true;
+    }
+
+    internal static bool TryGetSatisfiedSearchPrerequisite(
+        BrowserPageSnapshot page,
+        BrowserPlannerAction action,
+        string immediateGoal,
+        IReadOnlyList<BrowserActionReceipt> receipts,
+        out string reason)
+    {
+        reason = "";
+        if (page == null
+            || action == null
+            || !TargetsSearchControl(action)
+            || receipts == null
+            || receipts.Count == 0)
+        {
+            return false;
+        }
+
+        var priorSearchIndex = -1;
+        BrowserActionReceipt priorSearch = null;
+        for (var index = receipts.Count - 1; index >= 0; index--)
+        {
+            var candidate = receipts[index];
+            if (candidate?.Ok == true
+                && !candidate.Stale
+                && candidate.Action is "type" or "paste"
+                && TargetsSearchControl(candidate)
+                && !string.IsNullOrWhiteSpace(candidate.ExpectedValue))
+            {
+                priorSearchIndex = index;
+                priorSearch = candidate;
+                break;
+            }
+        }
+
+        if (priorSearch == null)
+            return false;
+
+        var reachedRequestedResult = false;
+        for (var index = priorSearchIndex + 1; index < receipts.Count; index++)
+        {
+            var candidate = receipts[index];
+            if (candidate?.Ok != true
+                || candidate.Stale
+                || !candidate.Navigation
+                || !SameLivePage(candidate.AfterUrl, page.Url))
+            {
+                continue;
+            }
+
+            reachedRequestedResult = BrowserAutomationVerifier.ContainsMeaningfulTokens(
+                    page.Title,
+                    priorSearch.ExpectedValue,
+                    minimumMatches: 2)
+                || BrowserAutomationVerifier.ContainsMeaningfulTokens(
+                    candidate.TargetName,
+                    priorSearch.ExpectedValue,
+                    minimumMatches: 2);
+            if (reachedRequestedResult)
+                break;
+        }
+
+        if (!reachedRequestedResult)
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(action.Text)
+            && !BrowserAutomationVerifier.ContainsMeaningfulTokens(
+                string.Join(" ", action.Text, immediateGoal),
+                priorSearch.ExpectedValue,
+                minimumMatches: 2))
+        {
+            // A new query is a new requested browser action, not the stale
+            // prerequisite that led to the current verified result page.
+            return false;
+        }
+
+        reason =
+            "the same search already led to the current verified target page; submitting it again would discard useful progress.";
+        return true;
+    }
+
+    private static bool TargetsSearchControl(BrowserPlannerAction action) =>
+        action != null
+        && action.Type is "type" or "paste" or "press_key" or "click"
+        && (string.Equals(
+                action.TargetRole,
+                "searchbox",
+                StringComparison.OrdinalIgnoreCase)
+            || (action.TargetName ?? "").Contains(
+                "search",
+                StringComparison.OrdinalIgnoreCase));
+
+    private static bool TargetsSearchControl(BrowserActionReceipt receipt) =>
+        receipt != null
+        && (string.Equals(
+                receipt.TargetRole,
+                "searchbox",
+                StringComparison.OrdinalIgnoreCase)
+            || (receipt.TargetName ?? "").Contains(
+                "search",
+                StringComparison.OrdinalIgnoreCase));
+
+    private static bool SameLivePage(string firstUrl, string secondUrl)
+    {
+        if (!Uri.TryCreate(firstUrl, UriKind.Absolute, out var first)
+            || !Uri.TryCreate(secondUrl, UriKind.Absolute, out var second))
+        {
+            return false;
+        }
+
+        return first.Host.Equals(second.Host, StringComparison.OrdinalIgnoreCase)
+            && first.AbsolutePath.TrimEnd('/').Equals(
+                second.AbsolutePath.TrimEnd('/'),
+                StringComparison.OrdinalIgnoreCase)
+            && first.Query.Equals(second.Query, StringComparison.OrdinalIgnoreCase);
     }
 
     internal static bool IsClearlyTaskRelevantGuidance(string guidance)
