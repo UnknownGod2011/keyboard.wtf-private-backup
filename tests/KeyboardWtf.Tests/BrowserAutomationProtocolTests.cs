@@ -520,6 +520,50 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Navigation_observed_during_planning_becomes_task_scoped_progress()
+    {
+        var receipt = BrowserAutomationCoordinator.CreateObservedNavigationReceipt(
+            "task-1",
+            new BrowserPageSnapshot
+            {
+                WindowId = 7,
+                TabId = 42,
+                Url = "https://example.test/search?q=grace",
+                Title = "Search",
+                Fingerprint = "before",
+            },
+            new BrowserPageSnapshot
+            {
+                WindowId = 7,
+                TabId = 42,
+                Url = "https://example.test/articles/grace-hopper",
+                Title = "Grace Hopper",
+                Fingerprint = "after",
+                GraphVersion = 9,
+                DomEpoch = "epoch-2",
+            });
+
+        Assert.NotNull(receipt);
+        Assert.True(receipt.Ok);
+        Assert.True(receipt.Navigation);
+        Assert.Equal("navigate", receipt.Action);
+        Assert.Equal("Grace Hopper", receipt.TargetName);
+        Assert.Equal(42, receipt.TabId);
+        Assert.Null(BrowserAutomationCoordinator.CreateObservedNavigationReceipt(
+            "task-1",
+            new BrowserPageSnapshot
+            {
+                TabId = 42,
+                Url = "https://example.test/articles/grace-hopper",
+            },
+            new BrowserPageSnapshot
+            {
+                TabId = 42,
+                Url = "https://example.test/",
+            }));
+    }
+
+    [Fact]
     public void Context_free_calendar_day_is_rejected_for_an_explicit_date()
     {
         var action = new BrowserPlannerAction

@@ -634,6 +634,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         runtime.Page,
                         _bridge.Status))
                 {
+                    var pageBeforePlanningProgress = runtime.Page;
                     runtime.History.Add(
                         "Discarded a planner decision because the controlled tab navigated while that decision was being generated. "
                         + "The fresh live page is authoritative over the stale planner snapshot.");
@@ -646,6 +647,16 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         runtime.Page.TabId,
                         token);
                     AddControlledTab(runtime, runtime.Page);
+                    var observedNavigation = CreateObservedNavigationReceipt(
+                        runtime.TaskId,
+                        pageBeforePlanningProgress,
+                        runtime.Page);
+                    if (observedNavigation != null)
+                    {
+                        runtime.Receipts.Add(observedNavigation);
+                        runtime.History.Add(
+                            "Recorded the same-tab navigation that completed during planning as verified live progress.");
+                    }
                     continue;
                 }
                 runtime.History.Add(
@@ -2688,6 +2699,43 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         && helperStatus.TabId == plannedPage.TabId
         && !string.IsNullOrWhiteSpace(helperStatus.ActiveUrl)
         && !SameLivePage(plannedPage.Url, helperStatus.ActiveUrl);
+
+    internal static BrowserActionReceipt CreateObservedNavigationReceipt(
+        string taskId,
+        BrowserPageSnapshot before,
+        BrowserPageSnapshot after)
+    {
+        if (before == null
+            || after == null
+            || before.TabId != after.TabId
+            || SameLivePage(before.Url, after.Url)
+            || BrowserAutomationVerifier.IsLikelyNavigationRegression(
+                before.Url,
+                after.Url))
+        {
+            return null;
+        }
+
+        return new BrowserActionReceipt
+        {
+            TaskId = taskId ?? "",
+            Ok = true,
+            NoVisibleChange = false,
+            Action = "navigate",
+            TargetId = after.Url,
+            TargetRole = "document",
+            TargetName = after.Title,
+            BeforeUrl = before.Url,
+            AfterUrl = after.Url,
+            BeforeFingerprint = before.Fingerprint,
+            AfterFingerprint = after.Fingerprint,
+            Navigation = true,
+            WindowId = after.WindowId,
+            TabId = after.TabId,
+            GraphVersion = after.GraphVersion,
+            DomEpoch = after.DomEpoch,
+        };
+    }
 
     internal static bool ShouldRestoreLateNavigationRegression(
         string request,

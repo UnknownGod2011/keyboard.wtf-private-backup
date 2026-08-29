@@ -661,6 +661,57 @@ public sealed class BrowserAutomationVerifierTests
         Assert.True(result.Verified);
     }
 
+    [Fact]
+    public void Corrected_task_accepts_navigation_that_completed_during_replanning()
+    {
+        var request = BrowserAutomationCoordinator.BuildCorrectedTaskRequest(
+            "Use Browser Automation to search the encyclopedia for Charles Babbage and open his article.",
+            "No, use Grace Hopper instead. Open the Grace Hopper article.");
+        var observedNavigation = BrowserAutomationCoordinator.CreateObservedNavigationReceipt(
+            "task-1",
+            new BrowserPageSnapshot
+            {
+                TabId = 42,
+                Url = "https://example.test/search?q=grace-hopper",
+            },
+            new BrowserPageSnapshot
+            {
+                TabId = 42,
+                Url = "https://example.test/articles/grace-hopper",
+                Title = "Grace Hopper",
+                PageText = "Grace Hopper",
+            });
+
+        var result = _verifier.VerifyTerminal(
+            request,
+            new BrowserPlannerDecision
+            {
+                Done = true,
+                ResultSummary = "The Grace Hopper article is open.",
+            },
+            new BrowserPageSnapshot
+            {
+                TabId = 42,
+                Url = "https://example.test/articles/grace-hopper",
+                Title = "Grace Hopper",
+                PageText = "Grace Hopper",
+            },
+            new[]
+            {
+                Changed(
+                    "type",
+                    "search",
+                    "searchbox",
+                    "Search",
+                    "Grace Hopper",
+                    valueMatches: true),
+                Changed("click", "submit", "button", "Search"),
+                observedNavigation,
+            });
+
+        Assert.True(result.Verified, result.Error);
+    }
+
     private static BrowserActionReceipt Changed(
         string action,
         string targetId,
