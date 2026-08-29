@@ -3232,14 +3232,19 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 continue;
             }
 
-            reachedRequestedResult = BrowserAutomationVerifier.ContainsMeaningfulTokens(
-                    page.Title,
-                    priorSearch.ExpectedValue,
-                    minimumMatches: 2)
-                || BrowserAutomationVerifier.ContainsMeaningfulTokens(
-                    candidate.TargetName,
-                    priorSearch.ExpectedValue,
-                    minimumMatches: 2);
+            var finalPageNamesRequestedResult = BrowserAutomationVerifier.ContainsMeaningfulTokens(
+                page.Title,
+                priorSearch.ExpectedValue,
+                minimumMatches: 2);
+            var navigationActuallyChangedPage = !SameLivePage(
+                candidate.BeforeUrl,
+                candidate.AfterUrl);
+            reachedRequestedResult = finalPageNamesRequestedResult
+                || (navigationActuallyChangedPage
+                    && BrowserAutomationVerifier.ContainsMeaningfulTokens(
+                        candidate.TargetName,
+                        priorSearch.ExpectedValue,
+                        minimumMatches: 2));
             if (reachedRequestedResult)
                 break;
         }

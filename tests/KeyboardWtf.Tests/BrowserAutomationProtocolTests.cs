@@ -349,6 +349,7 @@ public sealed class BrowserAutomationProtocolTests
                 TargetRole = "link",
                 TargetName = "Ada Lovelace — mathematician",
                 Navigation = true,
+                BeforeUrl = "https://example.test/search",
                 AfterUrl = "https://example.test/articles/ada-lovelace",
             },
         };
@@ -377,6 +378,51 @@ public sealed class BrowserAutomationProtocolTests
                 Text = "Analytical Engine",
             },
             "Search this site for Analytical Engine.",
+            receipts,
+            out _));
+    }
+
+    [Fact]
+    public void Search_prerequisite_is_not_marked_satisfied_when_link_click_stays_on_homepage()
+    {
+        var page = new BrowserPageSnapshot
+        {
+            Url = "https://example.test/",
+            Title = "Example home",
+        };
+        var receipts = new BrowserActionReceipt[]
+        {
+            new()
+            {
+                Ok = true,
+                Action = "type",
+                TargetRole = "searchbox",
+                TargetName = "Search",
+                ExpectedValue = "Ada Lovelace",
+                ValueMatches = true,
+            },
+            new()
+            {
+                Ok = true,
+                Action = "click",
+                TargetRole = "link",
+                TargetName = "Ada Lovelace — mathematician",
+                Navigation = true,
+                BeforeUrl = "https://example.test/",
+                AfterUrl = "https://example.test/",
+            },
+        };
+
+        Assert.False(BrowserAutomationCoordinator.TryGetSatisfiedSearchPrerequisite(
+            page,
+            new BrowserPlannerAction
+            {
+                Type = "press_key",
+                TargetRole = "searchbox",
+                TargetName = "Search this site",
+                Key = "Enter",
+            },
+            "Submit the search query for Ada Lovelace.",
             receipts,
             out _));
     }
