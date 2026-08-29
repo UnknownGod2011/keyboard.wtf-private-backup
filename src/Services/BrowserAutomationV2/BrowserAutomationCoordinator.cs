@@ -1415,6 +1415,24 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     receipt.TabId ?? runtime.Page.TabId,
                     token);
                 AddControlledTab(runtime, runtime.Page);
+                if (ShouldRestoreLateNavigationRegression(
+                        runtime.Request,
+                        receipt,
+                        runtime.Page))
+                {
+                    runtime.History.Add(
+                        "A delayed result from an earlier page action replaced the more specific verified page after its receipt. "
+                        + "Restoring that verified page before continuing the same task.");
+                    SetState(
+                        runtime,
+                        BrowserTaskState.WaitingForPage,
+                        "Restoring verified browser progress after a delayed stale navigation");
+                    runtime.Page = await RestoreVerifiedNavigationAsync(
+                        runtime,
+                        receipt,
+                        token);
+                    AddControlledTab(runtime, runtime.Page);
+                }
                 var persistedInFreshState = FreshStateConfirmsPersistedValue(
                     runtime.Page,
                     lastDecision.Action,
@@ -2642,6 +2660,57 @@ public sealed class BrowserAutomationCoordinator : IDisposable
     internal static bool IsChildOperationCancellation(
         bool authoritativeTaskCancellationRequested) =>
         !authoritativeTaskCancellationRequested;
+
+    internal static bool ShouldRestoreLateNavigationRegression(
+        string request,
+        BrowserActionReceipt receipt,
+        BrowserPageSnapshot freshPage) =>
+        receipt?.Ok == true
+        && receipt.Navigation
+        && !string.IsNullOrWhiteSpace(receipt.AfterUrl)
+        && freshPage != null
+        && BrowserAutomationVerifier.IsLikelyNavigationRegression(
+            receipt.AfterUrl,
+            freshPage.Url)
+        && !BrowserAutomationVerifier.RequestAllowsNavigationRegression(request);
+
+    private async Task<BrowserPageSnapshot> RestoreVerifiedNavigationAsync(
+        Runtime runtime,
+        BrowserActionReceipt verifiedReceipt,
+        CancellationToken token)
+    {
+        var regressed = runtime.Page;
+        var restore = await _bridge.ExecuteAsync(
+            new BrowserActionRequest
+            {
+                TaskId = runtime.TaskId,
+                Type = "navigate",
+                WindowId = regressed.WindowId,
+                TabId = regressed.TabId,
+                GraphVersion = regressed.GraphVersion,
+                DomEpoch = regressed.DomEpoch,
+                Url = verifiedReceipt.AfterUrl,
+            },
+            token);
+        LogActionReceipt(runtime.TaskId, restore);
+        runtime.Receipts.Add(restore);
+        if (!restore.Ok)
+        {
+            runtime.History.Add(
+                "The delayed stale navigation was detected, but Chrome did not acknowledge the bounded progress restore.");
+            return regressed;
+        }
+
+        var restored = await _bridge.ObserveAsync(
+            runtime.TaskId,
+            restore.TabId ?? regressed.TabId,
+            token);
+        runtime.History.Add(
+            SameLivePage(verifiedReceipt.AfterUrl, restored.Url)
+                ? "The more specific verified page was restored successfully."
+                : "Chrome acknowledged the progress restore, but the fresh page did not match the verified destination.");
+        return restored;
+    }
 
     private async Task<bool> TryReconcileChildOperationCancellationAsync(
         Runtime runtime,

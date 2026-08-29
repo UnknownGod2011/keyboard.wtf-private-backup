@@ -443,6 +443,41 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Delayed_stale_navigation_cannot_replace_a_verified_detail_page_with_its_homepage()
+    {
+        var verifiedNavigation = new BrowserActionReceipt
+        {
+            Ok = true,
+            Navigation = true,
+            Action = "click",
+            BeforeUrl = "https://example.test/",
+            AfterUrl = "https://example.test/articles/ada-lovelace",
+        };
+        var latePage = new BrowserPageSnapshot
+        {
+            Url = "https://example.test/",
+            Title = "Example home",
+        };
+
+        Assert.True(BrowserAutomationCoordinator.ShouldRestoreLateNavigationRegression(
+            "Open the Ada Lovelace article and find the requested fact.",
+            verifiedNavigation,
+            latePage));
+        Assert.False(BrowserAutomationCoordinator.ShouldRestoreLateNavigationRegression(
+            "Go back to the website homepage.",
+            verifiedNavigation,
+            latePage));
+        Assert.False(BrowserAutomationCoordinator.ShouldRestoreLateNavigationRegression(
+            "Open the Ada Lovelace article.",
+            verifiedNavigation,
+            new BrowserPageSnapshot
+            {
+                Url = verifiedNavigation.AfterUrl,
+                Title = "Ada Lovelace",
+            }));
+    }
+
+    [Fact]
     public void Context_free_calendar_day_is_rejected_for_an_explicit_date()
     {
         var action = new BrowserPlannerAction
