@@ -630,6 +630,24 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         "Discarded a planner decision because newer explicit task guidance arrived before execution.");
                     continue;
                 }
+                if (PlannerPageWasSupersededDuringPlanning(
+                        runtime.Page,
+                        _bridge.Status))
+                {
+                    runtime.History.Add(
+                        "Discarded a planner decision because the controlled tab navigated while that decision was being generated. "
+                        + "The fresh live page is authoritative over the stale planner snapshot.");
+                    SetState(
+                        runtime,
+                        BrowserTaskState.WaitingForPage,
+                        "Reading browser progress that arrived during planning");
+                    runtime.Page = await _bridge.ObserveAsync(
+                        runtime.TaskId,
+                        runtime.Page.TabId,
+                        token);
+                    AddControlledTab(runtime, runtime.Page);
+                    continue;
+                }
                 runtime.History.Add(
                     $"Planner ({_planner.LastModel}) evaluated: {Short(lastDecision.Evaluation, 360)}; next goal: {Short(lastDecision.NextGoal, 240)}");
                 CapturePreparedDraft(runtime, lastDecision);
@@ -2660,6 +2678,16 @@ public sealed class BrowserAutomationCoordinator : IDisposable
     internal static bool IsChildOperationCancellation(
         bool authoritativeTaskCancellationRequested) =>
         !authoritativeTaskCancellationRequested;
+
+    internal static bool PlannerPageWasSupersededDuringPlanning(
+        BrowserPageSnapshot plannedPage,
+        BrowserHelperStatus helperStatus) =>
+        plannedPage != null
+        && helperStatus?.CommandChannelReady == true
+        && helperStatus.ActiveTabFresh
+        && helperStatus.TabId == plannedPage.TabId
+        && !string.IsNullOrWhiteSpace(helperStatus.ActiveUrl)
+        && !SameLivePage(plannedPage.Url, helperStatus.ActiveUrl);
 
     internal static bool ShouldRestoreLateNavigationRegression(
         string request,

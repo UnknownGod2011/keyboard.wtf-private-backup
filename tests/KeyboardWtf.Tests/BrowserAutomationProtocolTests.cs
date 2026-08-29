@@ -478,6 +478,48 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Navigation_that_finishes_during_planning_supersedes_the_old_page_snapshot()
+    {
+        var plannedPage = new BrowserPageSnapshot
+        {
+            TabId = 42,
+            Url = "https://example.test/search?q=ada",
+        };
+        var progressedStatus = new BrowserHelperStatus
+        {
+            Connected = true,
+            CommandChannelReady = true,
+            ActiveTabFresh = true,
+            TabId = 42,
+            ActiveUrl = "https://example.test/articles/ada-lovelace",
+        };
+
+        Assert.True(BrowserAutomationCoordinator.PlannerPageWasSupersededDuringPlanning(
+            plannedPage,
+            progressedStatus));
+        Assert.False(BrowserAutomationCoordinator.PlannerPageWasSupersededDuringPlanning(
+            plannedPage,
+            new BrowserHelperStatus
+            {
+                Connected = true,
+                CommandChannelReady = true,
+                ActiveTabFresh = true,
+                TabId = 42,
+                ActiveUrl = plannedPage.Url,
+            }));
+        Assert.False(BrowserAutomationCoordinator.PlannerPageWasSupersededDuringPlanning(
+            plannedPage,
+            new BrowserHelperStatus
+            {
+                Connected = true,
+                CommandChannelReady = true,
+                ActiveTabFresh = true,
+                TabId = 99,
+                ActiveUrl = "https://example.test/articles/ada-lovelace",
+            }));
+    }
+
+    [Fact]
     public void Context_free_calendar_day_is_rejected_for_an_explicit_date()
     {
         var action = new BrowserPlannerAction
