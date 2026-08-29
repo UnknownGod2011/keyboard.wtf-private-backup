@@ -564,20 +564,74 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
-    public void Paid_planner_retries_only_one_malformed_structured_response()
+    public async Task Paid_planner_retries_one_malformed_response_then_continues()
     {
-        Assert.True(BrowserAutomationPlanner.ShouldRetryMalformedPaidPlan(
-            new System.Text.Json.JsonException("truncated"),
-            attempt: 1));
-        Assert.True(BrowserAutomationPlanner.ShouldRetryMalformedPaidPlan(
-            new InvalidDataException("invalid action"),
-            attempt: 1));
-        Assert.False(BrowserAutomationPlanner.ShouldRetryMalformedPaidPlan(
-            new System.Text.Json.JsonException("truncated"),
-            attempt: 2));
-        Assert.False(BrowserAutomationPlanner.ShouldRetryMalformedPaidPlan(
-            new HttpRequestException("provider unavailable"),
-            attempt: 1));
+        var attempts = 0;
+        var retries = 0;
+
+        var result = await BrowserAutomationPlanner.ExecutePaidPlanWithMalformedRetryAsync(
+            _ =>
+            {
+                attempts++;
+                return attempts == 1
+                    ? Task.FromException<BrowserPlannerDecision>(
+                        new System.Text.Json.JsonException("truncated"))
+                    : Task.FromResult(new BrowserPlannerDecision
+                    {
+                        Action = new BrowserPlannerAction { Type = "done" },
+                        ResultSummary = "Recovered",
+                    });
+            },
+            CancellationToken.None,
+            _ => retries++);
+
+        Assert.Equal(2, attempts);
+        Assert.Equal(1, retries);
+        Assert.True(result.Done);
+        Assert.Equal("Recovered", result.ResultSummary);
+    }
+
+    [Fact]
+    public async Task Paid_planner_fails_cleanly_after_two_malformed_responses()
+    {
+        var attempts = 0;
+        var retries = 0;
+
+        await Assert.ThrowsAsync<System.Text.Json.JsonException>(() =>
+            BrowserAutomationPlanner.ExecutePaidPlanWithMalformedRetryAsync(
+                _ =>
+                {
+                    attempts++;
+                    return Task.FromException<BrowserPlannerDecision>(
+                        new System.Text.Json.JsonException($"truncated-{attempts}"));
+                },
+                CancellationToken.None,
+                _ => retries++));
+
+        Assert.Equal(2, attempts);
+        Assert.Equal(1, retries);
+    }
+
+    [Fact]
+    public async Task Paid_planner_does_not_retry_a_valid_response()
+    {
+        var attempts = 0;
+
+        var result = await BrowserAutomationPlanner.ExecutePaidPlanWithMalformedRetryAsync(
+            _ =>
+            {
+                attempts++;
+                return Task.FromResult(new BrowserPlannerDecision
+                {
+                    Action = new BrowserPlannerAction { Type = "done" },
+                    ResultSummary = "Valid",
+                });
+            },
+            CancellationToken.None);
+
+        Assert.Equal(1, attempts);
+        Assert.True(result.Done);
+        Assert.Equal("Valid", result.ResultSummary);
     }
 
     [Fact]

@@ -224,31 +224,16 @@ public sealed class BrowserAutomationPlanner : IDisposable
             var rankedPaid = _ranker.Rank(request, page.Controls, 110);
             var paidPrompt = BuildPrompt(request, page, history, rankedPaid);
             _lastModel = "vertex-cloud";
-            Exception malformedResponse = null;
-            for (var attempt = 1; attempt <= 2; attempt++)
-            {
-                try
-                {
-                    var paidDecision = await SendPaidStructuredAsync(
-                        paidPrompt,
-                        null,
-                        token);
-                    ValidateDecision(paidDecision);
-                    return paidDecision;
-                }
-                catch (Exception ex)
-                    when (ShouldRetryMalformedPaidPlan(ex, attempt))
-                {
-                    malformedResponse = ex;
+            return await ExecutePaidPlanWithMalformedRetryAsync(
+                attemptToken => SendPaidStructuredAsync(
+                    paidPrompt,
+                    null,
+                    attemptToken),
+                token,
+                ex =>
                     AppLog.Warning(
                         ex,
-                        "Paid browser planner returned malformed structured output; retrying once within the same task");
-                }
-            }
-
-            throw malformedResponse
-                ?? new InvalidDataException(
-                    "Cloud AI returned invalid browser planner output.");
+                        "Paid browser planner returned malformed structured output; retrying once within the same task"));
         }
         if (string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey))
             throw new InvalidOperationException("A Gemini API key is required for smart browser automation.");
@@ -287,6 +272,32 @@ public sealed class BrowserAutomationPlanner : IDisposable
         int attempt) =>
         attempt < 2
         && error is JsonException or InvalidDataException;
+
+    internal static async Task<BrowserPlannerDecision> ExecutePaidPlanWithMalformedRetryAsync(
+        Func<CancellationToken, Task<BrowserPlannerDecision>> requestPlan,
+        CancellationToken token,
+        Action<Exception> onRetry = null)
+    {
+        ArgumentNullException.ThrowIfNull(requestPlan);
+        for (var attempt = 1; attempt <= 2; attempt++)
+        {
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                var decision = await requestPlan(token);
+                ValidateDecision(decision);
+                return decision;
+            }
+            catch (Exception ex)
+                when (ShouldRetryMalformedPaidPlan(ex, attempt))
+            {
+                onRetry?.Invoke(ex);
+            }
+        }
+
+        throw new InvalidDataException(
+            "Cloud AI returned invalid browser planner output.");
+    }
 
     public async Task<BrowserPlannerDecision> PlanWithVisionAsync(
         string request,
