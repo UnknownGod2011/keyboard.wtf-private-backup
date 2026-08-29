@@ -383,6 +383,77 @@ public sealed class BrowserAutomationVerifierTests
     }
 
     [Fact]
+    public void Informational_find_cannot_complete_from_an_unrelated_empty_search_page()
+    {
+        var result = _verifier.VerifyTerminal(
+            "Go to the requested site, open the Ada Lovelace article, and find her date of birth.",
+            new BrowserPlannerDecision
+            {
+                Done = true,
+                ResultSummary = "Ada Lovelace's date of birth is 10 December 1815.",
+            },
+            new BrowserPageSnapshot
+            {
+                Url = "https://example.test/search?query=",
+                Title = "Search",
+                PageText = "Search the encyclopedia",
+            },
+            new[]
+            {
+                new BrowserActionReceipt
+                {
+                    Ok = true,
+                    Action = "open_tab",
+                    Navigation = true,
+                    BeforeUrl = "https://unrelated.test/",
+                    AfterUrl = "https://example.test/search",
+                },
+                new BrowserActionReceipt
+                {
+                    Ok = true,
+                    Action = "type",
+                    TargetRole = "searchbox",
+                    TargetName = "Search",
+                    ValueMatches = true,
+                    NoVisibleChange = false,
+                },
+            });
+
+        Assert.False(result.Verified);
+        Assert.Contains("not supported", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Informational_find_completes_when_the_final_page_contains_the_reported_result()
+    {
+        var result = _verifier.VerifyTerminal(
+            "Open the Ada Lovelace article and find her date of birth.",
+            new BrowserPlannerDecision
+            {
+                Done = true,
+                ResultSummary = "Ada Lovelace's date of birth is 10 December 1815.",
+            },
+            new BrowserPageSnapshot
+            {
+                Url = "https://example.test/articles/ada-lovelace",
+                Title = "Ada Lovelace",
+                PageText = "Augusta Ada King, Countess of Lovelace, was born on 10 December 1815.",
+            },
+            Array.Empty<BrowserActionReceipt>());
+
+        Assert.True(result.Verified);
+    }
+
+    [Fact]
+    public void Find_then_click_keeps_the_final_action_contract()
+    {
+        Assert.False(BrowserAutomationVerifier.RequestsGroundedInformation(
+            "Find the application button and click it."));
+        Assert.True(BrowserAutomationVerifier.RequestsGroundedInformation(
+            "Click the details tab and tell me what eligibility it shows."));
+    }
+
+    [Fact]
     public void Summary_to_editor_requires_verified_destination_write()
     {
         const string request = "Summarize this page and paste the result into the Draft editor.";

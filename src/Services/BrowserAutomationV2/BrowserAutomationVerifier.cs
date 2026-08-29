@@ -211,12 +211,12 @@ public sealed class BrowserAutomationVerifier
                 : Failed("The requested text was not verified in the destination editor.");
         }
 
-        if (Regex.IsMatch(text, @"\b(summari[sz]e|what is on|read|extract|inspect|report)\b"))
+        if (RequestsGroundedInformation(text))
         {
             return !string.IsNullOrWhiteSpace(decision.ResultSummary)
-                && !string.IsNullOrWhiteSpace(page.PageText)
-                    ? Passed($"Result is grounded in a live page snapshot ({page.PageText.Length} characters observed).")
-                    : Failed("A grounded page summary was not produced.");
+                && HasGroundedResultEvidence(page, decision.ResultSummary)
+                    ? Passed($"Result is grounded in the final live page ({page.PageText.Length} characters observed).")
+                    : Failed("The reported result is not supported by the final live page.");
         }
 
         if (requestedMutationSteps > 1)
@@ -264,6 +264,62 @@ public sealed class BrowserAutomationVerifier
             text,
             @"\b(?:click|press|choose|select|check|uncheck|fill|type|paste|set|close|dismiss|replace|search|navigate|open)\b",
             RegexOptions.IgnoreCase).Count;
+    }
+
+    internal static bool RequestsGroundedInformation(string request)
+    {
+        var text = IntentText(request);
+        var information = Regex.Matches(
+            text,
+            @"\b(?:summari[sz]e|read|extract|inspect|report|find|identify|answer)\b"
+            + @"|\btell\s+me\b"
+            + @"|^\s*(?:what|who|when|where|which|how)\b",
+            RegexOptions.IgnoreCase);
+        if (information.Count == 0)
+            return false;
+
+        // The last requested outcome owns the terminal contract. "Find X and
+        // click it" ends in an action; "click X and tell me what it says"
+        // ends in a grounded information result.
+        var mutations = Regex.Matches(
+            text,
+            @"\b(?:click|press|fill|type|paste|set|choose|select|check|uncheck|submit|send|delete|remove|add|open|navigate|search)\b"
+            + @"|\bgo\s+to\b",
+            RegexOptions.IgnoreCase);
+        return mutations.Count == 0
+            || information[^1].Index > mutations[^1].Index;
+    }
+
+    private static bool HasGroundedResultEvidence(
+        BrowserPageSnapshot page,
+        string resultSummary)
+    {
+        if (page == null || string.IsNullOrWhiteSpace(page.PageText))
+            return false;
+
+        var observed = string.Join(
+            " ",
+            page.Title,
+            page.PageText,
+            string.Join(
+                " ",
+                (page.Controls ?? Array.Empty<BrowserControl>()).Select(control =>
+                    string.Join(" ", ControlIdentity(control), control.Value))));
+        var tokens = MeaningfulTokens(resultSummary);
+        if (tokens.Length == 0)
+            return false;
+
+        // Exact numbers are strong evidence for dates, counts, prices, and
+        // other lookup results even when the surrounding prose is paraphrased.
+        if (tokens.Any(token => token.Any(char.IsDigit)
+                && observed.Contains(token, StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        var required = tokens.Length == 1 ? 1 : 2;
+        return tokens.Count(token =>
+            observed.Contains(token, StringComparison.OrdinalIgnoreCase)) >= required;
     }
 
     private static bool IsVerifiedMutationReceipt(BrowserActionReceipt receipt) =>
@@ -562,21 +618,28 @@ public sealed class BrowserAutomationVerifier
         string expected,
         int minimumMatches)
     {
-        var ignored = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "the", "a", "an", "my", "on", "in", "from", "for", "of", "and",
-            "video", "youtube", "channel", "product", "mouse", "bottle",
-        };
-        var tokens = Regex.Matches(expected ?? "", @"[\p{L}\p{N}]{2,}")
-            .Select(match => match.Value)
-            .Where(token => !ignored.Contains(token))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        var tokens = MeaningfulTokens(expected);
         if (tokens.Length == 0)
             return true;
         var required = Math.Min(Math.Max(1, minimumMatches), tokens.Length);
         return tokens.Count(token =>
             (observed ?? "").Contains(token, StringComparison.OrdinalIgnoreCase)) >= required;
+    }
+
+    private static string[] MeaningfulTokens(string value)
+    {
+        var ignored = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "the", "a", "an", "my", "on", "in", "from", "for", "of", "and",
+            "is", "are", "was", "were", "it", "this", "that", "shows", "showed",
+            "requested", "result", "page", "visible", "video", "youtube", "channel",
+            "product", "mouse", "bottle",
+        };
+        return Regex.Matches(value ?? "", @"[\p{L}\p{N}]{2,}")
+            .Select(match => match.Value)
+            .Where(token => !ignored.Contains(token))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private static string HashLength(string value)
