@@ -291,7 +291,8 @@ public sealed class FirestoreAccountStore : IAccountStore
         int maxConcurrent,
         long globalDailyCap,
         CancellationToken cancellationToken,
-        string activityType = "ai_request")
+        string activityType = "ai_request",
+        int? reservationLifetimeSeconds = null)
     {
         if (reserveCreditMicros <= 0 || reserveCreditMicros > taskCapCreditMicros)
             throw new InvalidOperationException("The request exceeds its approved task budget.");
@@ -304,8 +305,12 @@ public sealed class FirestoreAccountStore : IAccountStore
         var reservationRef = accountRef.Collection("reservations").Document(SafeId(requestId));
         var idempotencyRef = _db.Collection("idempotency")
             .Document(Crypto.Sha256($"usage-reserve:{caller.UserId}:{requestId}"));
-        var leaseSeconds = Math.Max(_options.MaxRequestSeconds, _options.LiveSessionMaxSeconds)
-            + _options.ReservationLeaseGraceSeconds;
+        var leaseSeconds = ReservationLeaseSeconds(
+            liveReservation,
+            _options.MaxRequestSeconds,
+            _options.LiveSessionMaxSeconds,
+            _options.ReservationLeaseGraceSeconds,
+            reservationLifetimeSeconds);
         var expiresAt = now.AddSeconds(leaseSeconds);
         var globalUsageDate = now.ToString("yyyyMMdd");
         var shardedDailyCap = await EnsureGlobalUsageShardsAsync(
@@ -489,6 +494,23 @@ public sealed class FirestoreAccountStore : IAccountStore
         var reservationSnapshot = await reservationRef.GetSnapshotAsync(cancellationToken);
         var reservation = ReservationFrom(reservationSnapshot);
         return new ReservationResult(created, reservation, accountResult);
+    }
+
+    internal static int ReservationLeaseSeconds(
+        bool liveReservation,
+        int maxRequestSeconds,
+        int configuredLiveSessionMaxSeconds,
+        int graceSeconds,
+        int? authoritativeLifetimeSeconds = null)
+    {
+        var operationLifetimeSeconds = liveReservation
+            ? authoritativeLifetimeSeconds ?? configuredLiveSessionMaxSeconds
+            : maxRequestSeconds;
+        if (operationLifetimeSeconds <= 0 || operationLifetimeSeconds > 900)
+            throw new ArgumentOutOfRangeException(nameof(authoritativeLifetimeSeconds));
+        if (graceSeconds < 0 || graceSeconds > 600)
+            throw new ArgumentOutOfRangeException(nameof(graceSeconds));
+        return checked(operationLifetimeSeconds + graceSeconds);
     }
 
     public async Task<SettlementResult> SettleAsync(

@@ -222,7 +222,8 @@ public sealed class PaidLoadSimulationTests(ITestOutputHelper output)
             int maxConcurrent,
             long globalDailyCap,
             CancellationToken cancellationToken,
-            string activityType = "ai_request")
+            string activityType = "ai_request",
+            int? reservationLifetimeSeconds = null)
         {
             var state = Account(caller.UserId);
             lock (state.Gate)

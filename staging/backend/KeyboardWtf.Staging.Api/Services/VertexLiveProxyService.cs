@@ -118,7 +118,8 @@ public sealed class VertexLiveProxyService
             _options.MaxConcurrentRequestsPerUser,
             _options.GlobalDailyCreditMicrosCap,
             cancellationToken,
-            route.Name);
+            route.Name,
+            livePolicy.MaxSessionSeconds);
         if (!reservation.Created)
             throw new InvalidOperationException("This live-session request ID has already been used.");
 

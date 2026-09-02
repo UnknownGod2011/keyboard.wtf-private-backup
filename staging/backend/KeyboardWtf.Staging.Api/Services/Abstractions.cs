@@ -67,7 +67,8 @@ public interface IAccountStore
         int maxConcurrent,
         long globalDailyCap,
         CancellationToken cancellationToken,
-        string activityType = "ai_request");
+        string activityType = "ai_request",
+        int? reservationLifetimeSeconds = null);
     Task<SettlementResult> SettleAsync(
         string userId,
         string requestId,

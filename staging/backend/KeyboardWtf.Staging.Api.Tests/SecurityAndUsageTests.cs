@@ -1973,6 +1973,104 @@ public sealed class SecurityAndUsageTests
 
     [Fact]
     [Trait("Category", "FirestoreIntegration")]
+    public async Task Firestore_live_lease_uses_the_authoritative_route_lifetime_and_remains_bounded_when_enabled()
+    {
+        var accessToken = Environment.GetEnvironmentVariable("KEYBOARD_WTF_FIRESTORE_TEST_ACCESS_TOKEN");
+        if (string.IsNullOrWhiteSpace(accessToken))
+            return;
+
+        var db = new FirestoreDbBuilder
+        {
+            ProjectId = "keyboard-wtf-staging",
+            Credential = GoogleCredential.FromAccessToken(accessToken),
+        }.Build();
+        var startedAt = DateTimeOffset.UtcNow;
+        var options = TestOptions(liveSessionMaxSeconds: 110, maxRequestSeconds: 90);
+        var suffix = Guid.NewGuid().ToString("N");
+        var caller = new CallerIdentity(
+            $"integration-live-lease-{suffix}",
+            $"live-lease-{suffix}@example.invalid",
+            "Integration Live Lease",
+            "test");
+        var liveRequest = $"live-{suffix}";
+        try
+        {
+            var initialStore = new FirestoreAccountStore(
+                db,
+                new FixedClock(startedAt),
+                Options.Create(options));
+            await initialStore.EnsureAccountAsync(caller, CancellationToken.None);
+            await initialStore.GrantCreditsAsync(
+                caller.UserId,
+                5_000_000,
+                "integration live lease",
+                $"grant-live-lease-{suffix}",
+                "integration-test",
+                CancellationToken.None);
+
+            var live = await initialStore.ReserveAsync(
+                caller, liveRequest, "gemini-live-test", "test", 100_000, 1_000_000,
+                20, 1, 1_000_000_000, CancellationToken.None, "live_audio", 720);
+            Assert.True(live.Created);
+            Assert.NotNull(live.Reservation.ExpiresAt);
+            Assert.InRange(
+                (live.Reservation.ExpiresAt.Value - startedAt).TotalSeconds,
+                839.999,
+                840.001);
+            await initialStore.MarkReservationProviderStartedAsync(
+                caller.UserId, liveRequest, CancellationToken.None);
+
+            foreach (var elapsed in new[] { TimeSpan.FromSeconds(242), TimeSpan.FromMinutes(8) })
+            {
+                var concurrentStore = new FirestoreAccountStore(
+                    db,
+                    new FixedClock(startedAt.Add(elapsed)),
+                    Options.Create(options));
+                var concurrentRequest = $"browser-{elapsed.TotalSeconds:0}-{suffix}";
+                var concurrent = await concurrentStore.ReserveAsync(
+                    caller, concurrentRequest, "gemini-browser-test", "test", 100_000, 500_000,
+                    20, 1, 1_000_000_000, CancellationToken.None, "browser_planner");
+                Assert.True(concurrent.Created);
+                Assert.Equal(
+                    100_000,
+                    await concurrentStore.EnsureReservationCapacityAsync(
+                        caller.UserId, liveRequest, 100_000, CancellationToken.None));
+                await concurrentStore.ReleaseReservationAsync(
+                    caller.UserId, concurrentRequest, "integration_cleanup", CancellationToken.None);
+            }
+
+            var expiredStore = new FirestoreAccountStore(
+                db,
+                new FixedClock(startedAt.AddSeconds(841)),
+                Options.Create(options));
+            var recoveryRequest = $"recovery-{suffix}";
+            var recovery = await expiredStore.ReserveAsync(
+                caller, recoveryRequest, "gemini-browser-test", "test", 100_000, 500_000,
+                20, 1, 1_000_000_000, CancellationToken.None, "browser_planner");
+            Assert.True(recovery.Created);
+
+            var reservation = await db.Collection("accounts")
+                .Document(caller.UserId)
+                .Collection("reservations")
+                .Document(liveRequest)
+                .GetSnapshotAsync();
+            Assert.Equal("reconciliation_pending", reservation.GetValue<string>("status"));
+            var account = await db.Collection("accounts")
+                .Document(caller.UserId)
+                .GetSnapshotAsync();
+            Assert.Equal(0, account.GetValue<long>("activeLiveRequests"));
+
+            await expiredStore.ReleaseReservationAsync(
+                caller.UserId, recoveryRequest, "integration_cleanup", CancellationToken.None);
+        }
+        finally
+        {
+            await DeleteIntegrationAccountAsync(db, caller.UserId);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "FirestoreIntegration")]
     public async Task Firestore_burst_reservations_enforce_account_concurrency_and_preserve_the_balance_when_enabled()
     {
         var accessToken = Environment.GetEnvironmentVariable("KEYBOARD_WTF_FIRESTORE_TEST_ACCESS_TOKEN");
@@ -2747,6 +2845,39 @@ public sealed class SecurityAndUsageTests
     }
 
     [Fact]
+    public void Live_reservation_lease_uses_the_authoritative_route_lifetime_and_remains_bounded()
+    {
+        var leaseSeconds = FirestoreAccountStore.ReservationLeaseSeconds(
+            liveReservation: true,
+            maxRequestSeconds: 90,
+            configuredLiveSessionMaxSeconds: 110,
+            graceSeconds: 120,
+            authoritativeLifetimeSeconds: 720);
+        var createdAt = DateTimeOffset.Parse("2026-08-29T00:00:00Z");
+        var expiresAt = createdAt.AddSeconds(leaseSeconds);
+
+        Assert.Equal(840, leaseSeconds);
+        Assert.True(expiresAt > createdAt.AddSeconds(242));
+        Assert.True(expiresAt > createdAt.AddMinutes(8));
+        Assert.True(expiresAt > createdAt.AddSeconds(720));
+        Assert.True(expiresAt <= createdAt.AddSeconds(900));
+        Assert.True(expiresAt < createdAt.AddSeconds(841));
+    }
+
+    [Fact]
+    public void One_shot_reservation_lease_does_not_inherit_the_live_session_lifetime()
+    {
+        Assert.Equal(
+            210,
+            FirestoreAccountStore.ReservationLeaseSeconds(
+                liveReservation: false,
+                maxRequestSeconds: 90,
+                configuredLiveSessionMaxSeconds: 720,
+                graceSeconds: 120,
+                authoritativeLifetimeSeconds: null));
+    }
+
+    [Fact]
     public void Live_usage_uses_conservative_audio_estimates_when_provider_counts_are_absent()
     {
         var usage = new LiveUsageAccumulator(1_000_000);
@@ -3034,7 +3165,9 @@ public sealed class SecurityAndUsageTests
         bool? allowBootstrapModelRouting = null,
         bool providerCostReconciliationEnabled = false,
         string billingExportTable = "",
-        string[]? aiCanaryEmails = null) => new()
+        string[]? aiCanaryEmails = null,
+        int liveSessionMaxSeconds = 720,
+        int maxRequestSeconds = 5) => new()
     {
         DeploymentEnvironment = environment,
         ProjectId = useStagingIdentifiers ? "keyboard-wtf-staging" : "keyboard-wtf-prod",
@@ -3045,7 +3178,8 @@ public sealed class SecurityAndUsageTests
         AllowedOrigins = useStagingIdentifiers
             ? ["https://staging.example.test"]
             : ["https://keyboard.wtf"],
-        MaxRequestSeconds = 5,
+        MaxRequestSeconds = maxRequestSeconds,
+        LiveSessionMaxSeconds = liveSessionMaxSeconds,
         DefaultTaskCreditMicrosCap = 25_000_000,
         AllowBootstrapCatalog = allowBootstrapCatalog,
         AllowBootstrapModelRouting = allowBootstrapModelRouting
@@ -3185,7 +3319,7 @@ public sealed class SecurityAndUsageTests
             CallerIdentity caller, string requestId, string model, string pricingVersion,
             long reserveCreditMicros, long taskCapCreditMicros, int requestsPerMinute,
             int maxConcurrent, long globalDailyCap, CancellationToken cancellationToken,
-            string activityType = "ai_request")
+            string activityType = "ai_request", int? reservationLifetimeSeconds = null)
         {
             ReserveCalls++;
             ReservedActivityType = activityType;
