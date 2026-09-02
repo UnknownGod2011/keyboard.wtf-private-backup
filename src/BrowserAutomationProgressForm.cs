@@ -102,7 +102,14 @@ internal sealed class BrowserAutomationProgressForm : Form
         _pauseResume.Text = snapshot.CanResume ? "Resume" : "Pause";
         _pauseResume.Enabled = snapshot.CanPause || snapshot.CanResume;
 
-        if (IsTerminal(snapshot.State))
+        if (snapshot.State == BrowserTaskState.Cancelled)
+        {
+            // Cancellation is authoritative. Do not leave the planning card
+            // visible after a paused task has already stopped.
+            if (Visible)
+                Hide();
+        }
+        else if (IsTerminal(snapshot.State))
         {
             if (Visible)
             {

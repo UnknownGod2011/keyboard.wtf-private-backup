@@ -48,6 +48,131 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Planner_intervention_keeps_missing_reason_and_known_optional_status()
+    {
+        var intervention = BrowserAutomationCoordinator.BuildPlannerIntervention(
+            new BrowserPlannerDecision
+            {
+                NeedsUserAction = true,
+                UserAction = "Provide the project URL.",
+                UserActionReason = "The optional profile field is empty.",
+                UserActionRequired = false,
+                UserActionSkippable = true,
+                Action = new BrowserPlannerAction { Type = "needs_user_action" },
+            });
+
+        Assert.Equal("Provide the project URL.", intervention.Missing);
+        Assert.Equal("The optional profile field is empty.", intervention.Explanation);
+        Assert.False(intervention.Required);
+        Assert.True(intervention.CanSkip);
+    }
+
+    [Fact]
+    public void Sensitive_intervention_cannot_be_made_skippable_by_planner_output()
+    {
+        var intervention = BrowserAutomationCoordinator.BuildPlannerIntervention(
+            new BrowserPlannerDecision
+            {
+                NeedsUserAction = true,
+                UserAction = "Complete the CAPTCHA.",
+                UserActionReason = "The site requires a security challenge.",
+                UserActionSkippable = true,
+                Action = new BrowserPlannerAction { Type = "needs_user_action" },
+            });
+
+        Assert.True(intervention.Required);
+        Assert.False(intervention.CanSkip);
+        Assert.Equal("captcha_required", intervention.Kind);
+    }
+
+    [Theory]
+    [InlineData("Fill what is known and skip unavailable optional fields.", true)]
+    [InlineData("Leave any unknown optional values blank.", true)]
+    [InlineData("Fill the form carefully.", false)]
+    public void Task_level_optional_skip_policy_is_bounded(string request, bool expected)
+    {
+        Assert.Equal(
+            expected,
+            BrowserAutomationCoordinator.AllowsSkippingUnavailableOptionalInputs(request));
+
+        var optional = new BrowserUserIntervention
+        {
+            Missing = "An optional profile URL",
+            CanSkip = true,
+        };
+        var required = new BrowserUserIntervention
+        {
+            Missing = "A required account URL",
+            Required = true,
+        };
+        Assert.Equal(
+            expected,
+            BrowserAutomationCoordinator.ShouldSkipIntervention(
+                expected,
+                new HashSet<string>(),
+                optional));
+        Assert.False(BrowserAutomationCoordinator.ShouldSkipIntervention(
+            true,
+            new HashSet<string>(),
+            required));
+    }
+
+    [Theory]
+    [InlineData("https://project.example and https://github.com/example/project", true)]
+    [InlineData("The project URL is https://project.example", true)]
+    [InlineData("What do you think about this project?", false)]
+    [InlineData("Switch to the second browser tab.", false)]
+    [InlineData("Open Gmail", false)]
+    public void Paused_url_request_accepts_only_answer_shaped_guidance(
+        string guidance,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            BrowserAutomationCoordinator.IsRelevantManualAnswer(
+                new BrowserUserIntervention
+                {
+                    Missing = "Please provide the project and repository URLs.",
+                    Required = true,
+                },
+                guidance));
+    }
+
+    [Fact]
+    public async Task Intervention_gate_is_armed_before_a_visible_state_can_resume_it()
+    {
+        var gate = new BrowserAutomationCoordinator.AsyncPauseGate();
+        var published = false;
+
+        var wait = BrowserAutomationCoordinator.ArmPauseBeforePublishingAsync(
+            gate,
+            () =>
+            {
+                published = true;
+                gate.Resume();
+            },
+            CancellationToken.None);
+
+        await wait.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.True(published);
+    }
+
+    [Fact]
+    public void Planner_prompt_requires_structured_intervention_and_authoritative_skip_policy()
+    {
+        var prompt = BrowserAutomationPlanner.BuildPrompt(
+            "Fill the available fields and skip unavailable optional fields.",
+            new BrowserPageSnapshot(),
+            Array.Empty<string>(),
+            Array.Empty<BrowserControl>());
+
+        Assert.Contains("exact missing information", prompt);
+        Assert.Contains("userActionReason", prompt);
+        Assert.Contains("userActionSkippable", prompt);
+        Assert.Contains("Never skip a required or safety-sensitive dependency", prompt);
+    }
+
+    [Fact]
     public void Voice_tool_cancellation_suppresses_only_the_duplicate_lifecycle_announcement()
     {
         Assert.False(BrowserAutomationCoordinator.ShouldAnnounceOutcome(
@@ -1990,6 +2115,36 @@ public sealed class BrowserAutomationProtocolTests
         bool expected)
     {
         Assert.Equal(expected, CommandRegistry.IsExplicitBrowserTaskStopOrPause(utterance));
+    }
+
+    [Theory]
+    [InlineData("cancel browser automation", "cancel")]
+    [InlineData("stop the browser task", "cancel")]
+    [InlineData("please pause browser automation", "pause")]
+    public void Explicit_browser_stop_is_resolved_locally_to_one_control(
+        string utterance,
+        string expectedAction)
+    {
+        Assert.True(CommandRegistry.TryParseExplicitBrowserTaskStopOrPause(
+            utterance,
+            out var action,
+            out var explicitlyTargetsBrowserTask));
+        Assert.Equal(expectedAction, action);
+        Assert.True(explicitlyTargetsBrowserTask);
+    }
+
+    [Theory]
+    [InlineData("stop")]
+    [InlineData("pause")]
+    [InlineData("cancel")]
+    public void Bare_stop_words_are_not_locally_forced_into_browser_task_cancellation(
+        string utterance)
+    {
+        Assert.True(CommandRegistry.TryParseExplicitBrowserTaskStopOrPause(
+            utterance,
+            out _,
+            out var explicitlyTargetsBrowserTask));
+        Assert.False(explicitlyTargetsBrowserTask);
     }
 
     [Fact]

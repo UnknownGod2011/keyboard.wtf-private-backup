@@ -55,6 +55,9 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         public int RecoveryAttempts { get; set; }
         public int ConsecutiveRejectedStrategies { get; set; }
         public bool UserPaused { get; set; }
+        public BrowserUserIntervention Intervention { get; set; }
+        public bool SkipUnavailableOptionalInputs { get; set; }
+        public HashSet<string> SkippedInterventions { get; } = new(StringComparer.Ordinal);
         public string CancellationReason { get; set; } = "";
         public BrowserTaskState? LastAnnouncedState { get; set; }
         public bool SuppressCancellationAnnouncement { get; set; }
@@ -152,18 +155,36 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             }
 
             var explicitCorrection = IsExplicitTaskCorrection(guidance);
+            var skipRequest = _active.State == BrowserTaskState.NeedsUserAction
+                && IsSkipInterventionGuidance(guidance);
+            if (skipRequest && _active.Intervention?.CanSkip != true)
+            {
+                reason = BuildRequiredInterventionResponse(_active.Intervention);
+                return false;
+            }
+
             if (!IsClearlyTaskRelevantGuidance(guidance)
+                && !skipRequest
                 && !(_active.State == BrowserTaskState.NeedsUserAction
-                    && IsRelevantManualAnswer(_active.CurrentAction, guidance)))
+                    && IsRelevantManualAnswer(_active.Intervention, guidance)))
             {
                 reason = "That is a separate Jarvis or browser command, not guidance for the active browser task.";
                 return false;
             }
 
             _active.PendingGuidance.Enqueue(
-                explicitCorrection
+                skipRequest
+                    ? BuildSkippedInterventionGuidance(_active.Intervention, guidance)
+                    : explicitCorrection
                     ? $"Latest explicit user correction: {guidance.Trim()}"
                     : $"User guidance: {guidance.Trim()}");
+            if (skipRequest)
+            {
+                _active.SkippedInterventions.Add(
+                    InterventionFingerprint(_active.Intervention));
+                if (AllowsSkippingUnavailableOptionalInputs(guidance))
+                    _active.SkipUnavailableOptionalInputs = true;
+            }
             _active.GuidanceRevision++;
             if (explicitCorrection)
                 Interlocked.Increment(ref _active.CorrectionRevision);
@@ -196,8 +217,14 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 _active.PendingDestinationCorrectionUrl = destinationUrl;
             }
             _active.UserPaused = false;
+            _active.Intervention = null;
             _active.PauseGate.Resume();
-            Publish(_active);
+            SetState(
+                _active,
+                BrowserTaskState.ReadingPage,
+                skipRequest
+                    ? "Continuing without the optional item"
+                    : "Applying user guidance to the same task");
             return true;
         }
     }
@@ -316,6 +343,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             {
                 Request = request.Trim(),
                 CurrentPageIntent = classification.RefersToCurrentPage,
+                SkipUnavailableOptionalInputs = AllowsSkippingUnavailableOptionalInputs(request),
                 State = BrowserTaskState.Queued,
                 CurrentAction = "Queued",
             };
@@ -357,6 +385,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             if (_active == null || IsTerminal(_active.State))
                 return false;
             _active.UserPaused = false;
+            _active.Intervention = null;
             _active.PauseGate.Resume();
             SetState(_active, BrowserTaskState.ReadingPage, "Resuming from the live page");
             return true;
@@ -367,22 +396,79 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         string reason = "Cancelled by user",
         bool announceOutcome = true)
     {
-        Runtime runtime;
+        if (!TryBeginCancellation(reason, announceOutcome, out var runtime, out var cleanupRequired))
+            return false;
+        if (cleanupRequired)
+            await CompleteCancellationAsync(runtime);
+        return true;
+    }
+
+    public bool RequestCancel(
+        string reason = "Cancelled by user",
+        bool announceOutcome = true)
+    {
+        if (!TryBeginCancellation(reason, announceOutcome, out var runtime, out var cleanupRequired))
+            return false;
+        if (cleanupRequired)
+            _ = CompleteCancellationAsync(runtime);
+        return true;
+    }
+
+    private bool TryBeginCancellation(
+        string reason,
+        bool announceOutcome,
+        out Runtime runtime,
+        out bool cleanupRequired)
+    {
         lock (_sync)
         {
             runtime = _active;
-            if (runtime == null || IsTerminal(runtime.State))
+            cleanupRequired = false;
+            if (runtime == null)
                 return false;
+
+            // Partial is terminal execution-wise, but accepting an explicit
+            // cancel still clears its remaining progress UI and task context.
+            if (runtime.State == BrowserTaskState.Partial)
+            {
+                runtime.SuppressCancellationAnnouncement = !announceOutcome;
+                runtime.Intervention = null;
+                SetTerminal(
+                    runtime,
+                    BrowserTaskState.Cancelled,
+                    BrowserAutomationOutcome.Cancelled,
+                    "Browser automation cancelled.",
+                    "");
+                return true;
+            }
+            if (IsTerminal(runtime.State))
+                return false;
+
             runtime.UserPaused = false;
+            runtime.Intervention = null;
             runtime.CancellationReason = reason;
             runtime.SuppressCancellationAnnouncement = !announceOutcome;
             SetState(runtime, BrowserTaskState.Cancelling, reason);
             runtime.Cancellation.Cancel();
             runtime.PauseGate.Resume();
+            cleanupRequired = true;
         }
 
         AppLog.Info($"Browser automation cancel requested: task={runtime.TaskId}");
-        await _bridge.CancelTaskAsync(runtime.TaskId);
+        return true;
+    }
+
+    private async Task CompleteCancellationAsync(Runtime runtime)
+    {
+        try
+        {
+            await _bridge.CancelTaskAsync(runtime.TaskId);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning(ex, $"Chrome Helper cancellation failed: task={runtime.TaskId}");
+        }
+
         try
         {
             if (runtime.Execution != null)
@@ -392,7 +478,20 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         {
             // ExecuteAsync owns terminal cleanup and logs.
         }
-        return true;
+
+        lock (_sync)
+        {
+            if (runtime.State == BrowserTaskState.Cancelling
+                && runtime.Execution?.IsCompleted == true)
+            {
+                SetTerminal(
+                    runtime,
+                    BrowserTaskState.Cancelled,
+                    BrowserAutomationOutcome.Cancelled,
+                    "Browser automation cancelled.",
+                    "");
+            }
+        }
     }
 
     public void AddGuidance(string guidance)
@@ -681,23 +780,11 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 if (lastDecision.NeedsUserAction
                     || lastDecision.Action.Type == "needs_user_action")
                 {
-                    SetState(
+                    await WaitForUserInterventionAsync(
                         runtime,
-                        BrowserTaskState.NeedsUserAction,
-                        string.IsNullOrWhiteSpace(lastDecision.UserAction)
-                            ? "Waiting for a required manual step"
-                            : lastDecision.UserAction);
-                    _notifications.WarningTransient(
-                        "Browser automation needs you",
-                        runtime.CurrentAction);
-                    runtime.PauseGate.Pause();
-                    await runtime.PauseGate.WaitAsync(token);
-                    token.ThrowIfCancellationRequested();
-                    runtime.Page = await _bridge.ObserveAsync(
-                        runtime.TaskId,
-                        runtime.Page.TabId,
+                        BuildPlannerIntervention(lastDecision),
+                        "User resumed after the requested step; page state was refreshed.",
                         token);
-                    runtime.History.Add("User resumed after the manual step; page state was refreshed.");
                     continue;
                 }
 
@@ -963,17 +1050,12 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     if (visualDecision.NeedsUserAction
                         || visualDecision.Action.Type is "needs_user_action" or "vision")
                     {
-                        SetState(
+                        await WaitForUserInterventionAsync(
                             runtime,
-                            BrowserTaskState.NeedsUserAction,
-                            string.IsNullOrWhiteSpace(visualDecision.UserAction)
-                                ? "The visual target could not be grounded confidently."
-                                : visualDecision.UserAction);
-                        runtime.PauseGate.Pause();
-                        await runtime.PauseGate.WaitAsync(token);
-                        runtime.Page = await _bridge.ObserveAsync(
-                            runtime.TaskId,
-                            runtime.Page.TabId,
+                            BuildPlannerIntervention(
+                                visualDecision,
+                                "The visual target could not be grounded confidently."),
+                            "User resumed after the visual/manual step; page state was refreshed.",
                             token);
                         continue;
                     }
@@ -989,15 +1071,10 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         visualDecision.Action);
                     if (!visualSafety.MayStart)
                     {
-                        SetState(
+                        await WaitForUserInterventionAsync(
                             runtime,
-                            BrowserTaskState.NeedsUserAction,
-                            visualSafety.Reason);
-                        runtime.PauseGate.Pause();
-                        await runtime.PauseGate.WaitAsync(token);
-                        runtime.Page = await _bridge.ObserveAsync(
-                            runtime.TaskId,
-                            runtime.Page.TabId,
+                            BuildRequiredIntervention(visualSafety.Reason),
+                            "User resumed after the required safety step; page state was refreshed.",
                             token);
                         continue;
                     }
@@ -1099,22 +1176,13 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     groundedControl,
                     out var missingDate))
                 {
-                    SetState(
+                    await WaitForUserInterventionAsync(
                         runtime,
-                        BrowserTaskState.NeedsUserAction,
-                        missingDate);
-                    _notifications.WarningTransient(
-                        "Browser automation needs you",
-                        missingDate);
-                    runtime.PauseGate.Pause();
-                    await runtime.PauseGate.WaitAsync(token);
-                    token.ThrowIfCancellationRequested();
-                    runtime.Page = await _bridge.ObserveAsync(
-                        runtime.TaskId,
-                        runtime.Page.TabId,
+                        BuildRequiredIntervention(
+                            missingDate,
+                            "The requested task cannot be completed correctly without this date."),
+                        "User supplied the requested missing date information; the live page was refreshed before continuing.",
                         token);
-                    runtime.History.Add(
-                        "User supplied the requested missing date information; the live page was refreshed before continuing.");
                     continue;
                 }
                 if (TryGetAmbiguousExplicitDateTarget(
@@ -1258,15 +1326,10 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         continue;
                     }
 
-                    SetState(
+                    await WaitForUserInterventionAsync(
                         runtime,
-                        BrowserTaskState.NeedsUserAction,
-                        actionSafety.Reason);
-                    runtime.PauseGate.Pause();
-                    await runtime.PauseGate.WaitAsync(token);
-                    runtime.Page = await _bridge.ObserveAsync(
-                        runtime.TaskId,
-                        runtime.Page.TabId,
+                        BuildRequiredIntervention(actionSafety.Reason),
+                        "User resumed after the required safety step; page state was refreshed.",
                         token);
                     continue;
                 }
@@ -2976,6 +3039,168 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             runtime.History.Add(guidance);
     }
 
+    private async Task WaitForUserInterventionAsync(
+        Runtime runtime,
+        BrowserUserIntervention intervention,
+        string resumedHistory,
+        CancellationToken token)
+    {
+        if (ShouldSkipIntervention(
+                runtime.SkipUnavailableOptionalInputs,
+                runtime.SkippedInterventions,
+                intervention))
+        {
+            runtime.SkippedInterventions.Add(InterventionFingerprint(intervention));
+            runtime.History.Add(BuildSkippedInterventionGuidance(
+                intervention,
+                "The user authorized unavailable optional information to be skipped."));
+            AppLog.Info(
+                $"Browser optional intervention skipped by task policy: task={runtime.TaskId} missing={Short(intervention.Missing, 140)}");
+            return;
+        }
+
+        // Arm the gate before publishing NeedsUserAction. A response can arrive
+        // as soon as that state is visible; publishing first could otherwise
+        // resume the old completed gate and then pause forever on a new one.
+        runtime.Intervention = intervention;
+        var resumeTask = ArmPauseBeforePublishingAsync(
+            runtime.PauseGate,
+            () => SetState(
+                runtime,
+                BrowserTaskState.NeedsUserAction,
+                intervention.Missing),
+            token);
+        _notifications.WarningTransient(
+            "Browser automation needs you",
+            BuildInterventionDisplay(intervention));
+        await resumeTask;
+        token.ThrowIfCancellationRequested();
+        runtime.Intervention = null;
+        runtime.Page = await _bridge.ObserveAsync(
+            runtime.TaskId,
+            runtime.Page.TabId,
+            token);
+        runtime.History.Add(resumedHistory);
+    }
+
+    internal static BrowserUserIntervention BuildPlannerIntervention(
+        BrowserPlannerDecision decision,
+        string fallbackMissing = "Waiting for a required manual step")
+    {
+        var missing = string.IsNullOrWhiteSpace(decision?.UserAction)
+            ? fallbackMissing
+            : decision.UserAction.Trim();
+        var explanation = string.IsNullOrWhiteSpace(decision?.UserActionReason)
+            ? (decision?.Evaluation ?? "").Trim()
+            : decision.UserActionReason.Trim();
+        var required = decision?.UserActionRequired == true;
+        var protectedKind = IsProtectedIntervention(missing, explanation);
+        var canSkip = decision?.UserActionSkippable == true
+            && !required
+            && !protectedKind;
+        return new BrowserUserIntervention
+        {
+            Kind = ClassifyIntervention($"{missing} {explanation}"),
+            Missing = missing,
+            Explanation = explanation,
+            Required = required || protectedKind,
+            CanSkip = canSkip,
+        };
+    }
+
+    internal static BrowserUserIntervention BuildRequiredIntervention(
+        string missing,
+        string explanation = "This step is required to continue the requested task safely.")
+    {
+        var prompt = string.IsNullOrWhiteSpace(missing)
+            ? "Complete the required step in Chrome."
+            : missing.Trim();
+        return new BrowserUserIntervention
+        {
+            Kind = ClassifyIntervention($"{prompt} {explanation}"),
+            Missing = prompt,
+            Explanation = explanation?.Trim() ?? "",
+            Required = true,
+            CanSkip = false,
+        };
+    }
+
+    internal static bool AllowsSkippingUnavailableOptionalInputs(string text) =>
+        Regex.IsMatch(
+            NormalizeControlText(text),
+            @"\b(?:skip|omit|leave)\b.{0,80}\b(?:optional|unavailable|unknown|missing|blank|not\s+(?:known|available|provided))\b|\b(?:optional|unavailable|unknown|missing)\b.{0,80}\b(?:skip|omit|leave\s+blank)\b",
+            RegexOptions.IgnoreCase);
+
+    internal static bool IsSkipInterventionGuidance(string guidance) =>
+        Regex.IsMatch(
+            NormalizeControlText(guidance),
+            @"^(?:please\s+)?(?:skip|omit)\b|^(?:please\s+)?(?:leave|keep)\b.{0,80}\bblank\b|^(?:please\s+)?continue\b.{0,80}\bwithout\b",
+            RegexOptions.IgnoreCase);
+
+    internal static bool ShouldSkipIntervention(
+        bool skipUnavailableOptionalInputs,
+        IReadOnlySet<string> skippedInterventions,
+        BrowserUserIntervention intervention)
+    {
+        if (intervention?.CanSkip != true || intervention.Required)
+            return false;
+        var fingerprint = InterventionFingerprint(intervention);
+        return skipUnavailableOptionalInputs
+            || (skippedInterventions?.Contains(fingerprint) ?? false);
+    }
+
+    internal static string BuildSkippedInterventionGuidance(
+        BrowserUserIntervention intervention,
+        string guidance)
+    {
+        var missing = intervention?.Missing ?? "the current optional item";
+        return
+            $"Authoritative user skip guidance: {guidance?.Trim()} "
+            + $"The planner marked '{Short(missing, 220)}' as safely optional, so leave it unchanged/blank and do not ask for it again. "
+            + "This authorization does not apply to mandatory values, irreversible actions, or safety-sensitive confirmation.";
+    }
+
+    internal static string BuildRequiredInterventionResponse(
+        BrowserUserIntervention intervention)
+    {
+        var missing = intervention?.Missing;
+        var explanation = intervention?.Explanation;
+        if (string.IsNullOrWhiteSpace(missing))
+            return "That step is not known to be safely optional, so the browser task remains paused.";
+        return string.IsNullOrWhiteSpace(explanation)
+            ? $"The browser task remains paused because this is required: {missing}"
+            : $"The browser task remains paused because this is required: {missing} Why: {explanation}";
+    }
+
+    internal static string InterventionFingerprint(BrowserUserIntervention intervention) =>
+        NormalizeControlText($"{intervention?.Kind} {intervention?.Missing}");
+
+    private static bool IsProtectedIntervention(string missing, string explanation)
+    {
+        var text = $"{missing} {explanation}";
+        var kind = ClassifyIntervention(text);
+        return kind is "captcha_required"
+            or "login_required"
+            or "confirmation_required"
+            or "permission_required"
+            || Regex.IsMatch(
+                text,
+                @"\b(?:password|passcode|otp|one[- ]time|two[- ]factor|2fa|security|payment|checkout|bank(?:ing)?|credit\s+card|debit\s+card|cvv|place\s+(?:the\s+)?order)\b",
+                RegexOptions.IgnoreCase);
+    }
+
+    internal static Task ArmPauseBeforePublishingAsync(
+        AsyncPauseGate gate,
+        Action publish,
+        CancellationToken token)
+    {
+        ArgumentNullException.ThrowIfNull(gate);
+        ArgumentNullException.ThrowIfNull(publish);
+        gate.Pause();
+        publish();
+        return gate.WaitAsync(token);
+    }
+
     private bool TryTakePendingDestinationCorrection(
         Runtime runtime,
         out string label,
@@ -3688,12 +3913,40 @@ public sealed class BrowserAutomationCoordinator : IDisposable
 
     internal static bool IsRelevantManualAnswer(
         string requestedUserAction,
+        string guidance) =>
+        IsRelevantManualAnswer(
+            new BrowserUserIntervention { Missing = requestedUserAction ?? "" },
+            guidance);
+
+    internal static bool IsRelevantManualAnswer(
+        BrowserUserIntervention intervention,
         string guidance)
     {
-        var request = NormalizeControlText(requestedUserAction);
+        var request = NormalizeControlText(intervention?.Missing);
         var answer = NormalizeControlText(guidance);
         if (request.Length == 0 || answer.Length == 0)
             return false;
+
+        if (IsSkipInterventionGuidance(answer))
+            return intervention?.CanSkip == true;
+
+        if (Regex.IsMatch(answer, @"\b(?:ctrl|control)\s*\+?\s*\d\b", RegexOptions.IgnoreCase)
+            || Regex.IsMatch(
+                answer,
+                @"\b(?:switch|go|change)\b.{0,60}\b(?:tab|window)\b|\b(?:new|close|next|previous|reopen)\s+(?:browser\s+)?(?:tab|window)\b",
+                RegexOptions.IgnoreCase)
+            || Regex.IsMatch(
+                answer,
+                @"^(?:open|launch|start|close|quit|exit|search|find|show)\b",
+                RegexOptions.IgnoreCase)
+            || answer.Contains('?')
+            || Regex.IsMatch(
+                answer,
+                @"^(?:what|why|when|where|who|how|could|would|should|can|do|does|did|tell|explain|summarize|brainstorm)\b",
+                RegexOptions.IgnoreCase))
+        {
+            return false;
+        }
 
         if (Regex.IsMatch(
                 request,
@@ -3704,21 +3957,60 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             return true;
         }
 
-        // A paused task may ask for a missing non-sensitive field value. A
-        // direct "use/enter/choose X" answer is task guidance, not a new
-        // browser command. Keep this bounded to an explicit request for input
-        // and reject tab/window/navigation commands.
-        return Regex.IsMatch(
+        if (Regex.IsMatch(
                 request,
-                @"\b(?:provide|enter|type|fill|specify|choose|select)\b",
+                @"\b(?:url|uri|link|website|domain|repository|repo)\b",
                 RegexOptions.IgnoreCase)
             && Regex.IsMatch(
+                guidance ?? "",
+                @"(?:https?://|www\.)\S+|\b(?:[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?\.)+[a-z]{2,}(?:/\S*)?",
+                RegexOptions.IgnoreCase))
+        {
+            return true;
+        }
+
+        if (Regex.IsMatch(request, @"\bemail(?:\s+address)?\b", RegexOptions.IgnoreCase)
+            && Regex.IsMatch(
+                guidance ?? "",
+                @"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+                RegexOptions.IgnoreCase))
+        {
+            return true;
+        }
+
+        // A paused task may ask for a missing non-sensitive field value. A
+        // direct value or "use/enter/choose X" answer is task guidance, not a
+        // new browser command. Keep this bounded to an explicit request for
+        // input and a concise answer shape.
+        if (!Regex.IsMatch(
+                request,
+                @"\b(?:provide|enter|type|fill|specify|choose|select|supply|need|required|missing)\b",
+                RegexOptions.IgnoreCase))
+        {
+            return false;
+        }
+
+        if (Regex.IsMatch(
                 answer,
                 @"^(?:please\s+)?(?:use|enter|type|choose|select)\s+\S.{0,240}$",
-                RegexOptions.IgnoreCase)
+                RegexOptions.IgnoreCase))
+        {
+            return true;
+        }
+
+        if (Regex.IsMatch(
+                guidance ?? "",
+                @"\b(?:name|value|url|link|email|phone|date|answer|option)\b\s*(?:is|are|:|=)\s*\S",
+                RegexOptions.IgnoreCase))
+        {
+            return true;
+        }
+
+        var words = Regex.Matches(answer, @"[\p{L}\p{N}@._+:/-]+").Count;
+        return words is >= 1 and <= 8
             && !Regex.IsMatch(
                 answer,
-                @"\b(?:new|close|next|previous|reopen|switch|change)\s+(?:browser\s+)?(?:tab|window)\b",
+                @"^(?:i|we|it|that|this|there|maybe|perhaps|also|please)\b",
                 RegexOptions.IgnoreCase);
     }
 
@@ -4460,6 +4752,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         string result)
     {
         runtime.UserPaused = false;
+        runtime.Intervention = null;
         runtime.PauseGate.Resume();
         runtime.State = state;
         runtime.Outcome = outcome;
@@ -4483,6 +4776,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         runtime.ActionAttempts.Clear();
         runtime.SemanticActionAttempts.Clear();
         runtime.NoProgressActionStates.Clear();
+        runtime.SkippedInterventions.Clear();
+        while (runtime.PendingGuidance.TryDequeue(out _)) { }
         runtime.Receipts.Clear();
         if (runtime.Page != null)
         {
@@ -4506,7 +4801,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         {
             BrowserTaskState.Completed or BrowserTaskState.CompletedWithNote =>
                 "Okay, the browser task is complete. The result should now be visible in Chrome.",
-            BrowserTaskState.NeedsUserAction => BuildInterventionSpeech(runtime.CurrentAction),
+            BrowserTaskState.NeedsUserAction => BuildInterventionSpeech(runtime.Intervention),
             BrowserTaskState.Partial =>
                 "I completed part of the browser task, but stopped before the full result. Chrome is left at the useful stopping point.",
             BrowserTaskState.Blocked =>
@@ -4524,7 +4819,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         var detail = state switch
         {
             BrowserTaskState.Completed or BrowserTaskState.CompletedWithNote => runtime.ResultSummary,
-            BrowserTaskState.NeedsUserAction => runtime.CurrentAction,
+            BrowserTaskState.NeedsUserAction => BuildInterventionDisplay(runtime.Intervention),
             _ => runtime.LastError,
         };
         var announcement = new JarvisLifecycleAnnouncement
@@ -4533,6 +4828,19 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             State = state.ToString(),
             Detail = string.IsNullOrWhiteSpace(detail) ? spoken : detail,
             FallbackSpeech = spoken,
+            InterventionKind = state == BrowserTaskState.NeedsUserAction
+                ? runtime.Intervention?.Kind ?? "manual_step"
+                : "",
+            MissingInformation = state == BrowserTaskState.NeedsUserAction
+                ? runtime.Intervention?.Missing ?? runtime.CurrentAction
+                : "",
+            InterventionExplanation = state == BrowserTaskState.NeedsUserAction
+                ? runtime.Intervention?.Explanation ?? ""
+                : "",
+            InterventionRequired = state == BrowserTaskState.NeedsUserAction
+                && runtime.Intervention?.Required == true,
+            InterventionCanSkip = state == BrowserTaskState.NeedsUserAction
+                && runtime.Intervention?.CanSkip == true,
         };
         var handler = AnnouncementRequested;
         if (handler == null)
@@ -4607,6 +4915,9 @@ public sealed class BrowserAutomationCoordinator : IDisposable
     {
         if (runtime == null)
             return null;
+        var intervention = runtime.State == BrowserTaskState.NeedsUserAction
+            ? CopyIntervention(runtime.Intervention)
+            : null;
         return new BrowserAutomationSnapshot
         {
             TaskId = runtime.TaskId,
@@ -4625,14 +4936,12 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 && runtime.State != BrowserTaskState.NeedsUserAction,
             CanResume = runtime.UserPaused
                 || runtime.State == BrowserTaskState.NeedsUserAction,
-            CanCancel = !IsTerminal(runtime.State),
+            CanCancel = !IsTerminal(runtime.State)
+                || runtime.State == BrowserTaskState.Partial,
             VisionRecovery = runtime.VisionRecovery,
-            InterventionKind = runtime.State == BrowserTaskState.NeedsUserAction
-                ? ClassifyIntervention(runtime.CurrentAction)
-                : "",
-            InterventionReason = runtime.State == BrowserTaskState.NeedsUserAction
-                ? runtime.CurrentAction
-                : "",
+            Intervention = intervention,
+            InterventionKind = intervention?.Kind ?? "",
+            InterventionReason = intervention?.Missing ?? "",
             LastError = runtime.LastError,
             Outcome = runtime.Outcome,
             ResultSummary = runtime.ResultSummary,
@@ -4687,11 +4996,46 @@ public sealed class BrowserAutomationCoordinator : IDisposable
 
     internal static string BuildInterventionSpeech(string reason)
     {
-        var step = string.IsNullOrWhiteSpace(reason)
-            ? "Complete the required step in Chrome."
-            : Short(reason.Trim(), 320);
-        return $"Browser automation is paused. {step} Then say continue to resume the same task, or say cancel browser automation.";
+        return BuildInterventionSpeech(BuildRequiredIntervention(reason));
     }
+
+    internal static string BuildInterventionSpeech(BrowserUserIntervention intervention)
+    {
+        var detail = BuildInterventionDisplay(intervention);
+        var next = intervention?.CanSkip == true
+            ? "You can provide it, say skip to leave this optional item, or cancel browser automation. The same task will continue."
+            : "Complete or provide it, then say continue to resume the same task, or say cancel browser automation.";
+        return $"Browser automation is paused. {detail} {next}";
+    }
+
+    internal static string BuildInterventionDisplay(BrowserUserIntervention intervention)
+    {
+        var missing = string.IsNullOrWhiteSpace(intervention?.Missing)
+            ? "Complete the required step in Chrome."
+            : Short(intervention.Missing.Trim(), 320);
+        var explanation = string.IsNullOrWhiteSpace(intervention?.Explanation)
+            ? ""
+            : $" Why: {Short(intervention.Explanation.Trim(), 260)}";
+        var requirement = intervention?.CanSkip == true
+            ? " This item is optional and may be skipped."
+            : intervention?.Required == true
+                ? " This item is required to continue safely."
+                : "";
+        return $"{missing}{explanation}{requirement}";
+    }
+
+    private static BrowserUserIntervention CopyIntervention(
+        BrowserUserIntervention intervention) =>
+        intervention == null
+            ? null
+            : new BrowserUserIntervention
+            {
+                Kind = intervention.Kind,
+                Missing = intervention.Missing,
+                Explanation = intervention.Explanation,
+                Required = intervention.Required,
+                CanSkip = intervention.CanSkip,
+            };
 
     internal static bool ShouldForceVisualRecovery(
         string request,
@@ -4746,7 +5090,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         _bridge.Dispose();
     }
 
-    private sealed class AsyncPauseGate
+    internal sealed class AsyncPauseGate
     {
         private readonly object _lock = new();
         private TaskCompletionSource _resume = Completed();

@@ -65,11 +65,21 @@ public sealed class BrowserAutomationSnapshot
     public bool CanResume { get; init; }
     public bool CanCancel { get; init; }
     public bool VisionRecovery { get; init; }
+    public BrowserUserIntervention Intervention { get; init; }
     public string InterventionKind { get; init; } = "";
     public string InterventionReason { get; init; } = "";
     public string LastError { get; init; } = "";
     public BrowserAutomationOutcome? Outcome { get; init; }
     public string ResultSummary { get; init; } = "";
+}
+
+public sealed class BrowserUserIntervention
+{
+    public string Kind { get; init; } = "manual_step";
+    public string Missing { get; init; } = "";
+    public string Explanation { get; init; } = "";
+    public bool Required { get; init; }
+    public bool CanSkip { get; init; }
 }
 
 public sealed class BrowserHelperStatus

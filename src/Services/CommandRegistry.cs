@@ -515,17 +515,37 @@ public sealed class CommandRegistry
         var active = _browserAutomation.Snapshot();
         if (active.CanCancel)
         {
+            if (TryParseExplicitBrowserTaskStopOrPause(
+                    userTurn,
+                    out var controlAction,
+                    out var explicitlyTargetsBrowserTask)
+                && explicitlyTargetsBrowserTask)
+            {
+                var accepted = string.Equals(controlAction, "pause", StringComparison.Ordinal)
+                    ? _browserAutomation.Pause()
+                    : _browserAutomation.RequestCancel(announceOutcome: false);
+                var controlResult = ToolResult(
+                    accepted,
+                    accepted
+                        ? controlAction == "pause"
+                            ? "Browser automation paused."
+                            : "Browser automation cancelled."
+                        : "No active browser task accepted that control command.");
+                RecordAuthoritativePreRoute(
+                    userTurn,
+                    "browser_automation_control",
+                    controlResult);
+                AppLog.Info(
+                    $"Browser task control accepted by local pre-route: task={active.TaskId} action={controlAction} ok={accepted}");
+                return true;
+            }
+
             // The coordinator already owns the paused task and validates that
             // guidance is relevant to it. Accept that guidance locally so a
             // short answer such as "continue" or "use Test User" resumes the
-            // same execution even if Live elects to answer conversationally
-            // instead of issuing browser_automation_control. Explicit
-            // pause/cancel/stop commands must remain control-tool actions.
-            var isStopOrPause = IsExplicitBrowserTaskStopOrPause(userTurn);
-            var guidanceReason = isStopOrPause
-                ? "explicit pause/cancel/stop control"
-                : "";
-            if (!isStopOrPause
+            // same execution even if Live elects to answer conversationally.
+            var guidanceReason = "";
+            if (!IsExplicitBrowserTaskStopOrPause(userTurn)
                 && _browserAutomation.TryAddTaskGuidance(userTurn, out guidanceReason))
             {
                 lock (_browserPreRouteLock)
@@ -541,6 +561,25 @@ public sealed class CommandRegistry
                     _browserPreRouteOwnsCurrentTurn = true;
                 }
                 AppLog.Info($"Browser task guidance accepted by pre-route: task={active.TaskId}");
+                return true;
+            }
+
+            if (active.State == BrowserTaskState.NeedsUserAction
+                && !IsExplicitBrowserTaskStopOrPause(userTurn)
+                && BrowserAutomationCoordinator.IsSkipInterventionGuidance(userTurn))
+            {
+                var requiredResult = ToolResult(
+                    false,
+                    string.IsNullOrWhiteSpace(guidanceReason)
+                        ? "That browser requirement is not known to be safely optional, so the same task remains paused."
+                        : guidanceReason,
+                    supported: true);
+                RecordAuthoritativePreRoute(
+                    userTurn,
+                    "browser_automation_control",
+                    requiredResult);
+                AppLog.Info(
+                    $"Browser task required-step skip rejected authoritatively: task={active.TaskId}");
                 return true;
             }
 
@@ -594,10 +633,37 @@ public sealed class CommandRegistry
         && BrowserAutomationTaskClassifier.ShouldDeferIncrementalContentRouting(text);
 
     internal static bool IsExplicitBrowserTaskStopOrPause(string text) =>
-        Regex.IsMatch(
+        TryParseExplicitBrowserTaskStopOrPause(text, out _);
+
+    internal static bool TryParseExplicitBrowserTaskStopOrPause(
+        string text,
+        out string action) =>
+        TryParseExplicitBrowserTaskStopOrPause(
+            text,
+            out action,
+            out _);
+
+    internal static bool TryParseExplicitBrowserTaskStopOrPause(
+        string text,
+        out string action,
+        out bool explicitlyTargetsBrowserTask)
+    {
+        action = "";
+        explicitlyTargetsBrowserTask = false;
+        var match = Regex.Match(
             (text ?? "").Trim(),
-            @"^(?:please\s+)?(?:pause|cancel|stop)(?:\s+(?:the\s+)?(?:browser\s+automation|browser\s+task|task))?[.!?]*$",
+            @"^(?:please\s+)?(?<action>pause|cancel|stop)(?<target>\s+(?:the\s+)?(?:browser\s+automation|browser\s+task|task))?[.!?]*$",
             RegexOptions.IgnoreCase);
+        if (!match.Success)
+            return false;
+        action = match.Groups["action"].Value.Equals(
+            "pause",
+            StringComparison.OrdinalIgnoreCase)
+                ? "pause"
+                : "cancel";
+        explicitlyTargetsBrowserTask = match.Groups["target"].Success;
+        return true;
+    }
 
     private async Task TogglePushToTalkAsync()
     {
@@ -1869,6 +1935,9 @@ public sealed class CommandRegistry
             ["vision_recovery"] = status.VisionRecovery,
             ["intervention_kind"] = status.InterventionKind,
             ["intervention_reason"] = status.InterventionReason,
+            ["intervention_explanation"] = status.Intervention?.Explanation ?? "",
+            ["intervention_required"] = status.Intervention?.Required ?? false,
+            ["intervention_can_skip"] = status.Intervention?.CanSkip ?? false,
             ["result"] = status.ResultSummary,
             ["last_error"] = status.LastError,
             ["helper_connected"] = helper.CommandChannelReady,

@@ -72,6 +72,15 @@ public sealed class BrowserPlannerDecision
     [JsonPropertyName("userAction")]
     public string UserAction { get; set; } = "";
 
+    [JsonPropertyName("userActionReason")]
+    public string UserActionReason { get; set; } = "";
+
+    [JsonPropertyName("userActionRequired")]
+    public bool UserActionRequired { get; set; }
+
+    [JsonPropertyName("userActionSkippable")]
+    public bool UserActionSkippable { get; set; }
+
     [JsonPropertyName("confidence")]
     public double Confidence { get; set; }
 }
@@ -137,13 +146,17 @@ public sealed class BrowserAutomationPlanner : IDisposable
             ["completionValue"] = StringSchema(),
             ["needsUserAction"] = new { type = "boolean" },
             ["userAction"] = StringSchema(),
+            ["userActionReason"] = StringSchema(),
+            ["userActionRequired"] = new { type = "boolean" },
+            ["userActionSkippable"] = new { type = "boolean" },
             ["confidence"] = new { type = "number" },
         },
         required = new[]
         {
             "evaluation", "nextGoal", "action", "done", "resultSummary",
             "completionKind", "completionValue", "needsUserAction",
-            "userAction", "confidence",
+            "userAction", "userActionReason", "userActionRequired",
+            "userActionSkippable", "confidence",
         },
     };
 
@@ -459,6 +472,8 @@ public sealed class BrowserAutomationPlanner : IDisposable
         builder.AppendLine("When a modal, dialog, listbox, date picker, or other overlay is open, finish or dismiss that visible layer with its exact Apply/Done/Save/Close control before using page-level controls behind it. A no-op behind an overlay means inspect the overlay; it does not justify restarting the workflow.");
         builder.AppendLine("For an explicit date, a context-free numeric day button is not grounded evidence of the requested month/year. Prefer a full accessible date label; otherwise navigate the calendar, type the date, or use one screenshot to correlate the visible month before clicking.");
         builder.AppendLine("Never invent a required date, personal detail, recipient, or other missing user input. When the page requires information that the original request and accepted task guidance do not provide, use needs_user_action and ask only for that missing value.");
+        builder.AppendLine("For needs_user_action, put the exact missing information or manual step in userAction and explain why it blocks progress in userActionReason. Set userActionRequired=true only when the task cannot be completed correctly without it. Set userActionSkippable=true only when the page makes it safely optional; never mark login, security, irreversible confirmation, payment, or a required value as skippable. If uncertain, set both flags false.");
+        builder.AppendLine("Task guidance and skip-policy entries in ACTION HISTORY are authoritative. If the user allowed unavailable optional information to be skipped, continue past fields that are demonstrably optional instead of asking for them. Never skip a required or safety-sensitive dependency, and never ask again for an optional dependency already recorded as skipped.");
         builder.AppendLine("A field write is provisional until the next fresh page observation still contains the requested value. If a date or other controlled input clears or reformats away after the page reacts, do not alternate between fields or repeat the same format; choose a different supported input mechanism or ask for the smallest necessary user action.");
         builder.AppendLine("For a multi-step source-to-document task, once a grounded summary/result is ready, put the task-scoped draft text in completionValue before navigating away. It is ephemeral for this one task only. A later paste action may leave action.text empty to use that draft. Do not mark done until the destination editor verifies insertion.");
         builder.AppendLine("copy_clipboard is terminal only when the user's requested destination is the clipboard. In a source-to-editor workflow it may prepare the draft, but you must then activate the recorded destination tab and paste into its verified editor.");
