@@ -2281,7 +2281,7 @@ public sealed class SecurityAndUsageTests
             Assert.Equal("subscription", activatedPurchase.GetValue<string>("kind"));
             Assert.False(activatedPurchase.GetValue<bool>("credited"));
 
-            var firstCycleEnd = DateTimeOffset.Parse("2026-09-01T00:00:00Z");
+            var firstCycleEnd = new DateTimeOffset(DateTime.UtcNow.Date.AddDays(7), TimeSpan.Zero);
             var firstCharge = await store.ApplyPaymentWebhookAsync(
                 $"evt_charge_one_{suffix}", "subscription.charged", subscriptionId,
                 paymentOne, null, subscriptionId, subscriptionPurchaseId, paymentOne, 9_900, "active", CancellationToken.None,
@@ -2337,7 +2337,7 @@ public sealed class SecurityAndUsageTests
             Assert.Equal(490_000_000, firstCycleAfterUsage.SubscriptionAllowanceCreditMicros);
             Assert.Equal(10_000_000, firstCycleAfterUsage.SubscriptionConsumedCreditMicros);
 
-            var nextCycleEnd = DateTimeOffset.Parse("2026-10-01T00:00:00Z");
+            var nextCycleEnd = firstCycleEnd.AddMonths(1);
             await store.ApplyPaymentWebhookAsync(
                 $"evt_charge_two_{suffix}", "subscription.charged", subscriptionId,
                 paymentTwo, null, subscriptionId, subscriptionPurchaseId, paymentTwo, 9_900, "active", CancellationToken.None,
