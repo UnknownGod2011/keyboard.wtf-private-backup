@@ -181,6 +181,57 @@ public sealed class BrowserAutomationSafetyPolicyTests
     }
 
     [Theory]
+    [InlineData("Clear form")]
+    [InlineData("Reset all answers")]
+    [InlineData("Start over")]
+    public void Page_wide_progress_reset_is_blocked_when_not_explicit(string targetName)
+    {
+        var result = _policy.EvaluateAction(
+            "Fill the supported fields and do not submit",
+            new BrowserPlannerAction
+            {
+                Type = "click",
+                TargetRole = "button",
+                TargetName = targetName,
+            });
+
+        Assert.False(result.MayStart);
+        Assert.True(result.PauseBeforeSensitiveStep);
+        Assert.Contains("not explicitly requested", result.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Explicit_page_wide_progress_reset_is_allowed()
+    {
+        var result = _policy.EvaluateAction(
+            "Clear the form and start again",
+            new BrowserPlannerAction
+            {
+                Type = "click",
+                TargetRole = "button",
+                TargetName = "Clear form",
+            });
+
+        Assert.True(result.MayStart);
+    }
+
+    [Fact]
+    public void Negated_progress_reset_is_not_permission()
+    {
+        var result = _policy.EvaluateAction(
+            "Fill the remaining fields but do not clear the form",
+            new BrowserPlannerAction
+            {
+                Type = "click",
+                TargetRole = "button",
+                TargetName = "Clear form",
+            });
+
+        Assert.False(result.MayStart);
+        Assert.True(result.PauseBeforeSensitiveStep);
+    }
+
+    [Theory]
     [InlineData("Fill this form. Do not submit.")]
     [InlineData("Answer the quiz without submitting it.")]
     [InlineData("Fill every field and stop before Submit.")]

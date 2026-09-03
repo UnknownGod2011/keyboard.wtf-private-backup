@@ -24,6 +24,14 @@ public sealed class BrowserAutomationSafetyPolicy
         @"\b(?:do\s+not|don't|dont|never|without|avoid|must\s+not|should\s+not|shouldn't|stop\s+before|leave\s+(?:it\s+)?(?:unsubmitted|unsent|unposted))\b[^.!?;\r\n]{0,48}\b(?:submit(?:ting)?|send(?:ing)?|post(?:ing)?|publish(?:ing)?|delet(?:e|ing)|register(?:ing)?|join(?:ing)?|appl(?:y|ying))\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex ProgressReset = new(
+        @"\b(?:(?:clear|reset|erase)(?:\s+(?:the|all|saved|entered|existing|current))?\s+(?:form|answers?|fields?|entries|progress)|start\s+over)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex ProgressResetNegated = new(
+        @"\b(?:do\s+not|don't|dont|never|without|avoid|must\s+not|should\s+not|shouldn't)\b[^.!?;\r\n]{0,48}\b(?:(?:clear|reset|erase)(?:\s+(?:the|all|saved|entered|existing|current))?\s+(?:form|answers?|fields?|entries|progress)|start\s+over)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly Regex SearchOrNavigationTarget = new(
         @"\b(search|find|lookup|look up|query|compare|report|repository|address|url|go|continue|done|date|calendar|next)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -104,6 +112,21 @@ public sealed class BrowserAutomationSafetyPolicy
             };
         }
 
+        // Clearing a form or resetting entered progress is destructive even
+        // when it is locally reversible. A planner must not infer that broad
+        // reset merely from wording such as "clear and correct this field".
+        if (action?.Type == "click"
+            && ProgressReset.IsMatch(target)
+            && !IsProgressResetExplicitlyRequested(request))
+        {
+            return new BrowserAutomationSafetyDecision
+            {
+                MayStart = false,
+                PauseBeforeSensitiveStep = true,
+                Reason = "The clear/reset action was not explicitly requested.",
+            };
+        }
+
         if (action?.Type == "press_key"
             && string.Equals(action.Key, "Enter", StringComparison.OrdinalIgnoreCase)
             && (EnterMayCommitUserContent.IsMatch(target)
@@ -135,5 +158,11 @@ public sealed class BrowserAutomationSafetyPolicy
     {
         var text = request ?? "";
         return FinalSubmit.IsMatch(text) && !FinalSubmitNegated.IsMatch(text);
+    }
+
+    private static bool IsProgressResetExplicitlyRequested(string request)
+    {
+        var text = request ?? "";
+        return ProgressReset.IsMatch(text) && !ProgressResetNegated.IsMatch(text);
     }
 }
