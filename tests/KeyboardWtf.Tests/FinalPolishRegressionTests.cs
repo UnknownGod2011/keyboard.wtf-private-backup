@@ -177,8 +177,14 @@ public sealed class FinalPolishRegressionTests : IDisposable
             "Services",
             "GeminiLiveConversationService.cs"));
 
-        Assert.Contains("_userTranscriptObserver?.Invoke(accumulatedUserTurn);", source,
+        var farewell = source.IndexOf(
+            "if (ShouldAutoEnd(text, accumulatedUserTurn))",
             StringComparison.Ordinal);
+        var observer = source.IndexOf(
+            "_userTranscriptObserver?.Invoke(accumulatedUserTurn);",
+            StringComparison.Ordinal);
+        Assert.True(farewell >= 0);
+        Assert.True(observer > farewell);
         Assert.Contains("StopMicrophone();", source, StringComparison.Ordinal);
         Assert.Contains("StopPlayback();", source, StringComparison.Ordinal);
         Assert.Contains("await StopAsync(showDone: false);", source, StringComparison.Ordinal);

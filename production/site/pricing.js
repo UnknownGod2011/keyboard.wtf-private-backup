@@ -1,10 +1,23 @@
-import { loadCatalog, formatMoney, formatCredits } from "./app.js";
+import {
+  loadAccount,
+  loadCatalog,
+  formatMoney,
+  formatCredits,
+  waitForAuthInitialization,
+} from "./app.js";
 import { runtimeConfig } from "./config.js";
 
 const products = document.getElementById("products");
 const status = document.getElementById("status");
 try {
-  const catalog = await loadCatalog();
+  const [catalog, user] = await Promise.all([
+    loadCatalog(),
+    waitForAuthInitialization(),
+  ]);
+  const account = user ? await loadAccount() : null;
+  const subscriptionStatus = String(account?.subscriptionStatus || "none").trim().toLowerCase();
+  const hasManagedSubscription = !["", "none", "cancelled", "completed", "expired", "failed"]
+    .includes(subscriptionStatus);
   for (const product of (catalog.products || []).filter((item) => item.kind === "subscription")) {
     const card = document.createElement("section");
     card.className = "card";
@@ -40,7 +53,13 @@ try {
     const signIn = document.createElement("a");
     signIn.className = "button";
     signIn.href = "./account.html";
-    signIn.textContent = catalog.paymentsKillSwitch === false ? "Sign in to subscribe" : "Coming soon";
+    signIn.textContent = catalog.paymentsKillSwitch !== false
+      ? "Coming soon"
+      : !user
+        ? "Sign in to subscribe"
+        : hasManagedSubscription
+          ? "Manage current plan"
+          : "Subscribe from Account";
     if (catalog.paymentsKillSwitch !== false) {
       signIn.setAttribute("aria-disabled", "true");
       signIn.classList.add("disabled");
@@ -49,7 +68,11 @@ try {
     products.append(card);
   }
   status.textContent = catalog.paymentsKillSwitch === false
-    ? "Subscriptions are available from your signed-in account."
+    ? !user
+      ? "Sign in with your keyboard.wtf account to subscribe."
+      : hasManagedSubscription
+        ? "Your current subscription is managed from Account & Billing."
+        : "Subscriptions are available from your signed-in account."
     : (catalog.paymentsKillSwitchMessage || "Subscriptions are not open yet.");
 } catch (error) {
   status.textContent = error.message;

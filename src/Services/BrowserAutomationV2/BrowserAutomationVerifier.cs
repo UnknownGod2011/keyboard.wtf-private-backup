@@ -68,7 +68,8 @@ public sealed class BrowserAutomationVerifier
         string request,
         BrowserPlannerDecision decision,
         BrowserPageSnapshot page,
-        IReadOnlyList<BrowserActionReceipt> receipts)
+        IReadOnlyList<BrowserActionReceipt> receipts,
+        bool orderedSourceCollectionVerified = false)
     {
         var text = IntentText(request);
         var groundedInformationResult = RequestsGroundedInformation(text)
@@ -85,6 +86,21 @@ public sealed class BrowserAutomationVerifier
         {
             return Failed(
                 "The final page discarded a more specific verified state reached earlier in this task.");
+        }
+
+        var orderedSource = ExtractOrderedSourceIdentity(request);
+        if (!string.IsNullOrWhiteSpace(orderedSource))
+        {
+            if (!orderedSourceCollectionVerified)
+            {
+                return Failed(
+                    "No current-task evidence proves that the requested publisher/source collection was established before choosing the ordered item.");
+            }
+            if (!PageHasExactSourceIdentity(page, orderedSource))
+            {
+                return Failed(
+                    "The final page does not identify the requested publisher/source as the creator of the opened item.");
+            }
         }
 
         if (RequestsClipboardOutput(text))
@@ -116,18 +132,6 @@ public sealed class BrowserAutomationVerifier
                     && !receipt.NoVisibleChange))
             {
                 return Failed("No current-task receipt proves that the visible Oldest control was activated.");
-            }
-
-            var expectedChannel = ExtractBetween(
-                request,
-                @"\b(?:oldest|latest|newest|most recent)\s+(.+?)\s+(?:video|youtube)\b");
-            if (!string.IsNullOrWhiteSpace(expectedChannel)
-                && !ContainsMeaningfulTokens(
-                    $"{page.Title} {page.PageText}",
-                    expectedChannel,
-                    minimumMatches: 1))
-            {
-                return Failed("The watch page does not contain evidence for the requested channel/entity.");
             }
 
             return Passed("The requested YouTube ordering was used and a matching watch page is open.");
@@ -627,6 +631,125 @@ public sealed class BrowserAutomationVerifier
         var required = Math.Min(Math.Max(1, minimumMatches), tokens.Length);
         return tokens.Count(token =>
             (observed ?? "").Contains(token, StringComparison.OrdinalIgnoreCase)) >= required;
+    }
+
+    internal static string ExtractOrderedSourceIdentity(string request)
+    {
+        var text = IntentText(request);
+        if (!Regex.IsMatch(
+                text,
+                @"\b(?:oldest|latest|newest|most\s+recent)\b",
+                RegexOptions.IgnoreCase))
+        {
+            return "";
+        }
+
+        var contentKind = @"(?:[\p{L}\p{N}-]+\s+){0,2}(?:video|upload|post|article|episode|release|content|item)";
+        var patterns = new[]
+        {
+            @"\b(?<source>[\p{L}\p{N}][\p{L}\p{N} .&_-]{0,80}?)['’]s\s+(?:oldest|latest|newest|most\s+recent)\s+" + contentKind,
+            @"\b(?:oldest|latest|newest|most\s+recent)\s+" + contentKind + @"\s+(?:by|from)\s+(?<source>[^,.;!?]{1,80}?)(?=\s+(?:on|at|in|via)\b|[,.;!?]|$)",
+            @"\b(?:oldest|latest|newest|most\s+recent)\s+(?<source>[\p{L}\p{N}][\p{L}\p{N} .&_-]{0,80}?)\s+(?:video|upload|post|article|episode|release|content|item)\b",
+        };
+        var matches = patterns
+            .SelectMany(pattern => Regex.Matches(
+                    text,
+                    pattern,
+                    RegexOptions.IgnoreCase)
+                .Cast<Match>())
+            .OrderByDescending(match => match.Index);
+        foreach (var match in matches)
+        {
+            var source = Regex.Replace(
+                match.Groups["source"].Value.Trim(),
+                @"^(?:(?:please\s+)|(?:(?:can|could|would|will)\s+you\s+)|(?:open|play|find|show|watch|visit)\s+|the\s+)+"
+                + @"|\s+(?:official\s+)?(?:channel|profile|account|page)$"
+                + @"|\s+(?:instead|please|now)$",
+                "",
+                RegexOptions.IgnoreCase).Trim();
+            if (MeaningfulTokens(source).Length > 0)
+                return source;
+        }
+        return "";
+    }
+
+    internal static bool IsVerifiedOrderedSourceCollectionPage(
+        BrowserPageSnapshot page,
+        string source)
+    {
+        if (!Uri.TryCreate(page?.Url, UriKind.Absolute, out var uri)
+            || IsSearchOrDetailUrl(uri))
+        {
+            return false;
+        }
+
+        var title = Normalize(page.Title);
+        var sourceName = Normalize(source);
+        var titleIdentifiesSource = title.Equals(sourceName, StringComparison.Ordinal)
+            || title.StartsWith(sourceName + " ", StringComparison.Ordinal)
+            || title.Contains(" " + sourceName + " ", StringComparison.Ordinal);
+        var exactIdentityControl = PageHasExactSourceIdentity(page, source);
+        var sourceTokens = MeaningfulTokens(source);
+        var path = Uri.UnescapeDataString(uri.AbsolutePath)
+            .Replace('-', ' ')
+            .Replace('_', ' ');
+        if (sourceTokens.Length > 0
+            && sourceTokens.All(token =>
+                path.Contains(token, StringComparison.OrdinalIgnoreCase))
+            && (titleIdentifiesSource || exactIdentityControl))
+        {
+            return true;
+        }
+
+        var hasCollectionSurface = (page.Controls ?? Array.Empty<BrowserControl>()).Any(control =>
+            control.Visible
+            && control.Role is "link" or "tab" or "button"
+            && Regex.IsMatch(
+                ControlIdentity(control),
+                @"\b(?:videos?|uploads?|posts?|articles?|episodes?|content|releases?|latest|newest|oldest|recent)\b",
+                RegexOptions.IgnoreCase));
+        return (titleIdentifiesSource || exactIdentityControl) && hasCollectionSurface;
+    }
+
+    internal static bool PageHasExactSourceIdentity(
+        BrowserPageSnapshot page,
+        string source)
+    {
+        var expected = Normalize(source);
+        if (expected.Length == 0)
+            return false;
+        return (page?.Controls ?? Array.Empty<BrowserControl>()).Any(control =>
+        {
+            if (!control.Visible || control.Role is not ("link" or "button"))
+                return false;
+            var candidates = new[]
+            {
+                control.AccessibleName,
+                control.Text,
+                control.AriaLabel,
+                control.Title,
+            };
+            return candidates.Any(candidate =>
+            {
+                var normalized = Normalize(candidate);
+                return normalized.Equals(expected, StringComparison.Ordinal)
+                    || Regex.IsMatch(
+                        normalized,
+                        $@"^{Regex.Escape(expected)}\s+(?:official|verified|channel|profile|account)$",
+                        RegexOptions.IgnoreCase);
+            });
+        });
+    }
+
+    private static bool IsSearchOrDetailUrl(Uri uri)
+    {
+        var path = Normalize(uri.AbsolutePath);
+        if (Regex.IsMatch(path, @"\b(?:search|results?|watch|item|article|post|video)\b"))
+            return true;
+        return Regex.IsMatch(
+            uri.Query ?? "",
+            @"(?:^|[?&])(?:q|query|search|search_query)=",
+            RegexOptions.IgnoreCase);
     }
 
     private static string[] MeaningfulTokens(string value)

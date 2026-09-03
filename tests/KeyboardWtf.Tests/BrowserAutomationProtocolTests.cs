@@ -139,6 +139,81 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Paused_task_adopts_a_fresh_active_tab_only_after_clear_user_handoff()
+    {
+        var intervention = new BrowserUserIntervention
+        {
+            Missing = "Navigate to the intended form page, then tell me when it is ready.",
+            Explanation = "The current page is not the form the task needs.",
+            Required = true,
+        };
+        var current = new BrowserPageSnapshot
+        {
+            WindowId = 8,
+            TabId = 41,
+            Url = "https://source.example/context",
+        };
+        var freshOtherTab = new BrowserHelperStatus
+        {
+            Connected = true,
+            ActiveTabFresh = true,
+            WindowId = 8,
+            TabId = 57,
+            ActiveUrl = "https://forms.example/target",
+        };
+
+        Assert.True(BrowserAutomationCoordinator.ShouldAdoptFreshActiveTabForGuidance(
+            intervention,
+            "I'm on the correct form now; continue here.",
+            current,
+            freshOtherTab));
+        Assert.True(BrowserAutomationCoordinator.ShouldAdoptFreshActiveTabForGuidance(
+            intervention,
+            "Use this current form and resume here.",
+            current,
+            new BrowserHelperStatus
+            {
+                Connected = true,
+                ActiveTabFresh = true,
+                WindowId = 12,
+                TabId = 91,
+            }));
+        Assert.False(BrowserAutomationCoordinator.ShouldAdoptFreshActiveTabForGuidance(
+            intervention,
+            "What do you think about the project?",
+            current,
+            freshOtherTab));
+        Assert.False(BrowserAutomationCoordinator.ShouldAdoptFreshActiveTabForGuidance(
+            intervention,
+            "Continue here.",
+            current,
+            new BrowserHelperStatus
+            {
+                Connected = true,
+                ActiveTabFresh = true,
+                WindowId = 8,
+                TabId = 41,
+            }));
+    }
+
+    [Fact]
+    public void Paused_task_never_consumes_farewell_or_explicit_browser_cancellation_as_field_guidance()
+    {
+        var intervention = new BrowserUserIntervention
+        {
+            Missing = "Provide the remaining required value.",
+            Required = true,
+        };
+
+        Assert.False(BrowserAutomationCoordinator.IsRelevantManualAnswer(
+            intervention,
+            "goodbye"));
+        Assert.False(BrowserAutomationCoordinator.IsRelevantManualAnswer(
+            intervention,
+            "Okay, cancel browser automation and try again."));
+    }
+
+    [Fact]
     public async Task Intervention_gate_is_armed_before_a_visible_state_can_resume_it()
     {
         var gate = new BrowserAutomationCoordinator.AsyncPauseGate();
@@ -170,6 +245,25 @@ public sealed class BrowserAutomationProtocolTests
         Assert.Contains("userActionReason", prompt);
         Assert.Contains("userActionSkippable", prompt);
         Assert.Contains("Never skip a required or safety-sensitive dependency", prompt);
+    }
+
+    [Fact]
+    public void Planner_receives_fresh_selected_context_and_must_use_known_values_before_asking()
+    {
+        var prompt = BrowserAutomationPlanner.BuildPrompt(
+            "Fill the current form from the selected information without submitting it.",
+            new BrowserPageSnapshot
+            {
+                Url = "https://forms.example/application",
+                SelectedText = "Project name: Clear Finch. Team size: 3. Website: https://clearfinch.example",
+            },
+            Array.Empty<string>(),
+            Array.Empty<BrowserControl>());
+
+        Assert.Contains("CURRENT SELECTED TEXT", prompt, StringComparison.Ordinal);
+        Assert.Contains("Project name: Clear Finch", prompt, StringComparison.Ordinal);
+        Assert.Contains("consume every supported value", prompt, StringComparison.Ordinal);
+        Assert.Contains("genuinely missing required value", prompt, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2115,6 +2209,40 @@ public sealed class BrowserAutomationProtocolTests
         bool expected)
     {
         Assert.Equal(expected, CommandRegistry.IsExplicitBrowserTaskStopOrPause(utterance));
+    }
+
+    [Theory]
+    [InlineData("Okay, cancel browser automation and try again.", true)]
+    [InlineData("Could you please stop the browser task?", true)]
+    [InlineData("Don't cancel browser automation.", false)]
+    [InlineData("I wonder whether we should cancel browser automation.", false)]
+    public void Natural_explicit_browser_cancellation_is_authoritative_without_matching_discussion(
+        string utterance,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            CommandRegistry.TryParseExplicitBrowserTaskStopOrPause(
+                utterance,
+                out _,
+                out var targetsBrowserTask)
+                && targetsBrowserTask);
+    }
+
+    [Theory]
+    [InlineData(true, "User cancelled Browser Automation", true)]
+    [InlineData(true, "", false)]
+    [InlineData(false, "User cancelled Browser Automation", false)]
+    public void Late_in_flight_failure_cannot_replace_an_authoritative_cancelled_terminal_state(
+        bool cancellationRequested,
+        string reason,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            BrowserAutomationCoordinator.ShouldTreatLateFailureAsCancellation(
+                cancellationRequested,
+                reason));
     }
 
     [Theory]

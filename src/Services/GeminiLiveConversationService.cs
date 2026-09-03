@@ -1343,16 +1343,18 @@ public sealed class GeminiLiveConversationService : IDisposable
             MarkTurnStarted();
             KeyboardWtfState.SetUi(VoiceUiPhase.Listening, "You", text);
             var accumulatedUserTurn = CurrentUserTranscript();
-            _userTranscriptObserver?.Invoke(accumulatedUserTurn);
             // Check the fresh provider fragment as well as the accumulated
             // turn. If a provider turn-complete is delayed or omitted, the
             // bounded cumulative buffer can already be full; a later explicit
-            // "goodbye" must still end this logical Jarvis session once.
+            // "goodbye" must still end this logical Jarvis session once. This
+            // local terminal intent owns the turn before browser-task guidance
+            // or any other observer can consume it.
             if (ShouldAutoEnd(text, accumulatedUserTurn))
             {
                 ScheduleAutoEnd("Heard that you are done.");
                 return;
             }
+            _userTranscriptObserver?.Invoke(accumulatedUserTurn);
         }
 
         if (content.TryGetProperty("outputTranscription", out var output)

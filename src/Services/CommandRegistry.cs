@@ -49,6 +49,15 @@ public sealed class CommandRegistry
     private bool _browserPreRouteOwnsCurrentTurn;
     private string _latestJarvisUserTurn = "";
     private DateTime _latestJarvisUserTurnUtc;
+    // One conversation-scoped capture, replaced by every newer explicit
+    // selection/clipboard read and cleared when Jarvis ends. It is never saved
+    // as memory and is attached to a browser task only when the user asks to
+    // use that context (or explicitly asked to retain it for a later action).
+    private string _capturedBrowserContextText = "";
+    private string _capturedBrowserContextSource = "";
+    private string _capturedBrowserContextUserTurn = "";
+    private DateTime _capturedBrowserContextUtc;
+    private bool _capturedBrowserContextAuthorizedForLaterAction;
     private int _smartWritingOperationId;
 
     public CommandRegistry(
@@ -148,6 +157,7 @@ public sealed class CommandRegistry
             _latestJarvisUserTurnUtc = default;
             _awaitingLocalTextEcho = "";
             _awaitingLocalTextEchoUtc = default;
+            ClearCapturedBrowserContextLocked();
         }
         _automation?.ResetConversationTransientContext();
         if (_browserAutomation != null)
@@ -597,10 +607,11 @@ public sealed class CommandRegistry
         // later "selected/highlighted text" fragment arrives. Defer only that
         // ambiguous voice pre-route to the completed Live turn. Explicit page
         // mutation and explicit Browser Automation requests still start here.
-        if (ShouldDeferIncrementalBrowserPreRoute(userTurn, fromLocalTextSubmission))
+        if (ShouldDeferIncrementalBrowserPreRoute(userTurn, fromLocalTextSubmission)
+            || HasCapturedContextForLaterBrowserAction(userTurn))
         {
             AppLog.Info(
-                "Browser pre-route deferred until the complete Live turn because the request may refer to selected content.");
+                "Browser pre-route deferred until the complete Live turn so explicit user-provided context can be attached once.");
             return false;
         }
 
@@ -629,8 +640,9 @@ public sealed class CommandRegistry
     internal static bool ShouldDeferIncrementalBrowserPreRoute(
         string text,
         bool fromLocalTextSubmission) =>
-        !fromLocalTextSubmission
-        && BrowserAutomationTaskClassifier.ShouldDeferIncrementalContentRouting(text);
+        BrowserAutomationTaskClassifier.RequiresFreshUserContextCapture(text)
+        || (!fromLocalTextSubmission
+            && BrowserAutomationTaskClassifier.ShouldDeferIncrementalContentRouting(text));
 
     internal static bool IsExplicitBrowserTaskStopOrPause(string text) =>
         TryParseExplicitBrowserTaskStopOrPause(text, out _);
@@ -652,7 +664,11 @@ public sealed class CommandRegistry
         explicitlyTargetsBrowserTask = false;
         var match = Regex.Match(
             (text ?? "").Trim(),
-            @"^(?:please\s+)?(?<action>pause|cancel|stop)(?<target>\s+(?:the\s+)?(?:browser\s+automation|browser\s+task|task))?[.!?]*$",
+            @"^\s*(?:(?:okay|ok|alright|yes|no)[,;:.!\s]+)?"
+            + @"(?:(?:please\s+)|(?:(?:can|could|would|will)\s+you\s+)|(?:i\s+(?:want|need|would\s+like)\s+you\s+to\s+))*"
+            + @"(?<action>pause|cancel|stop)"
+            + @"(?<target>\s+(?:the\s+)?(?:browser\s+automation|browser\s+task|automation\s+task|task))?"
+            + @"(?:\s*(?:[,;:.!?]|\band\b|\bthen\b).*)?$",
             RegexOptions.IgnoreCase);
         if (!match.Success)
             return false;
@@ -737,9 +753,13 @@ public sealed class CommandRegistry
                             : receipt.Error);
             }
 
-            return _automation == null
-                ? ToolResult(false, $"{toolName} is not a supported keyboard.wtf action yet.", supported: false)
-                : await _automation.ExecuteAsync(toolName, args, token);
+            if (_automation == null)
+                return ToolResult(false, $"{toolName} is not a supported keyboard.wtf action yet.", supported: false);
+
+            var result = await _automation.ExecuteAsync(toolName, args, token);
+            if (toolName is "get_selected_text" or "get_clipboard_text")
+                RecordCapturedBrowserContext(toolName, result);
+            return result;
         }
         catch (OperationCanceledException)
         {
@@ -1722,6 +1742,10 @@ public sealed class CommandRegistry
         var request = ResolveBrowserAutomationTask(
             GetString(args, "task"),
             RecentJarvisUserTurn());
+        var attachedCapturedContext = TryAttachCapturedBrowserContext(
+            request,
+            out var groundedRequest);
+        request = groundedRequest;
         var classification = _browserAutomation.Classify(request);
         if (classification.Decision != BrowserAutomationDecision.BrowserAutomation)
         {
@@ -1739,6 +1763,8 @@ public sealed class CommandRegistry
             };
         }
         var result = _browserAutomation.Start(request);
+        if (result.Started && attachedCapturedContext)
+            ConsumeCapturedBrowserContext();
         var lifecycleState = result.Started
             ? "starting"
             : NormalizeBrowserTaskState(_browserAutomation.Snapshot());
@@ -1784,12 +1810,128 @@ public sealed class CommandRegistry
         if (Regex.IsMatch(
             user,
             @"^\s*(?:yes[, ]*)?(?:please\s+)?(?:do (?:it|that)|go ahead|proceed|continue|resume|same as before|try again)\s*[.!?]*\s*$",
-            RegexOptions.IgnoreCase))
+            RegexOptions.IgnoreCase)
+            || BrowserAutomationCoordinator.IsExplicitPageHandoffGuidance(user))
         {
             return model;
         }
 
         return user;
+    }
+
+    private void RecordCapturedBrowserContext(
+        string toolName,
+        Dictionary<string, object> result)
+    {
+        if (result == null
+            || !result.TryGetValue("ok", out var ok)
+            || ok is not true
+            || !result.TryGetValue("text", out var value)
+            || string.IsNullOrWhiteSpace(value?.ToString()))
+        {
+            return;
+        }
+
+        var userTurn = RecentJarvisUserTurn();
+        lock (_browserPreRouteLock)
+        {
+            _capturedBrowserContextText = BrowserAutomationText.Truncate(
+                value.ToString().Trim(),
+                6000);
+            _capturedBrowserContextSource = toolName == "get_selected_text"
+                ? "selected text"
+                : "clipboard text";
+            _capturedBrowserContextUserTurn = userTurn;
+            _capturedBrowserContextUtc = DateTime.UtcNow;
+            _capturedBrowserContextAuthorizedForLaterAction =
+                BrowserAutomationTaskClassifier.IsDeferredInteractionRequest(userTurn);
+        }
+        AppLog.Info(
+            $"Jarvis captured ephemeral {_capturedBrowserContextSource} for explicit same-conversation use; characters={_capturedBrowserContextText.Length}");
+    }
+
+    private bool TryAttachCapturedBrowserContext(
+        string request,
+        out string groundedRequest)
+    {
+        groundedRequest = request ?? "";
+        lock (_browserPreRouteLock)
+        {
+            var fresh = CapturedBrowserContextIsFreshLocked();
+            var referencesContext =
+                BrowserAutomationTaskClassifier.ReferencesCapturedUserContext(request);
+            var capturedForCurrentTurn = string.Equals(
+                _capturedBrowserContextUserTurn,
+                _latestJarvisUserTurn,
+                StringComparison.OrdinalIgnoreCase);
+            var pageMutation =
+                BrowserAutomationTaskClassifier.RequiresPageMutation(request);
+            if (!CanAttachCapturedBrowserContext(
+                    fresh,
+                    referencesContext,
+                    capturedForCurrentTurn,
+                    _capturedBrowserContextAuthorizedForLaterAction,
+                    pageMutation))
+            {
+                return false;
+            }
+
+            groundedRequest = BuildBrowserTaskWithCapturedContext(
+                groundedRequest,
+                _capturedBrowserContextSource,
+                _capturedBrowserContextText);
+            return true;
+        }
+    }
+
+    internal static bool CanAttachCapturedBrowserContext(
+        bool fresh,
+        bool requestReferencesContext,
+        bool capturedForCurrentTurn,
+        bool explicitlyAuthorizedForLaterAction,
+        bool requestRequiresPageMutation) =>
+        fresh
+        && ((requestReferencesContext && capturedForCurrentTurn)
+            || (explicitlyAuthorizedForLaterAction && requestRequiresPageMutation));
+
+    internal static string BuildBrowserTaskWithCapturedContext(
+        string request,
+        string source,
+        string context) =>
+        BrowserAutomationText.Truncate(
+            $"{(request ?? "").Trim()}\n\n"
+            + $"AUTHORITATIVE USER-PROVIDED {(source ?? "context").Trim().ToUpperInvariant()} "
+            + "(ephemeral for this task; use only supported values and ask for genuinely missing required information):\n"
+            + (context ?? "").Trim(),
+            10000);
+
+    private bool HasCapturedContextForLaterBrowserAction(string request)
+    {
+        lock (_browserPreRouteLock)
+        {
+            return CapturedBrowserContextIsFreshLocked()
+                && _capturedBrowserContextAuthorizedForLaterAction
+                && BrowserAutomationTaskClassifier.RequiresPageMutation(request);
+        }
+    }
+
+    private void ConsumeCapturedBrowserContext()
+    {
+        lock (_browserPreRouteLock)
+            ClearCapturedBrowserContextLocked();
+    }
+
+    private bool CapturedBrowserContextIsFreshLocked() =>
+        !string.IsNullOrWhiteSpace(_capturedBrowserContextText)
+        && DateTime.UtcNow - _capturedBrowserContextUtc <= TimeSpan.FromMinutes(10);
+
+    private void ClearCapturedBrowserContextLocked()
+    {
+        _capturedBrowserContextText = "";
+        _capturedBrowserContextSource = "";
+        _capturedBrowserContextUserTurn = "";
+        _capturedBrowserContextUtc = default;
+        _capturedBrowserContextAuthorizedForLaterAction = false;
     }
 
     private bool TryGetPreRoutedToolResult(

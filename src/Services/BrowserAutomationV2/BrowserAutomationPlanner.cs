@@ -480,6 +480,7 @@ public sealed class BrowserAutomationPlanner : IDisposable
         builder.AppendLine("For a native select control whose actions include select_option, use select_option on that control and put the exact desired visible option in action.option.");
         builder.AppendLine("For a custom dropdown/listbox, click its closed control once, then on the fresh observation click the exact desired visible option. Never keep clicking the placeholder or repeat an unchanged option-menu action.");
         builder.AppendLine("For multi-question forms, complete questions grounded from text/controls first. Defer image-dependent questions and genuinely missing personal details instead of blocking other safe progress.");
+        builder.AppendLine("When AUTHORITATIVE USER-PROVIDED context or CURRENT SELECTED TEXT is present, consume every supported value from it before requesting user input. Ask only for a genuinely missing required value; optional unknown values may be skipped only when the user or page policy allows it.");
         builder.AppendLine("Use vision only when a relevant visible control/image cannot be grounded from the controls. For an image question, set action.targetId to one live option/control belonging to that question so the helper can bring the exact question region into view before capture.");
         builder.AppendLine("Never handle passwords, OTP, CAPTCHA, payment, checkout, banking, or security challenges; use needs_user_action.");
         builder.AppendLine("Do not submit forms, send messages/posts, delete, register, apply, or place orders unless the original request explicitly asks for that final action.");
@@ -488,7 +489,7 @@ public sealed class BrowserAutomationPlanner : IDisposable
         builder.AppendLine("For read/summarize requests, put the user-ready result in resultSummary.");
         builder.AppendLine("For copy requests, choose copy_clipboard and put exactly the intended clipboard text in action.text.");
         builder.AppendLine();
-        builder.AppendLine($"ORIGINAL REQUEST: {BrowserAutomationText.Truncate(request, 3000)}");
+        builder.AppendLine($"ORIGINAL REQUEST: {BrowserAutomationText.Truncate(request, 10000)}");
         builder.AppendLine($"CURRENT URL: {BrowserAutomationText.RedactUrlForProvider(page.Url)}");
         builder.AppendLine($"CURRENT TITLE: {BrowserAutomationText.Truncate(page.Title, 300)}");
         builder.AppendLine($"GRAPH: {page.GraphVersion} DOM EPOCH: {page.DomEpoch}");
@@ -498,6 +499,11 @@ public sealed class BrowserAutomationPlanner : IDisposable
             builder.AppendLine($"- {BrowserAutomationText.Truncate(item, 500)}");
         builder.AppendLine("RELEVANT PAGE TEXT:");
         builder.AppendLine(BrowserAutomationText.Truncate(page.PageText, 8500));
+        if (!string.IsNullOrWhiteSpace(page.SelectedText))
+        {
+            builder.AppendLine("CURRENT SELECTED TEXT (fresh from the controlled page):");
+            builder.AppendLine(BrowserAutomationText.Truncate(page.SelectedText, 6000));
+        }
         builder.AppendLine("GROUNDED CONTROLS:");
         foreach (var control in controls)
         {

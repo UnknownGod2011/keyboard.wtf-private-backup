@@ -12,6 +12,15 @@ public sealed class BrowserAutomationTaskClassifier
         @"\b(browser automation|automate (?:the )?browser|use (?:the )?(?:current|logged[- ]in) (?:browser|chrome)|use this tab)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    // A browser action described as dependent on a future user-controlled
+    // transition is not authorized yet. This models temporal intent rather
+    // than any destination or example phrase.
+    private static readonly Regex DeferredUserControlledInteraction = new(
+        @"\b(?:when|once|after)\s+(?:i|we)\b.{0,180}\b(?:navigate|open|reach|switch|move|tell|say|confirm|let\s+you\s+know)\b"
+        + @"|\b(?:wait|hold)\b.{0,100}\b(?:until|for\s+me\s+to)\b"
+        + @"|\b(?:not\s+yet|later)\b.{0,120}\b(?:fill|click|enter|paste|submit|continue|automate|use)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly Regex LocalTimerAction = new(
         @"^\s*(?:please\s+)?(?:(?:set|start|create|make|cancel|stop|pause|resume|list|show|check)\s+)?(?:an?\s+|the\s+|my\s+|active\s+|all\s+)?(?:\w+\s+){0,8}\b(?:timer|timers|alarm|alarms|reminder|reminders)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -154,6 +163,14 @@ public sealed class BrowserAutomationTaskClassifier
             || PageSectionNavigation.IsMatch(text)
             || CurrentPageSearch.IsMatch(text)
             || DestinationThenInteraction.IsMatch(text);
+        if (IsDeferredInteractionRequest(text))
+        {
+            return Result(
+                BrowserAutomationDecision.SimpleTool,
+                "The user described a future browser action that depends on a later user-controlled transition; retain current context and wait rather than acting now.",
+                current,
+                prefersSelectedContent: ReferencesCapturedUserContext(text));
+        }
         if (ExplicitAutomation.IsMatch(text))
             return Result(
                 BrowserAutomationDecision.BrowserAutomation,
@@ -300,6 +317,25 @@ public sealed class BrowserAutomationTaskClassifier
         HasExplicitPageMutation(text)
         || (FormOrAssessmentTarget.IsMatch(text)
             && SelectedContentQuestion.IsMatch(text));
+
+    internal static bool IsDeferredInteractionRequest(string text) =>
+        DeferredUserControlledInteraction.IsMatch(text ?? "")
+        && (ExplicitAutomation.IsMatch(text ?? "")
+            || HasExplicitPageMutation(text ?? "")
+            || FormOrAssessmentTarget.IsMatch(text ?? ""));
+
+    internal static bool ReferencesCapturedUserContext(string text) =>
+        Regex.IsMatch(
+            text ?? "",
+            @"\b(?:selected|highlighted|copied|clipboard)\b.{0,80}\b(?:text|content|context|details|information|data|answers?)\b"
+            + @"|\b(?:use|from|with|based\s+on)\b.{0,60}\b(?:the|that|my|previous|provided|supplied|captured)\s+(?:selection|selected\s+text|clipboard|context|details|information|data)\b",
+            RegexOptions.IgnoreCase);
+
+    internal static bool RequiresFreshUserContextCapture(string text) =>
+        ReferencesCapturedUserContext(text)
+        && (RequiresPageMutation(text)
+            || ExplicitAutomation.IsMatch(text ?? "")
+            || IsDeferredInteractionRequest(text));
 
     // Live input transcription is incremental. Until an answer/explain-style
     // utterance is complete, it may still resolve to selected-text context.

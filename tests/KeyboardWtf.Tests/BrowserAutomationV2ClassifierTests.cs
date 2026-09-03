@@ -76,6 +76,82 @@ public sealed class BrowserAutomationV2ClassifierTests
     }
 
     [Theory]
+    [InlineData("Analyze this selected context; when I navigate to the form, use it to fill the fields.")]
+    [InlineData("Keep this highlighted information. Once I tell you the page is ready, use browser automation to enter it.")]
+    [InlineData("Wait for me to open the intended page, then fill it from the selected details.")]
+    public void Future_user_controlled_browser_work_waits_instead_of_starting_now(string request)
+    {
+        var result = _classifier.Classify(request);
+
+        Assert.Equal(BrowserAutomationDecision.SimpleTool, result.Decision);
+        Assert.True(BrowserAutomationTaskClassifier.IsDeferredInteractionRequest(request));
+        Assert.True(result.PrefersSelectedContent);
+    }
+
+    [Theory]
+    [InlineData("Use the selected details to fill this form.")]
+    [InlineData("Fill this page from the information I copied to the clipboard.")]
+    public void Current_selected_context_mutation_waits_for_fresh_capture_before_pre_routing(
+        string request)
+    {
+        Assert.True(BrowserAutomationTaskClassifier.RequiresFreshUserContextCapture(request));
+        Assert.True(CommandRegistry.ShouldDeferIncrementalBrowserPreRoute(
+            request,
+            fromLocalTextSubmission: false));
+    }
+
+    [Fact]
+    public void Immediate_page_mutation_remains_actionable()
+    {
+        const string request = "Use the selected details to fill this form now.";
+
+        Assert.False(BrowserAutomationTaskClassifier.IsDeferredInteractionRequest(request));
+        Assert.Equal(
+            BrowserAutomationDecision.BrowserAutomation,
+            _classifier.Classify(request).Decision);
+    }
+
+    [Fact]
+    public void Captured_context_is_preserved_verbatim_in_the_one_ephemeral_browser_task_contract()
+    {
+        const string context =
+            "Project: Clear Finch\nTeam size: 3\nWebsite: https://clearfinch.example";
+
+        var task = CommandRegistry.BuildBrowserTaskWithCapturedContext(
+            "Fill the current form and skip unknown optional fields.",
+            "selected text",
+            context);
+
+        Assert.Contains("AUTHORITATIVE USER-PROVIDED SELECTED TEXT", task, StringComparison.Ordinal);
+        Assert.Contains(context, task, StringComparison.Ordinal);
+        Assert.Contains("genuinely missing required information", task, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(true, true, true, false, true, true)]
+    [InlineData(true, true, false, false, true, false)]
+    [InlineData(true, false, false, true, true, true)]
+    [InlineData(true, false, false, true, false, false)]
+    [InlineData(false, true, true, true, true, false)]
+    public void Captured_context_requires_current_turn_ownership_or_explicit_future_authorization(
+        bool fresh,
+        bool referencesContext,
+        bool sameTurn,
+        bool authorizedForLater,
+        bool pageMutation,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            CommandRegistry.CanAttachCapturedBrowserContext(
+                fresh,
+                referencesContext,
+                sameTurn,
+                authorizedForLater,
+                pageMutation));
+    }
+
+    [Theory]
     [InlineData("Open the discussion tab.")]
     [InlineData("Go to the community section.")]
     [InlineData("Search this website for the eligibility criteria.")]
@@ -285,6 +361,21 @@ public sealed class BrowserAutomationV2ClassifierTests
         const string resolved =
             "Fill the currently open form with the details already provided, but do not submit it.";
 
+        Assert.Equal(
+            resolved,
+            CommandRegistry.ResolveBrowserAutomationTask(resolved, userTurn));
+    }
+
+    [Theory]
+    [InlineData("I'm on the correct page now; continue here.")]
+    [InlineData("Use this current form and resume here.")]
+    public void Browser_tool_keeps_resolved_deferred_task_for_an_explicit_current_page_handoff(
+        string userTurn)
+    {
+        const string resolved =
+            "Fill the current form from the selected context and skip unavailable optional fields, without submitting.";
+
+        Assert.True(BrowserAutomationCoordinator.IsExplicitPageHandoffGuidance(userTurn));
         Assert.Equal(
             resolved,
             CommandRegistry.ResolveBrowserAutomationTask(resolved, userTurn));

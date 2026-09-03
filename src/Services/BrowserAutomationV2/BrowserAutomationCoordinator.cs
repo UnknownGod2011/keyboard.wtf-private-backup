@@ -68,6 +68,9 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         public string PendingDestinationCorrectionUrl { get; set; } = "";
         public string CorrectedDestinationUrl { get; set; } = "";
         public string SupersededDestinationUrl { get; set; } = "";
+        public bool AdoptFreshActiveTabOnResume { get; set; }
+        public string OrderedSourceIdentity { get; set; } = "";
+        public bool OrderedSourceCollectionVerified { get; set; }
         public Task Execution { get; set; }
     }
 
@@ -157,6 +160,12 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             var explicitCorrection = IsExplicitTaskCorrection(guidance);
             var skipRequest = _active.State == BrowserTaskState.NeedsUserAction
                 && IsSkipInterventionGuidance(guidance);
+            var adoptFreshActiveTab = _active.State == BrowserTaskState.NeedsUserAction
+                && ShouldAdoptFreshActiveTabForGuidance(
+                    _active.Intervention,
+                    guidance,
+                    _active.Page,
+                    _bridge.Status);
             if (skipRequest && _active.Intervention?.CanSkip != true)
             {
                 reason = BuildRequiredInterventionResponse(_active.Intervention);
@@ -165,6 +174,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
 
             if (!IsClearlyTaskRelevantGuidance(guidance)
                 && !skipRequest
+                && !adoptFreshActiveTab
                 && !(_active.State == BrowserTaskState.NeedsUserAction
                     && IsRelevantManualAnswer(_active.Intervention, guidance)))
             {
@@ -200,6 +210,16 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         out previousDestination);
                 }
                 _active.Request = BuildCorrectedTaskRequest(_active.Request, guidance);
+                var correctedSource =
+                    BrowserAutomationVerifier.ExtractOrderedSourceIdentity(_active.Request);
+                if (!string.Equals(
+                        correctedSource,
+                        _active.OrderedSourceIdentity,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    _active.OrderedSourceIdentity = correctedSource;
+                    _active.OrderedSourceCollectionVerified = false;
+                }
             }
             if (explicitCorrection
                 && TryResolveTaskCorrectionDestination(
@@ -216,6 +236,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 _active.PendingDestinationCorrectionLabel = destinationLabel;
                 _active.PendingDestinationCorrectionUrl = destinationUrl;
             }
+            if (adoptFreshActiveTab)
+                _active.AdoptFreshActiveTabOnResume = true;
             _active.UserPaused = false;
             _active.Intervention = null;
             _active.PauseGate.Resume();
@@ -343,6 +365,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             {
                 Request = request.Trim(),
                 CurrentPageIntent = classification.RefersToCurrentPage,
+                OrderedSourceIdentity = BrowserAutomationVerifier.ExtractOrderedSourceIdentity(request),
                 SkipUnavailableOptionalInputs = AllowsSkippingUnavailableOptionalInputs(request),
                 State = BrowserTaskState.Queued,
                 CurrentAction = "Queued",
@@ -593,7 +616,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         runtime.Request,
                         directDecision,
                         runtime.Page,
-                        runtime.Receipts);
+                        runtime.Receipts,
+                        runtime.OrderedSourceCollectionVerified);
                     if (terminal.Verified)
                     {
                         Complete(
@@ -679,6 +703,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 await runtime.PauseGate.WaitAsync(token);
                 token.ThrowIfCancellationRequested();
 
+                RecordOrderedSourceCollectionEvidence(runtime);
                 DrainPendingGuidance(runtime);
                 if (TryTakePendingDestinationCorrection(
                         runtime,
@@ -799,7 +824,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         runtime.Request,
                         lastDecision,
                         runtime.Page,
-                        runtime.Receipts);
+                        runtime.Receipts,
+                        runtime.OrderedSourceCollectionVerified);
                     if (terminal.Verified)
                     {
                         Complete(
@@ -916,7 +942,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                                     runtime.Request,
                                     lastDecision,
                                     runtime.Page,
-                                    runtime.Receipts);
+                                    runtime.Receipts,
+                                    runtime.OrderedSourceCollectionVerified);
                                 if (terminal.Verified)
                                 {
                                     Complete(
@@ -957,7 +984,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         runtime.Request,
                         lastDecision,
                         runtime.Page,
-                        runtime.Receipts);
+                        runtime.Receipts,
+                        runtime.OrderedSourceCollectionVerified);
                     if (!verified.Verified)
                         throw new InvalidOperationException(verified.Error);
                     Complete(
@@ -1562,7 +1590,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         runtime.Request,
                         lastDecision,
                         runtime.Page,
-                        runtime.Receipts);
+                        runtime.Receipts,
+                        runtime.OrderedSourceCollectionVerified);
                     if (terminal.Verified)
                     {
                         Complete(
@@ -1586,7 +1615,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         runtime.Request,
                         lastDecision,
                         runtime.Page,
-                        runtime.Receipts);
+                        runtime.Receipts,
+                        runtime.OrderedSourceCollectionVerified);
                     if (terminal.Verified)
                     {
                         Complete(
@@ -1636,6 +1666,19 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     "");
                 AppLog.Info($"Browser automation final status cancelled: task={runtime.TaskId}");
             }
+        }
+        catch (Exception ex) when (ShouldTreatLateFailureAsCancellation(
+            token.IsCancellationRequested,
+            runtime.CancellationReason))
+        {
+            SetTerminal(
+                runtime,
+                BrowserTaskState.Cancelled,
+                BrowserAutomationOutcome.Cancelled,
+                "Browser automation cancelled.",
+                "");
+            AppLog.Info(
+                $"Ignored a late in-flight browser failure after authoritative cancellation: task={runtime.TaskId} error={Short(ex.Message, 140)}");
         }
         catch (Exception ex)
         {
@@ -3039,6 +3082,24 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             runtime.History.Add(guidance);
     }
 
+    private static void RecordOrderedSourceCollectionEvidence(Runtime runtime)
+    {
+        if (runtime.OrderedSourceCollectionVerified
+            || string.IsNullOrWhiteSpace(runtime.OrderedSourceIdentity)
+            || !BrowserAutomationVerifier.IsVerifiedOrderedSourceCollectionPage(
+                runtime.Page,
+                runtime.OrderedSourceIdentity))
+        {
+            return;
+        }
+
+        runtime.OrderedSourceCollectionVerified = true;
+        runtime.History.Add(
+            $"Verified requested source collection before choosing the ordered item: {runtime.OrderedSourceIdentity}.");
+        AppLog.Info(
+            $"Browser ordered-source checkpoint verified: task={runtime.TaskId} source={Short(runtime.OrderedSourceIdentity, 100)}");
+    }
+
     private async Task WaitForUserInterventionAsync(
         Runtime runtime,
         BrowserUserIntervention intervention,
@@ -3076,12 +3137,76 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         await resumeTask;
         token.ThrowIfCancellationRequested();
         runtime.Intervention = null;
-        runtime.Page = await _bridge.ObserveAsync(
-            runtime.TaskId,
-            runtime.Page.TabId,
-            token);
+        if (runtime.AdoptFreshActiveTabOnResume)
+        {
+            var previousTabId = runtime.Page.TabId;
+            runtime.AdoptFreshActiveTabOnResume = false;
+            runtime.Page = await _bridge.BeginTaskAsync(
+                runtime.TaskId,
+                useCurrentTab: true,
+                token);
+            AddControlledTab(runtime, runtime.Page);
+            runtime.History.Add(
+                $"User-authorized page handoff: the same task moved from tab:{previousTabId} to the fresh active tab:{runtime.Page.TabId} before resuming.");
+            AppLog.Info(
+                $"Browser task adopted user-authorized active tab: task={runtime.TaskId} fromTab={previousTabId} toTab={runtime.Page.TabId}");
+        }
+        else
+        {
+            runtime.Page = await _bridge.ObserveAsync(
+                runtime.TaskId,
+                runtime.Page.TabId,
+                token);
+        }
         runtime.History.Add(resumedHistory);
     }
+
+    internal static bool ShouldAdoptFreshActiveTabForGuidance(
+        BrowserUserIntervention intervention,
+        string guidance,
+        BrowserPageSnapshot currentPage,
+        BrowserHelperStatus helperStatus)
+    {
+        if (currentPage == null
+            || helperStatus?.ActiveTabFresh != true
+            || !helperStatus.TabId.HasValue
+            || helperStatus.TabId.Value == currentPage.TabId)
+        {
+            return false;
+        }
+
+        var answer = NormalizeControlText(guidance);
+        if (IsExplicitPageHandoffGuidance(answer))
+            return true;
+
+        if (helperStatus.WindowId.HasValue
+            && currentPage.WindowId > 0
+            && helperStatus.WindowId.Value != currentPage.WindowId)
+        {
+            return false;
+        }
+
+        var requestedStep = NormalizeControlText(string.Join(
+            " ",
+            intervention?.Missing,
+            intervention?.Explanation));
+        var interventionAskedForNavigation = Regex.IsMatch(
+            requestedStep,
+            @"\b(?:navigate|switch|open|visit|go\s+to|move\s+to|sign\s+in)\b.{0,100}\b(?:page|tab|site|website|form|account)\b",
+            RegexOptions.IgnoreCase);
+        var confirmsCompletion = Regex.IsMatch(
+            answer,
+            @"^\s*(?:i(?:'m|\s+am)\s+)?(?:there|ready|done|on\s+it)|^(?:continue|resume|proceed)(?:\s+now)?[.!?]*$",
+            RegexOptions.IgnoreCase);
+        return interventionAskedForNavigation && confirmsCompletion;
+    }
+
+    internal static bool IsExplicitPageHandoffGuidance(string guidance) =>
+        Regex.IsMatch(
+            NormalizeControlText(guidance),
+            @"\b(?:current|active|correct|intended|right|new|other)\s+(?:page|tab|site|website|form)\b"
+            + @"|\b(?:continue|resume|work|use|start)\b.{0,50}\b(?:here|this\s+(?:page|tab|site|form)|current\s+(?:page|tab|site|form))\b",
+            RegexOptions.IgnoreCase);
 
     internal static BrowserUserIntervention BuildPlannerIntervention(
         BrowserPlannerDecision decision,
@@ -3926,6 +4051,11 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         var answer = NormalizeControlText(guidance);
         if (request.Length == 0 || answer.Length == 0)
             return false;
+        if (GeminiLiveConversationService.ShouldAutoEnd(guidance)
+            || CommandRegistry.IsExplicitBrowserTaskStopOrPause(guidance))
+        {
+            return false;
+        }
 
         if (IsSkipInterventionGuidance(answer))
             return intervention?.CanSkip == true;
@@ -4955,6 +5085,11 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             or BrowserTaskState.Blocked
             or BrowserTaskState.Cancelled
             or BrowserTaskState.Failed;
+
+    internal static bool ShouldTreatLateFailureAsCancellation(
+        bool cancellationRequested,
+        string cancellationReason) =>
+        cancellationRequested && !string.IsNullOrWhiteSpace(cancellationReason);
 
     internal static bool ShouldAnnounceOutcome(
         BrowserTaskState state,

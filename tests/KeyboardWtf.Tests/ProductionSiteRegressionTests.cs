@@ -56,6 +56,37 @@ public sealed class ProductionSiteRegressionTests
         Assert.DoesNotContain("2[0-4]", html, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Pricing_waits_for_existing_auth_before_rendering_the_account_appropriate_cta()
+    {
+        var root = FindRepositoryRoot();
+        var html = File.ReadAllText(Path.Combine(root, "production", "site", "pricing.html"));
+        var script = File.ReadAllText(Path.Combine(root, "production", "site", "pricing.js"));
+
+        Assert.Contains("Checking plans and account", html, StringComparison.Ordinal);
+        Assert.Contains("waitForAuthInitialization()", script, StringComparison.Ordinal);
+        Assert.Contains("const account = user ? await loadAccount() : null", script, StringComparison.Ordinal);
+        Assert.Contains("Sign in to subscribe", script, StringComparison.Ordinal);
+        Assert.Contains("Subscribe from Account", script, StringComparison.Ordinal);
+        Assert.Contains("Manage current plan", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Pricing_card_notice_and_faq_share_one_compact_aligned_width()
+    {
+        var root = FindRepositoryRoot();
+        var pricing = File.ReadAllText(Path.Combine(root, "production", "site", "pricing.html"));
+        var reviews = File.ReadAllText(Path.Combine(root, "production", "site", "reviews.html"));
+        var css = File.ReadAllText(Path.Combine(root, "production", "site", "styles.css"));
+
+        Assert.Contains("class=\"shell pricing-shell\"", pricing, StringComparison.Ordinal);
+        Assert.Contains("class=\"shell faq-shell\"", pricing, StringComparison.Ordinal);
+        Assert.DoesNotContain("faq-list", reviews, StringComparison.Ordinal);
+        Assert.Contains(".pricing-shell { max-width: 760px; }", css, StringComparison.Ordinal);
+        Assert.Contains(".faq-shell { max-width: 760px; }", css, StringComparison.Ordinal);
+        Assert.Contains(".pricing-status { width: 100%;", css, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

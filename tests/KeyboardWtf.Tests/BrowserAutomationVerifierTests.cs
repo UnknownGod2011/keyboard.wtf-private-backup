@@ -140,6 +140,10 @@ public sealed class BrowserAutomationVerifierTests
                 Url = "https://www.youtube.com/watch?v=abc",
                 Title = "NASA — First upload",
                 PageText = "NASA",
+                Controls =
+                [
+                    PublisherLink("NASA"),
+                ],
             },
             new[]
             {
@@ -150,7 +154,8 @@ public sealed class BrowserAutomationVerifierTests
                     TargetName = "Oldest",
                     SelectedChanged = true,
                 },
-            });
+            },
+            orderedSourceCollectionVerified: true);
 
         Assert.False(failed.Verified);
         Assert.True(passed.Verified);
@@ -167,11 +172,120 @@ public sealed class BrowserAutomationVerifierTests
                 Url = "https://www.youtube.com/watch?v=abc",
                 Title = "NASA",
                 PageText = "NASA",
+                Controls =
+                [
+                    PublisherLink("NASA"),
+                ],
             },
-            Array.Empty<BrowserActionReceipt>());
+            Array.Empty<BrowserActionReceipt>(),
+            orderedSourceCollectionVerified: true);
 
         Assert.False(result.Verified);
         Assert.Contains("Oldest", result.Error);
+    }
+
+    [Theory]
+    [InlineData("Open the latest video by Acme Studio on the media site.")]
+    [InlineData("Open Acme Studio's newest upload on the media site.")]
+    [InlineData("Play the most recent Acme Studio video.")]
+    public void Ordered_content_requests_extract_the_named_source(string request)
+    {
+        Assert.Equal(
+            "acme studio",
+            BrowserAutomationVerifier.ExtractOrderedSourceIdentity(request));
+    }
+
+    [Fact]
+    public void Latest_explicit_source_correction_outranks_the_superseded_source()
+    {
+        var corrected = BrowserAutomationCoordinator.BuildCorrectedTaskRequest(
+            "Open the latest video by Northwind Media.",
+            "No, use the latest video by Contoso Labs instead.");
+
+        Assert.Equal(
+            "contoso labs",
+            BrowserAutomationVerifier.ExtractOrderedSourceIdentity(corrected));
+    }
+
+    [Fact]
+    public void Ordered_source_collection_requires_exact_source_identity_and_collection_context()
+    {
+        var officialCollection = new BrowserPageSnapshot
+        {
+            Url = "https://media.example/@acme-studio/videos",
+            Title = "Acme Studio",
+            Controls =
+            [
+                PublisherLink("Acme Studio"),
+                new BrowserControl
+                {
+                    Role = "tab",
+                    AccessibleName = "Videos",
+                    Visible = true,
+                    Enabled = true,
+                },
+            ],
+        };
+        var searchResult = new BrowserPageSnapshot
+        {
+            Url = "https://media.example/search?q=acme-studio",
+            Title = "Search results for Acme Studio",
+            Controls =
+            [
+                PublisherLink("Acme Studio"),
+            ],
+        };
+
+        Assert.True(BrowserAutomationVerifier.IsVerifiedOrderedSourceCollectionPage(
+            officialCollection,
+            "Acme Studio"));
+        Assert.True(BrowserAutomationVerifier.IsVerifiedOrderedSourceCollectionPage(
+            new BrowserPageSnapshot
+            {
+                Url = "https://media.example/@acme-studio/videos",
+                Title = "Acme Studio - Media",
+                Controls =
+                [
+                    new BrowserControl
+                    {
+                        Role = "tab",
+                        AccessibleName = "Videos",
+                        Visible = true,
+                        Enabled = true,
+                    },
+                ],
+            },
+            "Acme Studio"));
+        Assert.False(BrowserAutomationVerifier.IsVerifiedOrderedSourceCollectionPage(
+            searchResult,
+            "Acme Studio"));
+    }
+
+    [Fact]
+    public void Ordered_source_completion_rejects_a_third_party_item_that_only_mentions_the_source()
+    {
+        var result = _verifier.VerifyTerminal(
+            "Open the latest video by Acme Studio on the media site.",
+            new BrowserPlannerDecision
+            {
+                Done = true,
+                ResultSummary = "Opened the latest Acme Studio video.",
+            },
+            new BrowserPageSnapshot
+            {
+                Url = "https://media.example/watch?id=review",
+                Title = "Acme Studio product review",
+                PageText = "A review of Acme Studio products",
+                Controls =
+                [
+                    PublisherLink("Independent Review Lab"),
+                ],
+            },
+            Array.Empty<BrowserActionReceipt>(),
+            orderedSourceCollectionVerified: true);
+
+        Assert.False(result.Verified);
+        Assert.Contains("publisher/source", result.Error, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -742,6 +856,16 @@ public sealed class BrowserAutomationVerifierTests
         Role = role,
         AccessibleName = name,
         Value = value,
+        Visible = true,
+        Enabled = true,
+    };
+
+    private static BrowserControl PublisherLink(string name) => new()
+    {
+        Id = $"publisher-{name.Replace(' ', '-')}",
+        Role = "link",
+        AccessibleName = name,
+        Text = name,
         Visible = true,
         Enabled = true,
     };
