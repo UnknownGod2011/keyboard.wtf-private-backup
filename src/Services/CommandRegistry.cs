@@ -1966,13 +1966,28 @@ public sealed class CommandRegistry
             return ToolResult(false, "Browser Automation is unavailable.", supported: false);
 
         var action = (GetString(args, "action") ?? "").Trim().ToLowerInvariant();
-        var guidance = GetString(args, "guidance");
+        var latestUserTurn = RecentJarvisUserTurn();
+        if (!IsModelBrowserTaskControlAuthorized(action, latestUserTurn))
+        {
+            AppLog.Info(
+                $"Browser task model control rejected because the latest user turn did not authorize it: action={action} " +
+                $"request={BrowserAutomationText.Truncate(latestUserTurn, 120)}");
+            return new Dictionary<string, object>
+            {
+                ["ok"] = false,
+                ["message"] = "The latest user turn did not request that browser-task control.",
+                ["status"] = BrowserAutomationStatus(),
+            };
+        }
+
         var ok = action switch
         {
             "pause" => _browserAutomation.Pause(),
-            "resume" => _browserAutomation.Resume(),
             "cancel" => await _browserAutomation.CancelAsync(announceOutcome: false),
-            "guide" => AddGuidance(guidance),
+            // The user's actual turn is authoritative. A model-generated
+            // paraphrase must never turn unrelated conversation into guidance
+            // or bypass the coordinator's paused-task relevance checks.
+            "resume" or "guide" => AddGuidance(latestUserTurn),
             _ => false,
         };
         return new Dictionary<string, object>
@@ -1983,6 +1998,31 @@ public sealed class CommandRegistry
                 : "No active browser task accepted that control command.",
             ["status"] = BrowserAutomationStatus(),
         };
+    }
+
+    internal static bool IsModelBrowserTaskControlAuthorized(
+        string action,
+        string latestUserTurn)
+    {
+        var normalizedAction = (action ?? "").Trim().ToLowerInvariant();
+        if (normalizedAction is "pause" or "cancel")
+        {
+            return TryParseExplicitBrowserTaskStopOrPause(
+                    latestUserTurn,
+                    out var requestedAction,
+                    out var explicitlyTargetsBrowserTask)
+                && explicitlyTargetsBrowserTask
+                && string.Equals(
+                    requestedAction,
+                    normalizedAction,
+                    StringComparison.Ordinal);
+        }
+
+        // Resume and guidance remain subject to the coordinator's existing
+        // relevance/intervention policy, but only a real current user turn may
+        // be evaluated there. Unknown actions are never authorized.
+        return normalizedAction is "resume" or "guide"
+            && !string.IsNullOrWhiteSpace(latestUserTurn);
     }
 
     private bool AddGuidance(string guidance)

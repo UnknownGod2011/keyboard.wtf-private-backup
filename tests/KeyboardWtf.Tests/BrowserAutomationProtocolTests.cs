@@ -2147,6 +2147,42 @@ public sealed class BrowserAutomationProtocolTests
         Assert.False(explicitlyTargetsBrowserTask);
     }
 
+    [Theory]
+    [InlineData("cancel", "What is two plus two?", false)]
+    [InlineData("pause", "Explain why this field is required.", false)]
+    [InlineData("cancel", "stop", false)]
+    [InlineData("cancel", "cancel browser automation", true)]
+    [InlineData("pause", "please pause the browser task", true)]
+    [InlineData("pause", "cancel browser automation", false)]
+    public void Model_cannot_mutate_a_browser_task_without_matching_explicit_user_authority(
+        string modelAction,
+        string latestUserTurn,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            CommandRegistry.IsModelBrowserTaskControlAuthorized(
+                modelAction,
+                latestUserTurn));
+    }
+
+    [Theory]
+    [InlineData("guide", "Use September 12 as the practice date.", true)]
+    [InlineData("resume", "continue", true)]
+    [InlineData("guide", "", false)]
+    [InlineData("delete", "delete it", false)]
+    public void Model_guidance_requires_a_current_raw_user_turn_and_existing_policy_remains_authoritative(
+        string modelAction,
+        string latestUserTurn,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            CommandRegistry.IsModelBrowserTaskControlAuthorized(
+                modelAction,
+                latestUserTurn));
+    }
+
     [Fact]
     public void Planner_provider_health_is_scoped_to_one_browser_task()
     {
