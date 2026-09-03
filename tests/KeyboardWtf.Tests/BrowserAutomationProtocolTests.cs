@@ -2475,6 +2475,70 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Complete_form_field_assignment_replaces_a_restored_stale_value()
+    {
+        var action = new BrowserPlannerAction
+        {
+            Type = "type",
+            TargetId = "first-name",
+            TargetName = "First Name",
+            Text = "Morgan",
+        };
+        var control = new BrowserControl
+        {
+            Id = "first-name",
+            Role = "textbox",
+            AccessibleName = "First Name",
+            Value = "Avery",
+            Editable = true,
+            SafeActions = ["focus", "type"],
+        };
+
+        Assert.True(BrowserAutomationCoordinator.ShouldReplaceExistingEditableValue(
+            action,
+            control,
+            "Fill the First Name field with Morgan.",
+            "Fill the known form values."));
+
+        control.Value = "Morgan";
+        Assert.False(BrowserAutomationCoordinator.ShouldReplaceExistingEditableValue(
+            action,
+            control,
+            "Fill the First Name field with Morgan.",
+            "Fill the known form values."));
+    }
+
+    [Theory]
+    [InlineData("Append this sentence to the field.")]
+    [InlineData("Continue typing after the existing text.")]
+    [InlineData("Add this value to the end.")]
+    public void Explicit_additive_typing_does_not_replace_existing_text(string request)
+    {
+        var action = new BrowserPlannerAction
+        {
+            Type = "type",
+            TargetId = "notes",
+            TargetName = "Notes",
+            Text = "Another sentence",
+        };
+        var control = new BrowserControl
+        {
+            Id = "notes",
+            Role = "textbox",
+            AccessibleName = "Notes",
+            Value = "Existing sentence",
+            Editable = true,
+            SafeActions = ["focus", "type"],
+        };
+
+        Assert.False(BrowserAutomationCoordinator.ShouldReplaceExistingEditableValue(
+            action,
+            control,
+            "Type another sentence.",
+            request));
+    }
+
+    [Fact]
     public void Planner_prompt_forbids_invented_inputs_and_transient_field_success()
     {
         var prompt = BrowserAutomationPlanner.BuildPrompt(
