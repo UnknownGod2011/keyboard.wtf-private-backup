@@ -59,7 +59,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .pricing-shell { max-width: 760px; }
 .pricing-grid { width: 100%; }
 .pricing-grid .card { padding: 30px; background: rgba(255,255,255,.72); box-shadow: 0 18px 50px rgba(16,18,16,.06); }
-.pricing-status { width: 100%; margin: 16px 0 0; padding-inline: 30px; }
+.pricing-status.status { width: 100%; margin: 16px 0 0; padding-inline: 30px; }
 .faq-section { padding-top: 64px; }
 .faq-shell { max-width: 760px; }
 .faq-list { margin-top: 34px; border-top: 1px solid var(--line); }
@@ -179,7 +179,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   .pricing-hero { padding: 46px 0 30px; }
   .pricing-content-section { padding: 42px 0 50px; }
   .pricing-grid .card { padding: 24px; }
-  .pricing-status { padding-inline: 24px; }
+  .pricing-status.status { padding-inline: 24px; }
   .faq-section { padding-top: 52px; }
 }
 

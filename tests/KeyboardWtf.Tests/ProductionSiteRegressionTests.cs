@@ -84,7 +84,8 @@ public sealed class ProductionSiteRegressionTests
         Assert.DoesNotContain("faq-list", reviews, StringComparison.Ordinal);
         Assert.Contains(".pricing-shell { max-width: 760px; }", css, StringComparison.Ordinal);
         Assert.Contains(".faq-shell { max-width: 760px; }", css, StringComparison.Ordinal);
-        Assert.Contains(".pricing-status { width: 100%;", css, StringComparison.Ordinal);
+        Assert.Contains(".pricing-status.status { width: 100%;", css, StringComparison.Ordinal);
+        Assert.Contains(".pricing-status.status { padding-inline: 24px; }", css, StringComparison.Ordinal);
     }
 
     private static string FindRepositoryRoot()
