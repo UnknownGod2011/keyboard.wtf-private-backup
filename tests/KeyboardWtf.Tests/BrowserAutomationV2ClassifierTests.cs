@@ -38,6 +38,30 @@ public sealed class BrowserAutomationV2ClassifierTests
     }
 
     [Theory]
+    [InlineData("Open https://example.com normally in Chrome. Do not use Browser Automation.")]
+    [InlineData("Open example.com without browser automation.")]
+    [InlineData("Cancel browser automation.")]
+    public void Negated_or_controlled_automation_mentions_do_not_start_a_browser_task(
+        string request)
+    {
+        var result = _classifier.Classify(request);
+
+        Assert.False(BrowserAutomationTaskClassifier.HasExplicitAutomationRequest(request));
+        Assert.Equal(BrowserAutomationDecision.SimpleTool, result.Decision);
+    }
+
+    [Theory]
+    [InlineData("Use Browser Automation to fill this form.")]
+    [InlineData("Automate the browser and click the application button.")]
+    public void Affirmative_automation_mentions_remain_authoritative(string request)
+    {
+        Assert.True(BrowserAutomationTaskClassifier.HasExplicitAutomationRequest(request));
+        Assert.Equal(
+            BrowserAutomationDecision.BrowserAutomation,
+            _classifier.Classify(request).Decision);
+    }
+
+    [Theory]
     [InlineData("Summarize this page and copy it to clipboard")]
     [InlineData("Fill this Google Form")]
     [InlineData("Click Oldest on this page")]

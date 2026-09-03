@@ -12,6 +12,14 @@ public sealed class BrowserAutomationTaskClassifier
         @"\b(browser automation|automate (?:the )?browser|use (?:the )?(?:current|logged[- ]in) (?:browser|chrome)|use this tab)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex ExplicitAutomationSuppressionBefore = new(
+        @"(?:\b(?:do\s+not|don't|dont|never|without|avoid|disable|cancel|stop|pause|turn\s+off)\b(?:\s+(?:using|use|starting|start|launching|launch))?\s*)$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex ExplicitAutomationSuppressionAfter = new(
+        @"^\s*(?:must|should|is|stays?|remains?)?\s*(?:not|off|disabled|cancelled|canceled|stopped|paused)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     // A browser action described as dependent on a future user-controlled
     // transition is not authorized yet. This models temporal intent rather
     // than any destination or example phrase.
@@ -137,8 +145,9 @@ public sealed class BrowserAutomationTaskClassifier
                 "Timers, alarms, and reminders are handled by normal Jarvis rather than webpage automation.");
         }
 
+        var explicitAutomationRequested = HasExplicitAutomationRequest(text);
         if (DirectCommunicationDraft.IsMatch(text)
-            && !ExplicitAutomation.IsMatch(text)
+            && !explicitAutomationRequested
             && !CurrentContext.IsMatch(text))
         {
             return Result(
@@ -171,11 +180,19 @@ public sealed class BrowserAutomationTaskClassifier
                 current,
                 prefersSelectedContent: ReferencesCapturedUserContext(text));
         }
-        if (ExplicitAutomation.IsMatch(text))
+        if (explicitAutomationRequested)
             return Result(
                 BrowserAutomationDecision.BrowserAutomation,
                 "The user explicitly requested browser automation.",
                 current);
+
+        if (ExplicitAutomation.IsMatch(text) && !interaction)
+        {
+            return Result(
+                BrowserAutomationDecision.SimpleTool,
+                "The browser-automation mention is negated or is a control request, and no live page interaction is required.",
+                current);
+        }
 
         var contentQuestion = SelectedContentQuestion.IsMatch(text);
         var selectedContext = ExplicitSelectedContext.IsMatch(text);
@@ -320,7 +337,7 @@ public sealed class BrowserAutomationTaskClassifier
 
     internal static bool IsDeferredInteractionRequest(string text) =>
         DeferredUserControlledInteraction.IsMatch(text ?? "")
-        && (ExplicitAutomation.IsMatch(text ?? "")
+        && (HasExplicitAutomationRequest(text)
             || HasExplicitPageMutation(text ?? "")
             || FormOrAssessmentTarget.IsMatch(text ?? ""));
 
@@ -334,7 +351,7 @@ public sealed class BrowserAutomationTaskClassifier
     internal static bool RequiresFreshUserContextCapture(string text) =>
         ReferencesCapturedUserContext(text)
         && (RequiresPageMutation(text)
-            || ExplicitAutomation.IsMatch(text ?? "")
+            || HasExplicitAutomationRequest(text)
             || IsDeferredInteractionRequest(text));
 
     // Live input transcription is incremental. Until an answer/explain-style
@@ -343,6 +360,27 @@ public sealed class BrowserAutomationTaskClassifier
     // choose Browser Automation through the normal classifier/tool path.
     internal static bool ShouldDeferIncrementalContentRouting(string text) =>
         SelectedContentQuestion.IsMatch(text ?? "")
-        && !ExplicitAutomation.IsMatch(text ?? "")
+        && !HasExplicitAutomationRequest(text)
         && !HasExplicitPageMutation(text ?? "");
+
+    internal static bool HasExplicitAutomationRequest(string text)
+    {
+        text ??= "";
+        foreach (Match match in ExplicitAutomation.Matches(text))
+        {
+            var beforeStart = Math.Max(0, match.Index - 48);
+            var before = text[beforeStart..match.Index];
+            var afterEnd = Math.Min(text.Length, match.Index + match.Length + 32);
+            var after = text[(match.Index + match.Length)..afterEnd];
+            if (ExplicitAutomationSuppressionBefore.IsMatch(before)
+                || ExplicitAutomationSuppressionAfter.IsMatch(after))
+            {
+                continue;
+            }
+
+            return true;
+        }
+
+        return false;
+    }
 }
