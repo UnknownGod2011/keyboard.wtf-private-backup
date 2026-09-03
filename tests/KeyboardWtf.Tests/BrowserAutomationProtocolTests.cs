@@ -2198,6 +2198,19 @@ public sealed class BrowserAutomationProtocolTests
                 utterance));
     }
 
+    [Fact]
+    public void Named_missing_field_answer_resumes_the_same_paused_task()
+    {
+        const string request =
+            "Please provide the required missing details: Job Specialty, portfolio URL, and team description.";
+        Assert.True(BrowserAutomationCoordinator.IsRelevantManualAnswer(
+            request,
+            "The missing Job Specialty is Software Engineering. Use that answer in the same browser task and continue."));
+        Assert.False(BrowserAutomationCoordinator.IsRelevantManualAnswer(
+            request,
+            "The missing shipping address is Example Street. Continue the browser task."));
+    }
+
     [Theory]
     [InlineData("cancel browser automation", true)]
     [InlineData("Please pause the browser task.", true)]

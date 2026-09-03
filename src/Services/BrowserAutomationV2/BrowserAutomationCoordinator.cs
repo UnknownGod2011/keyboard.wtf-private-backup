@@ -4136,6 +4136,25 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             return true;
         }
 
+        // Accept a direct "field label is value" answer when that label was
+        // actually named by the active intervention. This keeps arbitrary
+        // browser commands out of a paused task while allowing natural
+        // answers for domain-specific fields that are not covered by the
+        // small set of common labels above.
+        var labeledAnswer = Regex.Match(
+            answer,
+            @"^(?:the\s+)?(?:missing\s+)?(?<label>[\p{L}\p{N}][\p{L}\p{N} _./()-]{1,80}?)\s*(?:is|are|:|=)\s*\S",
+            RegexOptions.IgnoreCase);
+        if (labeledAnswer.Success)
+        {
+            var label = NormalizeControlText(labeledAnswer.Groups["label"].Value);
+            if (label.Length >= 3
+                && request.Contains(label, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
         var words = Regex.Matches(answer, @"[\p{L}\p{N}@._+:/-]+").Count;
         return words is >= 1 and <= 8
             && !Regex.IsMatch(
