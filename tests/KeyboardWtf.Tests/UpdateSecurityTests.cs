@@ -131,12 +131,12 @@ public sealed class UpdateSecurityTests
             new Version(1, 2, 0),
             DateTimeOffset.UtcNow);
 
-        Assert.Equal(new Version(1, 4, 17), update.Version);
+        Assert.Equal(new Version(1, 4, 18), update.Version);
         Assert.Equal(new Version(1, 2, 0), update.MinimumVersion);
         Assert.Equal(
-            "812aaa434a4d6b618764b044a9a5f96b5dc9b85830ce1f205c5b6ad582ded6cd",
+            "eedc4d4b0ef7b1a99f386891a92ebbe4fe822c68048c876bcba2746d004dbcd5",
             update.Sha256);
-        Assert.Equal(84_251_836, update.SizeBytes);
+        Assert.Equal(84_263_421, update.SizeBytes);
         Assert.Equal(UpdateManifestVerifier.CurrentKeyId, update.KeyId);
     }
 
