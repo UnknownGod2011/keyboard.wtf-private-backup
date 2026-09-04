@@ -33,7 +33,8 @@ public sealed class GeminiLiveConversationService : IDisposable
     private readonly object _conversationContextLock = new();
     private readonly Queue<byte[]> _paidActivationAudio = new();
     private readonly Queue<ConversationContextEntry> _conversationContext = new();
-    private readonly ToolAttemptGuard _toolAttemptGuard = new();
+    private ToolAttemptGuard _toolAttemptGuard = new();
+    private LiveToolCallDispatcher _toolCalls;
     private readonly StringBuilder _currentUserTranscript = new();
     private readonly StringBuilder _currentAssistantTranscript = new();
     private readonly NotificationService _notifications;
@@ -64,7 +65,6 @@ public sealed class GeminiLiveConversationService : IDisposable
     private string _logicalSessionId = "";
     private int _providerSocketSequence;
     private int _intentionalRolloverSocketSequence;
-    private int _activeToolCalls;
     private string _sessionResumptionHandle = "";
 
     public GeminiLiveConversationService(
@@ -153,7 +153,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             Interlocked.Exchange(ref _autoEnding, 0);
             ResetPaidActivation();
             ResetConversationContext();
-            _toolAttemptGuard.Reset();
+            _toolAttemptGuard = new();
             _logicalSessionId = Guid.NewGuid().ToString("N");
             _providerSocketSequence = 0;
             var localPreflightMs = (long)System.Diagnostics.Stopwatch
@@ -355,6 +355,7 @@ public sealed class GeminiLiveConversationService : IDisposable
 
             var expectedSession = _sessionCts;
             var socket = _socket;
+            var toolCalls = _toolCalls;
             Task receiveTask;
             Task activationTask;
             Task softRolloverTask;
@@ -374,8 +375,9 @@ public sealed class GeminiLiveConversationService : IDisposable
             // reconnect workers, and the visible session before waiting for any
             // secondary browser-task cleanup.
             expectedSession?.Cancel();
+            toolCalls?.Stop();
             ResetConversationContext();
-            _toolAttemptGuard.Reset();
+            _toolAttemptGuard = new();
             MarkTurnCompleted();
             StopMicrophone();
             StopPlayback();
@@ -415,6 +417,8 @@ public sealed class GeminiLiveConversationService : IDisposable
             await AwaitPhysicalShutdownWorkerAsync(receiveTask, "receive");
             await AwaitPhysicalShutdownWorkerAsync(softRolloverTask, "soft-rollover");
             await AwaitPhysicalShutdownWorkerAsync(activationTask, "activation");
+            await AwaitPhysicalShutdownWorkerAsync(toolCalls?.Completion, "tools");
+            toolCalls?.Dispose();
             ResetPaidActivation();
             AppLog.Info(
                 $"Jarvis physical shutdown completed: logicalSession={_logicalSessionId} " +
@@ -771,7 +775,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             _sessionResumptionHandle = "";
             _intentionalRolloverSocketSequence = 0;
         }
-        Interlocked.Exchange(ref _activeToolCalls, 0);
+        _toolCalls = null;
     }
 
     internal static Dictionary<string, string> BuildSessionResumptionConfig(string handle)
@@ -837,14 +841,14 @@ public sealed class GeminiLiveConversationService : IDisposable
                 var providerGoAway = diagnostics.GoAway.Task.IsCompletedSuccessfully;
                 if (IsSafePhysicalRollover(
                         CurrentTurnIsComplete(),
-                        Volatile.Read(ref _activeToolCalls),
+                        diagnostics.ToolCalls?.PendingCount ?? 0,
                         _playbackBuffer?.BufferedBytes ?? 0))
                 {
                     await Task.Delay(SafeRolloverQuietPeriod, token);
                     if (ReferenceEquals(_socket, socket)
                         && IsSafePhysicalRollover(
                             CurrentTurnIsComplete(),
-                            Volatile.Read(ref _activeToolCalls),
+                            diagnostics.ToolCalls?.PendingCount ?? 0,
                             _playbackBuffer?.BufferedBytes ?? 0))
                     {
                         await BeginSequentialPaidRolloverAsync(
@@ -1027,7 +1031,7 @@ public sealed class GeminiLiveConversationService : IDisposable
                 }
                 if (string.IsNullOrWhiteSpace(received.Text))
                     continue;
-                await HandleServerMessageAsync(received.Text, setupReady, diagnostics, token);
+                HandleServerMessage(received.Text, setupReady, diagnostics, token);
             }
         }
         catch (OperationCanceledException) { }
@@ -1039,6 +1043,9 @@ public sealed class GeminiLiveConversationService : IDisposable
         }
         finally
         {
+            diagnostics.ToolCalls?.Stop();
+            await AwaitPhysicalShutdownWorkerAsync(diagnostics.ToolCalls?.Completion, "tools");
+            diagnostics.ToolCalls?.Dispose();
             var intentionalRollover = diagnostics.Sequence
                 == Volatile.Read(ref _intentionalRolloverSocketSequence);
             var closeCategory = ClassifyProviderSocketClose(
@@ -1245,7 +1252,7 @@ public sealed class GeminiLiveConversationService : IDisposable
         }
     }
 
-    private async Task HandleServerMessageAsync(
+    private void HandleServerMessage(
         string json,
         TaskCompletionSource<bool> setupReady,
         ProviderSocketDiagnostics diagnostics,
@@ -1331,13 +1338,14 @@ public sealed class GeminiLiveConversationService : IDisposable
 
         if (root.TryGetProperty("toolCall", out var toolCall))
         {
-            await HandleToolCallAsync(toolCall, token);
+            GetToolDispatcher(diagnostics, token).Enqueue(toolCall, _toolAttemptGuard);
             return;
         }
 
         if (root.TryGetProperty("toolCallCancellation", out var cancelled)
             && cancelled.TryGetProperty("ids", out var ids))
         {
+            diagnostics.ToolCalls?.Cancel(ids);
             AppLog.Info($"Jarvis tool call cancelled: {ids}");
             return;
         }
@@ -1368,7 +1376,10 @@ public sealed class GeminiLiveConversationService : IDisposable
                 ScheduleAutoEnd("Heard that you are done.");
                 return;
             }
-            _userTranscriptObserver?.Invoke(accumulatedUserTurn);
+            // Keep observed turn context and its actions in the same ordered
+            // work stream. A later transcript cannot overwrite the context of
+            // a still-running tool; terminal input above bypasses this work.
+            GetToolDispatcher(diagnostics, token).Observe(_userTranscriptObserver, accumulatedUserTurn);
         }
 
         if (content.TryGetProperty("outputTranscription", out var output)
@@ -1419,46 +1430,35 @@ public sealed class GeminiLiveConversationService : IDisposable
         }
     }
 
-    private async Task HandleToolCallAsync(JsonElement toolCall, CancellationToken token)
+    private LiveToolCallDispatcher GetToolDispatcher(ProviderSocketDiagnostics diagnostics, CancellationToken token)
     {
-        if (!toolCall.TryGetProperty("functionCalls", out var calls) || calls.ValueKind != JsonValueKind.Array)
-            return;
+        if (diagnostics.ToolCalls == null)
+        {
+            var expectedSocket = _socket;
+            diagnostics.ToolCalls = new LiveToolCallDispatcher(
+                token,
+                ExecuteToolAsync,
+                (message, toolToken) => SendToolResponseAsync(message, expectedSocket, toolToken));
+            _toolCalls = diagnostics.ToolCalls;
+        }
+        return diagnostics.ToolCalls;
+    }
 
-        Interlocked.Increment(ref _activeToolCalls);
+    private async Task SendToolResponseAsync(object response, ClientWebSocket expectedSocket, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        await _sendLock.WaitAsync(token);
         try
         {
-            var responses = new List<object>();
-            foreach (var call in calls.EnumerateArray())
-            {
-                var id = call.TryGetProperty("id", out var idEl) ? idEl.GetString() : Guid.NewGuid().ToString("N");
-                var name = call.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : "";
-                var args = call.TryGetProperty("args", out var argsEl) ? argsEl : default;
-
-                Dictionary<string, object> response;
-                if (!_toolAttemptGuard.TryGetSuppressed(name, args, out response))
-                {
-                    response = await ExecuteToolAsync(name, args, token);
-                    _toolAttemptGuard.Record(name, args, response);
-                }
-                responses.Add(new
-                {
-                    id,
-                    name,
-                    response,
-                });
-            }
-
-            await SendJsonAsync(new
-            {
-                toolResponse = new
-                {
-                    functionResponses = responses,
-                },
-            }, token);
+            token.ThrowIfCancellationRequested();
+            if (!ReferenceEquals(_socket, expectedSocket) || expectedSocket?.State != WebSocketState.Open)
+                throw new OperationCanceledException("The tool's physical Live connection has ended.", token);
+            var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(response));
+            await expectedSocket.SendAsync(bytes, WebSocketMessageType.Text, true, token);
         }
         finally
         {
-            Interlocked.Decrement(ref _activeToolCalls);
+            _sendLock.Release();
         }
     }
 
@@ -1584,7 +1584,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             }
         }
         if (newTurn)
-            _toolAttemptGuard.Reset();
+            _toolAttemptGuard = new();
     }
 
     private void MarkTurnCompleted()
@@ -1671,7 +1671,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             ToneInstruction(KeyboardWtfState.AssistantTone) + " " +
             SpeechPronunciation.LiveAudioInstruction + " " +
             permissionInstruction +
-            "You can chat normally, but when the user asks you to do a supported computer action, call the matching tool immediately. " +
+            "Answer the user's actual request. Use an action tool only when its effect is necessary for an action the user currently requests, not merely because the conversation mentions a capability or device function. Questions about your availability or abilities call for a conversational answer, not an unsolicited change to the computer. When the user requests a supported computer action, call the matching tool without unnecessary confirmation. " +
             "Treat an unqualified open Settings request as Windows Settings via open_app. When the user explicitly refers to keyboard.wtf, Jarvis, your settings, or one of keyboard.wtf's sections, call open_keyboard_wtf_settings with the matching section so the running local Settings service opens the correct page and port. " +
             "When the user explicitly says app, application, launch, or start for a named product, call open_app with target_kind native so an installed Windows application is preferred and a website is not substituted. When the user explicitly says website, browser, or a domain, use open_url or web_search. For an ambiguous open X request, keep target_kind auto and let the existing resolver choose. " +
             "Use tools only for allowed actions; never claim an action finished until the tool response says it did. " +
@@ -2603,6 +2603,7 @@ public sealed class GeminiLiveConversationService : IDisposable
         public int RetryNumber { get; }
         public bool UsedSessionResumption { get; }
         public bool ResumptionHandleObserved { get; set; }
+        public LiveToolCallDispatcher ToolCalls { get; set; }
         public TaskCompletionSource<bool> GoAway { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
     }

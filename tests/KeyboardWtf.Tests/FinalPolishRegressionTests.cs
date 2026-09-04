@@ -211,7 +211,7 @@ public sealed class FinalPolishRegressionTests : IDisposable
             "if (ShouldAutoEnd(text, accumulatedUserTurn))",
             StringComparison.Ordinal);
         var observer = source.IndexOf(
-            "_userTranscriptObserver?.Invoke(accumulatedUserTurn);",
+            "GetToolDispatcher(diagnostics, token).Observe(_userTranscriptObserver, accumulatedUserTurn);",
             StringComparison.Ordinal);
         Assert.True(farewell >= 0);
         Assert.True(observer > farewell);
