@@ -3219,11 +3219,23 @@ public sealed class BrowserAutomationCoordinator : IDisposable
     {
         if (currentPage == null
             || helperStatus?.ActiveTabFresh != true
-            || !helperStatus.TabId.HasValue
-            || helperStatus.TabId.Value == currentPage.TabId)
+            || !helperStatus.TabId.HasValue)
         {
             return false;
         }
+
+        // The user may satisfy a requested manual-navigation step either by
+        // switching tabs or by navigating the leased tab itself. In both
+        // cases the Helper's fresh active-page state is authoritative once
+        // the user explicitly confirms the handoff. An unchanged task page
+        // remains ineligible, so merely foregrounding it cannot resume or
+        // redirect the task.
+        var activeTabChanged = helperStatus.TabId.Value != currentPage.TabId;
+        var leasedTabNavigated = !activeTabChanged
+            && !string.IsNullOrWhiteSpace(helperStatus.ActiveUrl)
+            && !SameLivePage(currentPage.Url, helperStatus.ActiveUrl);
+        if (!activeTabChanged && !leasedTabNavigated)
+            return false;
 
         var answer = NormalizeControlText(guidance);
         if (IsExplicitPageHandoffGuidance(answer))

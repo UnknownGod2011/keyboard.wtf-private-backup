@@ -178,11 +178,35 @@ public sealed class BrowserAutomationProtocolTests
                 WindowId = 12,
                 TabId = 91,
             }));
+        Assert.True(BrowserAutomationCoordinator.ShouldAdoptFreshActiveTabForGuidance(
+            intervention,
+            "I'm on the correct form now; continue here.",
+            current,
+            new BrowserHelperStatus
+            {
+                Connected = true,
+                ActiveTabFresh = true,
+                WindowId = 8,
+                TabId = 41,
+                ActiveUrl = "https://forms.example/target",
+            }));
         Assert.False(BrowserAutomationCoordinator.ShouldAdoptFreshActiveTabForGuidance(
             intervention,
             "What do you think about the project?",
             current,
             freshOtherTab));
+        Assert.False(BrowserAutomationCoordinator.ShouldAdoptFreshActiveTabForGuidance(
+            intervention,
+            "What do you think about the project?",
+            current,
+            new BrowserHelperStatus
+            {
+                Connected = true,
+                ActiveTabFresh = true,
+                WindowId = 8,
+                TabId = 41,
+                ActiveUrl = "https://forms.example/target",
+            }));
         Assert.False(BrowserAutomationCoordinator.ShouldAdoptFreshActiveTabForGuidance(
             intervention,
             "Continue here.",
@@ -193,6 +217,7 @@ public sealed class BrowserAutomationProtocolTests
                 ActiveTabFresh = true,
                 WindowId = 8,
                 TabId = 41,
+                ActiveUrl = "https://source.example/context",
             }));
     }
 
