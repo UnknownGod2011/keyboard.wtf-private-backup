@@ -4347,12 +4347,29 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                      })
             {
                 var normalizedCandidate = NormalizeControlText(candidate);
-                if (normalizedCandidate.Length < 2
+                if (normalizedCandidate.Length == 0
                     || string.Equals(
                         normalizedCandidate,
                         NormalizeControlText(control.FieldLabel),
                         StringComparison.OrdinalIgnoreCase))
                 {
+                    continue;
+                }
+                if (normalizedCandidate.Length == 1)
+                {
+                    // A one-character choice (for example, a rating) is safe
+                    // evidence only when the answer also refers to the field
+                    // that the active intervention requested. Match it as a
+                    // complete token so option "1" cannot match "10".
+                    if (char.IsLetterOrDigit(normalizedCandidate[0])
+                        && TextSharesMeaning(request, answer)
+                        && Regex.IsMatch(
+                            answer,
+                            $@"(?<![\p{{L}}\p{{N}}]){Regex.Escape(normalizedCandidate)}(?![\p{{L}}\p{{N}}])",
+                            RegexOptions.IgnoreCase))
+                    {
+                        return true;
+                    }
                     continue;
                 }
                 if (answer.Contains(

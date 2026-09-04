@@ -294,6 +294,45 @@ public sealed class BrowserAutomationProtocolTests
             page));
     }
 
+    [Fact]
+    public void Paused_task_accepts_a_contextual_single_character_option_without_substring_matches()
+    {
+        var intervention = new BrowserUserIntervention
+        {
+            Missing = "Please provide the stability rating from 1 to 5.",
+            Explanation = "The overall performance and stability question is required.",
+            Required = true,
+        };
+        var page = new BrowserPageSnapshot
+        {
+            Controls = Enumerable.Range(1, 5)
+                .Select(value => new BrowserControl
+                {
+                    Id = $"stability-{value}",
+                    FieldId = "stability-rating",
+                    FieldLabel = "Overall performance and stability rating",
+                    Role = "radio",
+                    AccessibleName = value.ToString(),
+                    Visible = true,
+                    Enabled = true,
+                })
+                .ToArray(),
+        };
+
+        Assert.True(BrowserAutomationCoordinator.IsRelevantManualAnswer(
+            intervention,
+            "The stability rating you asked for is 4 out of 5.",
+            page));
+        Assert.False(BrowserAutomationCoordinator.IsRelevantManualAnswer(
+            intervention,
+            "The stability rating shown elsewhere is 14 out of 50.",
+            page));
+        Assert.False(BrowserAutomationCoordinator.IsRelevantManualAnswer(
+            intervention,
+            "I have 4 ideas about product strategy.",
+            page));
+    }
+
     [Theory]
     [InlineData(BrowserTaskState.Planning)]
     [InlineData(BrowserTaskState.ReadingPage)]
