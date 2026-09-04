@@ -2470,6 +2470,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             ControlId = liveTarget?.Id ?? action.TargetId,
             TargetRole = action.TargetRole,
             TargetName = action.TargetName,
+            TargetFieldId = action.TargetFieldId,
             Text = action.Text,
             Url = action.Url,
             Key = action.Key,
@@ -3444,6 +3445,9 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         if (receipt == null || action == null)
             return;
 
+        if (string.IsNullOrWhiteSpace(receipt.TargetFieldId))
+            receipt.TargetFieldId = action.TargetFieldId;
+
         receipt.ExpectedValue = action.Type switch
         {
             "type" or "paste" => action.Text ?? "",
@@ -4368,7 +4372,10 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             return false;
         }
 
-        return (page?.Controls ?? Array.Empty<BrowserControl>()).Any(control =>
+        return (page?.Controls ?? Array.Empty<BrowserControl>())
+            .Where(control => string.IsNullOrWhiteSpace(action?.TargetFieldId)
+                || string.Equals(control.FieldId, action.TargetFieldId, StringComparison.Ordinal))
+            .Any(control =>
         {
             var names = new[]
             {
@@ -4846,17 +4853,21 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             },
             token);
 
-    private static BrowserControl FindMatchingControl(
+    internal static BrowserControl FindMatchingControl(
         BrowserPageSnapshot page,
         BrowserPlannerAction action)
     {
         var byId = page.Controls.FirstOrDefault(control =>
             string.Equals(control.Id, action.TargetId, StringComparison.Ordinal));
         if (byId != null)
-            return byId;
+            return string.IsNullOrWhiteSpace(action.TargetFieldId)
+                || string.Equals(byId.FieldId, action.TargetFieldId, StringComparison.Ordinal)
+                    ? byId : null;
 
         var wanted = Normalize(action.TargetName);
-        return page.Controls
+        var candidates = page.Controls
+            .Where(control => string.IsNullOrWhiteSpace(action.TargetFieldId)
+                || string.Equals(control.FieldId, action.TargetFieldId, StringComparison.Ordinal))
             .Where(control =>
                 string.IsNullOrWhiteSpace(action.TargetRole)
                 || string.Equals(control.Role, action.TargetRole, StringComparison.OrdinalIgnoreCase))
@@ -4866,8 +4877,11 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 Score = NameScore(wanted, Normalize(ControlName(control))),
             })
             .OrderByDescending(candidate => candidate.Score)
-            .FirstOrDefault(candidate => candidate.Score >= 2)
-            ?.Control;
+            .Where(candidate => candidate.Score >= 2)
+            .ToArray();
+        return candidates.Length == 0
+            || (candidates.Length > 1 && candidates[0].Score == candidates[1].Score)
+                ? null : candidates[0].Control;
     }
 
     private static int NameScore(string wanted, string actual)

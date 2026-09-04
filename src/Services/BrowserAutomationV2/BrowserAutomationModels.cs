@@ -138,6 +138,18 @@ public sealed class BrowserControl
     [JsonPropertyName("nearbyLabel")]
     public string NearbyLabel { get; set; } = "";
 
+    [JsonPropertyName("fieldId")]
+    public string FieldId { get; set; } = "";
+
+    [JsonPropertyName("fieldLabel")]
+    public string FieldLabel { get; set; } = "";
+
+    [JsonPropertyName("fieldRequired")]
+    public bool? FieldRequired { get; set; }
+
+    [JsonPropertyName("fieldAnswered")]
+    public bool FieldAnswered { get; set; }
+
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; }
 
@@ -241,6 +253,7 @@ public sealed class BrowserActionRequest
     public string ControlId { get; init; } = "";
     public string TargetRole { get; init; } = "";
     public string TargetName { get; init; } = "";
+    public string TargetFieldId { get; init; } = "";
     public string Text { get; init; } = "";
     public string Url { get; init; } = "";
     public string Key { get; init; } = "";
@@ -262,6 +275,7 @@ public sealed class BrowserActionReceipt
     public string TargetId { get; set; } = "";
     public string TargetRole { get; set; } = "";
     public string TargetName { get; set; } = "";
+    public string TargetFieldId { get; set; } = "";
     // Task-scoped verification metadata supplied by the coordinator. The
     // extension proves the immediate mutation; this value lets terminal
     // verification confirm that the requested state still exists after later
@@ -287,7 +301,7 @@ public sealed class BrowserActionReceipt
 internal static class BrowserHelperProtocol
 {
     public const string Version = "2.1.21";
-    public const string PackageVersion = "2.1.25";
+    public const string PackageVersion = "2.1.26";
     public const string StoreExtensionId = "gojdebdikepkpapmnggeljneamjdigbh";
     public const string DevelopmentExtensionId = "gfndpohemndahmmeealkdobepjacblnf";
     public const string ExtensionId = StoreExtensionId;

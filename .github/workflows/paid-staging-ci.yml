@@ -65,6 +65,9 @@ jobs:
       - name: Test Chrome Helper native reconnect
         run: node extensions/keyboard-wtf-browser-helper-v2/scripts/test-native-reconnect.js
 
+      - name: Test Chrome Helper form context
+        run: node extensions/keyboard-wtf-browser-helper-v2/scripts/test-form-context.js
+
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 

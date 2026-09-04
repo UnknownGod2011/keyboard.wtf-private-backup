@@ -169,7 +169,7 @@ public sealed class BrowserAutomationVerifier
         var formLikeMutation = !destinationEditorTransfer
             && (Regex.IsMatch(
                 text,
-                @"\b(fill|answer)\b.*\b(form|fields|quiz)\b")
+                @"\b(fill|answer)\b.*\b(form|fields|quiz|survey|questionnaire)\b")
                 || (requestedMutationSteps > 1
                 && Regex.IsMatch(
                     text,
@@ -177,12 +177,25 @@ public sealed class BrowserAutomationVerifier
                     && receipts.Any(IsFormControlReceipt)));
         if (formLikeMutation)
         {
+            var missing = (page?.Controls ?? Array.Empty<BrowserControl>())
+                .Where(control => control.Visible && control.Enabled
+                    && control.FieldRequired == true && !control.FieldAnswered
+                    && !string.IsNullOrWhiteSpace(control.FieldId))
+                .GroupBy(control => control.FieldId, StringComparer.Ordinal)
+                .Select(group => group.First().FieldLabel)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            if (missing.Length > 0)
+                return Failed("Required form questions remain unanswered: "
+                    + string.Join("; ", missing)
+                    + ". Use the provided context, or ask for genuinely missing required information before completion.");
+
             var expectedStates = receipts
                 .Where(HasExpectedFormState)
                 .GroupBy(
                     receipt => string.Join(
                         "|",
-                        receipt.TargetId,
+                        string.IsNullOrWhiteSpace(receipt.TargetFieldId) ? receipt.TargetId : receipt.TargetFieldId,
                         receipt.TargetRole,
                         receipt.TargetName),
                     StringComparer.OrdinalIgnoreCase)
@@ -365,7 +378,10 @@ public sealed class BrowserAutomationVerifier
         BrowserPageSnapshot page,
         BrowserActionReceipt receipt)
     {
-        var controls = page?.Controls ?? Array.Empty<BrowserControl>();
+        var controls = (page?.Controls ?? Array.Empty<BrowserControl>())
+            .Where(control => string.IsNullOrWhiteSpace(receipt.TargetFieldId)
+                || string.Equals(control.FieldId, receipt.TargetFieldId, StringComparison.Ordinal))
+            .ToArray();
         var live = controls.FirstOrDefault(control =>
                 !string.IsNullOrWhiteSpace(receipt.TargetId)
                 && string.Equals(

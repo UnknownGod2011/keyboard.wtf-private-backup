@@ -31,6 +31,9 @@ const VERSION = "2.1.21";
   let domEpoch = `${Math.round(performance.timeOrigin)}:${location.href}`;
   let controlsById = new Map();
   let lastSnapshot = null;
+  const fieldIds = new WeakMap();
+  let nextFieldId = 0;
+  let fieldFrameId = 0;
   let prepared = null;
   let indicator = null;
   let highlight = null;
@@ -85,8 +88,9 @@ const VERSION = "2.1.21";
     }
   }
 
-  function scan(taskId, frameId = 0) {
+  function scan(taskId, frameId = fieldFrameId) {
     requireTask(taskId);
+    fieldFrameId = frameId;
     graphVersion += 1;
     controlsById = new Map();
 
@@ -335,6 +339,7 @@ const VERSION = "2.1.21";
         targetId: command.controlId || "",
         targetRole: targetIdentity.role,
         targetName: targetIdentity.name,
+        targetFieldId: targetIdentity.fieldId,
         beforeUrl,
         afterUrl,
         beforeFingerprint,
@@ -646,6 +651,7 @@ const VERSION = "2.1.21";
   }
 
   function semanticScore(element, command) {
+    if (command.targetFieldId && formField(element).fieldId !== command.targetFieldId) return -1000;
     const identity = semanticIdentity(element);
     const wantedName = normalize(command.targetName);
     const wantedRole = normalize(command.targetRole);
@@ -666,6 +672,7 @@ const VERSION = "2.1.21";
   }
 
   function semanticMatch(element, command) {
+    if (command.targetFieldId && formField(element).fieldId !== command.targetFieldId) return false;
     if (!command.targetName && !command.targetRole) return true;
     return semanticScore(element, command) >= 45;
   }
@@ -673,12 +680,13 @@ const VERSION = "2.1.21";
   function semanticIdentity(element) {
     return {
       role: normalize(roleOf(element)),
-      name: normalize(accessibleName(element) || visibleText(element))
+      name: normalize(accessibleName(element) || visibleText(element)),
+      fieldId: formField(element).fieldId || ""
     };
   }
 
   function sameIdentity(a, b) {
-    return a.role === b.role && a.name === b.name;
+    return a.role === b.role && a.name === b.name && a.fieldId === b.fieldId;
   }
 
   function describeControl(id, element, rect, frameId = 0) {
@@ -694,6 +702,7 @@ const VERSION = "2.1.21";
       title: truncate(element.getAttribute("title") || "", 180),
       placeholder: truncate(element.getAttribute("placeholder") || "", 180),
       inputType: type,
+      ...formField(element, frameId),
       value: safeControlValue(element),
       nearbyLabel: truncate(nearbyLabel(element), 180),
       enabled: !element.disabled && element.getAttribute("aria-disabled") !== "true",
@@ -767,6 +776,8 @@ const VERSION = "2.1.21";
   }
 
   function nearbyLabel(element) {
+    const field = formField(element);
+    if (field.fieldLabel) return field.fieldLabel;
     if (element.labels?.length) return [...element.labels].map(label => visibleText(label)).join(" ");
     const parentLabel = element.closest("label");
     if (parentLabel) return visibleText(parentLabel);
@@ -789,6 +800,53 @@ const VERSION = "2.1.21";
         return visibleText(heading);
     }
     return "";
+  }
+
+  // Choice text (for example "4" or "Yes") is not the question identity.
+  // Preserve the page's native/ARIA grouping instead of guessing from text.
+  function formField(element, frameId = fieldFrameId) {
+    const role = roleOf(element);
+    if (!["radio", "checkbox", "textbox", "combobox"].includes(role)) return {};
+    let owner = element;
+    let labelOwner = element;
+    let members = [element];
+    if (role === "radio" || role === "checkbox") {
+      const group = element.closest("[role='radiogroup'],[role='group'],[role='list'],fieldset");
+      if (group && group !== element) {
+        owner = group;
+        labelOwner = group;
+        members = [...group.querySelectorAll(role === "radio"
+          ? "[role='radio'],input[type='radio']" : "[role='checkbox'],input[type='checkbox']")];
+      }
+      if (element instanceof HTMLInputElement && role === "radio" && element.name) {
+        members = [...document.getElementsByName(element.name)].filter(other =>
+          other instanceof HTMLInputElement && other.type === "radio" && other.form === element.form);
+        owner = members[0] || element;
+      }
+      // A native required checkbox is required individually, not satisfied by
+      // some other checked box in the surrounding question.
+      if (element instanceof HTMLInputElement && role === "checkbox" && element.required) {
+        owner = element;
+        members = [element];
+      }
+    }
+    const question = element.closest("fieldset,[role='listitem'],[data-question-id]");
+    const labelSource = labelOwner !== element ? labelOwner : question || element;
+    const labelledBy = labelSource.getAttribute("aria-labelledby") || "";
+    const groupLabel = labelSource.getAttribute("aria-label")
+      || labelledBy.split(/\s+/).filter(Boolean).map(id => referencedLabelText(document.getElementById(id))).join(" ")
+      || visibleText(labelSource.querySelector("legend,[role='heading'],h1,h2,h3,h4"));
+    const fieldLabel = groupLabel || accessibleName(element);
+    if (!fieldIds.has(owner)) fieldIds.set(owner, `field${++nextFieldId}`);
+    const declaresRequired = member => member.required === true || member.getAttribute("aria-required") === "true";
+    const required = declaresRequired(owner) || members.some(declaresRequired)
+      ? true : typeof owner.required === "boolean" || owner.getAttribute("aria-required") === "false"
+        ? false : null; // Missing ARIA metadata is unknown, not permission to skip.
+    const answered = role === "radio" || role === "checkbox"
+      ? members.some(member => member.checked === true || member.getAttribute("aria-checked") === "true")
+      : String(safeControlValue(element) || "").trim().length > 0;
+    return { fieldId: `${frameId}:${hashString(domEpoch)}:${fieldIds.get(owner)}`, fieldLabel: truncate(fieldLabel, 240),
+      fieldRequired: required, fieldAnswered: answered };
   }
 
   function referencedLabelText(element) {

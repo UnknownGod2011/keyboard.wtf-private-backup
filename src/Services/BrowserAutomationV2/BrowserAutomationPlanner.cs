@@ -21,6 +21,9 @@ public sealed class BrowserPlannerAction
     [JsonPropertyName("targetName")]
     public string TargetName { get; set; } = "";
 
+    [JsonPropertyName("targetFieldId")]
+    public string TargetFieldId { get; set; } = "";
+
     [JsonPropertyName("text")]
     public string Text { get; set; } = "";
 
@@ -130,6 +133,7 @@ public sealed class BrowserAutomationPlanner : IDisposable
                     ["targetId"] = StringSchema(),
                     ["targetRole"] = StringSchema(),
                     ["targetName"] = StringSchema(),
+                    ["targetFieldId"] = StringSchema(),
                     ["text"] = StringSchema(),
                     ["url"] = StringSchema(),
                     ["key"] = StringSchema(),
@@ -455,6 +459,7 @@ public sealed class BrowserAutomationPlanner : IDisposable
         builder.AppendLine("If the original request explicitly names a destination website, service, or domain and the current page is unrelated, establish that requested destination first with navigate/open_tab. Never use a convenient search box or relevant-sounding control on the unrelated current page as a substitute for the named destination.");
         builder.AppendLine("Before acting, verify that the control belongs to the correct entity, collection, section, and local context for the requested outcome. A globally visible control with a relevant-sounding label is not sufficient evidence.");
         builder.AppendLine("After grounding an action, read the target's complete accessible name and nearby label. Never activate a live control whose semantics contradict an explicit user constraint, such as one-way versus round-trip or latest versus oldest.");
+        builder.AppendLine("For form controls, the field label identifies the question and the control name identifies its answer. Copy the chosen question's fieldId into action.targetFieldId alongside the exact control targetId. Identical answer labels in different questions are not interchangeable. Do not mark a form done with unanswered required questions: fill from supplied context or ask for the missing required value.");
         builder.AppendLine("For an ordered item from a named creator, account, profile, category, or collection, first reach and verify that entity's collection page, then its item/content section, then use the exact requested ordering control. A global search Filter/Sort control is not collection ordering.");
         builder.AppendLine("Before using a generic Filter, Sort, More, or menu control, identify the expected state transition and confirm its nearby context serves the immediate goal. Navigate deeper when it does not.");
         builder.AppendLine("If history says an action was unverified or made no progress on the unchanged page, that exact control and mechanism is exhausted. Do not repeat it. Choose a genuinely different control, navigation path, input mechanism, or one bounded visual recovery.");
@@ -513,6 +518,8 @@ public sealed class BrowserAutomationPlanner : IDisposable
                 + $"text={Quote(control.Text)} label={Quote(control.NearbyLabel)} "
                 + $"placeholder={Quote(control.Placeholder)} value={Quote(control.Value)} selected={control.Selected} "
                 + $"checked={control.Checked} editable={control.Editable} actions=[{string.Join(",", control.SafeActions)}]");
+            if (!string.IsNullOrWhiteSpace(control.FieldId))
+                builder.AppendLine($"  fieldId={Quote(control.FieldId)} field={Quote(control.FieldLabel)} required={control.FieldRequired?.ToString() ?? "unknown"} answered={control.FieldAnswered}");
         }
         return builder.ToString();
     }
