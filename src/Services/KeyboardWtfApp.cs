@@ -250,6 +250,13 @@ public sealed class KeyboardWtfApp : IDisposable
         if (!_liveConversation.IsActive)
             throw new InvalidOperationException("Jarvis could not start. Check the Gemini key, microphone, and app logs.");
 
+        // A text turn is already an authoritative final user utterance. Keep
+        // conversation termination ahead of direct actions, selected-context
+        // routing, browser guidance, and model interpretation just as the
+        // recognized-speech path does.
+        if (_liveConversation.TryEndFromAuthoritativeUserText(text))
+            return;
+
         // Start deterministic or browser work promptly, but still let the
         // Live conversation receive the turn. CommandRegistry supplies the
         // matching verified receipt to the model, which lets Jarvis say

@@ -918,7 +918,7 @@ public sealed class JarvisAutomationService : IDisposable
                 window.ProcessName,
                 "chrome",
                 StringComparison.OrdinalIgnoreCase));
-        if (browserWindow.Handle == IntPtr.Zero)
+        if (browserWindow == null || browserWindow.Handle == IntPtr.Zero)
             return null;
 
         ShowWindow(browserWindow.Handle, SwRestore);
@@ -2121,7 +2121,7 @@ public sealed class JarvisAutomationService : IDisposable
         var request = Regex.Replace((text ?? "").Trim(), @"\s+", " ");
         var match = Regex.Match(
             request,
-            @"^(?:please\s+)?(?:open|use)\s+(?<alias>.+?)[.!?]*$",
+            @"^(?:please\s+)?(?<verb>open|use)\s+(?<alias>.+?)[.!?]*$",
             RegexOptions.IgnoreCase);
         if (!match.Success)
             return false;
@@ -2137,7 +2137,22 @@ public sealed class JarvisAutomationService : IDisposable
             return false;
         }
 
-        if (_mappings.FindExact(LearnedMappingKind.Link, alias) is { } link)
+        // Learned mappings may intentionally use either the named object
+        // ("portal") or the complete spoken trigger ("open portal"). Resolve
+        // both exact normalized forms, in that order, so creation and lookup
+        // share one durable command identity without introducing fuzzy action
+        // execution or a second memory system.
+        var spokenAlias = CleanPreferenceAlias(
+            $"{match.Groups["verb"].Value} {match.Groups["alias"].Value}");
+        var candidates = new[] { alias, spokenAlias }
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var link = candidates
+            .Select(candidate => _mappings.FindExact(LearnedMappingKind.Link, candidate))
+            .FirstOrDefault(entry => entry != null);
+        if (link != null)
         {
             toolName = "open_app";
             arguments = JsonSerializer.SerializeToElement(new
@@ -2148,7 +2163,10 @@ public sealed class JarvisAutomationService : IDisposable
             return true;
         }
 
-        if (_mappings.FindExact(LearnedMappingKind.App, alias) is { } app)
+        var app = candidates
+            .Select(candidate => _mappings.FindExact(LearnedMappingKind.App, candidate))
+            .FirstOrDefault(entry => entry != null);
+        if (app != null)
         {
             toolName = "open_app";
             arguments = JsonSerializer.SerializeToElement(new
@@ -2161,14 +2179,20 @@ public sealed class JarvisAutomationService : IDisposable
             return true;
         }
 
-        if (_mappings.FindExact(LearnedMappingKind.File, alias) is { } file)
+        var file = candidates
+            .Select(candidate => _mappings.FindExact(LearnedMappingKind.File, candidate))
+            .FirstOrDefault(entry => entry != null);
+        if (file != null)
         {
             toolName = "open_path";
             arguments = JsonSerializer.SerializeToElement(new { path = file.Target });
             return true;
         }
 
-        if (_mappings.FindExact(LearnedMappingKind.Folder, alias) is { } folder)
+        var folder = candidates
+            .Select(candidate => _mappings.FindExact(LearnedMappingKind.Folder, candidate))
+            .FirstOrDefault(entry => entry != null);
+        if (folder != null)
         {
             toolName = "open_folder";
             arguments = JsonSerializer.SerializeToElement(new { folder = folder.Target });

@@ -91,6 +91,7 @@ internal sealed record PaidInlineAudio(string MimeType, string Data);
 
 internal sealed class PaidAccountService : IDisposable
 {
+    internal static readonly TimeSpan TransportTimeout = TimeSpan.FromSeconds(75);
     internal static readonly IReadOnlyList<TimeSpan> LiveSlotConflictRetryDelays =
     [
         TimeSpan.FromSeconds(1),
@@ -136,7 +137,10 @@ internal sealed class PaidAccountService : IDisposable
                 ? "paid-production-session.dat"
                 : "paid-staging-session.dat"));
         _http = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: true);
-        _http.Timeout = TimeSpan.FromSeconds(40);
+        // Operation-level cancellation owns user-visible deadlines. Keep the
+        // shared transport envelope above the longest supported paid request
+        // so valid long Smart Writing work is not cut off by HttpClient first.
+        _http.Timeout = TransportTimeout;
         _browserLauncher = browserLauncher ?? (url => Process.Start(new ProcessStartInfo
         {
             FileName = url,

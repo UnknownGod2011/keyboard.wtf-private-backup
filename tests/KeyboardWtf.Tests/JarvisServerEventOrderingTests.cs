@@ -51,9 +51,36 @@ public sealed class JarvisServerEventOrderingTests
         }
     }
 
+    [Fact]
+    public async Task End_tool_waits_for_the_authoritative_transcript_instead_of_rejecting_early()
+    {
+        await using var run = new MessageRun();
+        run.Push(EndCall("end-before-transcript"));
+
+        await Task.Delay(100);
+        Assert.Equal(1, run.PendingToolCount());
+
+        run.Push("""{"serverContent":{"inputTranscription":{"text":"That's all, goodbye."}}}""");
+        var shutdown = await Task.WhenAny(run.Ended.Task, Task.Delay(500));
+
+        Assert.Same(run.Ended.Task, shutdown);
+        Assert.True(run.Session.IsCancellationRequested);
+    }
+
     private static string ToolCall(string id) => JsonSerializer.Serialize(new
     {
         toolCall = new { functionCalls = new[] { new { id, name = "test_pending_action", args = new { } } } },
+    });
+
+    private static string EndCall(string id) => JsonSerializer.Serialize(new
+    {
+        toolCall = new
+        {
+            functionCalls = new[]
+            {
+                new { id, name = "end_conversation", args = new { reason = "User ended the conversation." } },
+            },
+        },
     });
 
     private static async Task IgnoreCancelledAsync(Task task)
@@ -110,6 +137,19 @@ public sealed class JarvisServerEventOrderingTests
                 if (index == 0)
                     await ToolEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
             }
+        }
+
+        public void Push(string message) =>
+            _handle.Invoke(_service, [message, NewSignal(), _diagnostics, Session.Token]);
+
+        public int PendingToolCount()
+        {
+            var dispatcher = _diagnostics.GetType().GetProperty(
+                "ToolCalls", BindingFlags.Instance | BindingFlags.Public)!.GetValue(_diagnostics);
+            return dispatcher == null
+                ? 0
+                : (int)dispatcher.GetType().GetProperty(
+                    "PendingCount", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(dispatcher)!;
         }
 
         public void Release()

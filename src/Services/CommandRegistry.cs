@@ -608,10 +608,12 @@ public sealed class CommandRegistry
         // ambiguous voice pre-route to the completed Live turn. Explicit page
         // mutation and explicit Browser Automation requests still start here.
         if (ShouldDeferIncrementalBrowserPreRoute(userTurn, fromLocalTextSubmission)
-            || HasCapturedContextForLaterBrowserAction(userTurn))
+            || ShouldDeferBrowserPreRouteForCapturedContext(
+                HasFreshCapturedBrowserContext(),
+                userTurn))
         {
             AppLog.Info(
-                "Browser pre-route deferred until the complete Live turn so explicit user-provided context can be attached once.");
+                "Browser pre-route deferred until the complete Live turn so the model can authoritatively decide whether fresh user-provided context belongs to this task.");
             return false;
         }
 
@@ -643,6 +645,12 @@ public sealed class CommandRegistry
         BrowserAutomationTaskClassifier.RequiresFreshUserContextCapture(text)
         || (!fromLocalTextSubmission
             && BrowserAutomationTaskClassifier.ShouldDeferIncrementalContentRouting(text));
+
+    internal static bool ShouldDeferBrowserPreRouteForCapturedContext(
+        bool contextAvailable,
+        string request) =>
+        contextAvailable
+        && BrowserAutomationTaskClassifier.RequiresPageMutation(request);
 
     internal static bool IsExplicitBrowserTaskStopOrPause(string text) =>
         TryParseExplicitBrowserTaskStopOrPause(text, out _);
@@ -1744,6 +1752,7 @@ public sealed class CommandRegistry
             RecentJarvisUserTurn());
         var attachedCapturedContext = TryAttachCapturedBrowserContext(
             request,
+            GetBoolean(args, "use_captured_context"),
             out var groundedRequest);
         request = groundedRequest;
         var classification = _browserAutomation.Classify(request);
@@ -1852,6 +1861,7 @@ public sealed class CommandRegistry
 
     private bool TryAttachCapturedBrowserContext(
         string request,
+        bool currentRequestUsesCapturedContext,
         out string groundedRequest)
     {
         groundedRequest = request ?? "";
@@ -1871,7 +1881,8 @@ public sealed class CommandRegistry
                     referencesContext,
                     capturedForCurrentTurn,
                     _capturedBrowserContextAuthorizedForLaterAction,
-                    pageMutation))
+                    pageMutation,
+                    currentRequestUsesCapturedContext))
             {
                 return false;
             }
@@ -1889,10 +1900,14 @@ public sealed class CommandRegistry
         bool requestReferencesContext,
         bool capturedForCurrentTurn,
         bool explicitlyAuthorizedForLaterAction,
-        bool requestRequiresPageMutation) =>
+        bool requestRequiresPageMutation,
+        bool currentRequestUsesCapturedContext = false) =>
         fresh
+        && requestRequiresPageMutation
         && ((requestReferencesContext && capturedForCurrentTurn)
-            || (explicitlyAuthorizedForLaterAction && requestRequiresPageMutation));
+            || currentRequestUsesCapturedContext
+            || (explicitlyAuthorizedForLaterAction
+                && requestReferencesContext));
 
     internal static string BuildBrowserTaskWithCapturedContext(
         string request,
@@ -1905,14 +1920,10 @@ public sealed class CommandRegistry
             + (context ?? "").Trim(),
             10000);
 
-    private bool HasCapturedContextForLaterBrowserAction(string request)
+    private bool HasFreshCapturedBrowserContext()
     {
         lock (_browserPreRouteLock)
-        {
-            return CapturedBrowserContextIsFreshLocked()
-                && _capturedBrowserContextAuthorizedForLaterAction
-                && BrowserAutomationTaskClassifier.RequiresPageMutation(request);
-        }
+            return CapturedBrowserContextIsFreshLocked();
     }
 
     private void ConsumeCapturedBrowserContext()
@@ -2218,6 +2229,11 @@ public sealed class CommandRegistry
             _ => null,
         };
     }
+
+    private static bool GetBoolean(JsonElement args, string property) =>
+        args.ValueKind == JsonValueKind.Object
+        && args.TryGetProperty(property, out var value)
+        && value.ValueKind == JsonValueKind.True;
 
     private static string NormalizeAppName(string appName)
     {

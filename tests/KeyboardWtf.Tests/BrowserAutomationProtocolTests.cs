@@ -235,8 +235,89 @@ public sealed class BrowserAutomationProtocolTests
             "goodbye"));
         Assert.False(BrowserAutomationCoordinator.IsRelevantManualAnswer(
             intervention,
-            "Okay, cancel browser automation and try again."));
+                "Okay, cancel browser automation and try again."));
     }
+
+    [Fact]
+    public void Paused_task_accepts_natural_answers_grounded_in_the_requested_live_fields()
+    {
+        var intervention = new BrowserUserIntervention
+        {
+            Missing = "Provide the operating system and tested devices.",
+            Explanation = "Those required form questions are unanswered.",
+            Required = true,
+        };
+        var page = new BrowserPageSnapshot
+        {
+            Controls =
+            [
+                new BrowserControl
+                {
+                    Id = "os-windows",
+                    FieldId = "operating-system",
+                    FieldLabel = "Operating system",
+                    Role = "radio",
+                    AccessibleName = "Windows 11",
+                    Visible = true,
+                    Enabled = true,
+                },
+                new BrowserControl
+                {
+                    Id = "device-mouse",
+                    FieldId = "tested-devices",
+                    FieldLabel = "Tested devices",
+                    Role = "checkbox",
+                    AccessibleName = "MX Master 4",
+                    Visible = true,
+                    Enabled = true,
+                },
+                new BrowserControl
+                {
+                    Id = "unrelated-windows",
+                    FieldId = "favorite-topic",
+                    FieldLabel = "Favorite topic",
+                    Role = "radio",
+                    AccessibleName = "Windows 11",
+                    Visible = true,
+                    Enabled = true,
+                },
+            ],
+        };
+
+        Assert.True(BrowserAutomationCoordinator.IsRelevantManualAnswer(
+            intervention,
+            "I use Windows 11 and tested with MX Master 4.",
+            page));
+        Assert.False(BrowserAutomationCoordinator.IsRelevantManualAnswer(
+            intervention,
+            "I was thinking about a different product strategy.",
+            page));
+    }
+
+    [Theory]
+    [InlineData(BrowserTaskState.Planning)]
+    [InlineData(BrowserTaskState.ReadingPage)]
+    [InlineData(BrowserTaskState.Executing)]
+    [InlineData(BrowserTaskState.WaitingForPage)]
+    [InlineData(BrowserTaskState.AnalyzingImage)]
+    [InlineData(BrowserTaskState.Verifying)]
+    [InlineData(BrowserTaskState.Paused)]
+    [InlineData(BrowserTaskState.NeedsUserAction)]
+    public void Explicit_current_page_handoff_is_eligible_from_every_nonterminal_task_state(
+        BrowserTaskState state) =>
+        Assert.True(BrowserAutomationCoordinator.CanAcceptAuthorizedPageHandoff(state));
+
+    [Theory]
+    [InlineData(BrowserTaskState.Queued)]
+    [InlineData(BrowserTaskState.Completed)]
+    [InlineData(BrowserTaskState.CompletedWithNote)]
+    [InlineData(BrowserTaskState.Partial)]
+    [InlineData(BrowserTaskState.Blocked)]
+    [InlineData(BrowserTaskState.Cancelling)]
+    [InlineData(BrowserTaskState.Cancelled)]
+    [InlineData(BrowserTaskState.Failed)]
+    public void Terminal_task_cannot_adopt_a_new_foreground_tab(BrowserTaskState state) =>
+        Assert.False(BrowserAutomationCoordinator.CanAcceptAuthorizedPageHandoff(state));
 
     [Fact]
     public async Task Intervention_gate_is_armed_before_a_visible_state_can_resume_it()

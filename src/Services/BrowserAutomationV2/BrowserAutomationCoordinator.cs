@@ -160,7 +160,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             var explicitCorrection = IsExplicitTaskCorrection(guidance);
             var skipRequest = _active.State == BrowserTaskState.NeedsUserAction
                 && IsSkipInterventionGuidance(guidance);
-            var adoptFreshActiveTab = _active.State == BrowserTaskState.NeedsUserAction
+            var adoptFreshActiveTab = CanAcceptAuthorizedPageHandoff(_active.State)
                 && ShouldAdoptFreshActiveTabForGuidance(
                     _active.Intervention,
                     guidance,
@@ -176,7 +176,10 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 && !skipRequest
                 && !adoptFreshActiveTab
                 && !(_active.State == BrowserTaskState.NeedsUserAction
-                    && IsRelevantManualAnswer(_active.Intervention, guidance)))
+                    && IsRelevantManualAnswer(
+                        _active.Intervention,
+                        guidance,
+                        _active.Page)))
             {
                 reason = "That is a separate Jarvis or browser command, not guidance for the active browser task.";
                 return false;
@@ -550,6 +553,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     out var explicitDestinationLabel,
                     out var explicitDestinationUrl))
             {
+                var destinationGuidanceRevision = Volatile.Read(
+                    ref runtime.GuidanceRevision);
                 var destinationCorrectionRevision = Volatile.Read(
                     ref runtime.CorrectionRevision);
                 var destinationEstablished = await EstablishAuthoritativeDestinationAsync(
@@ -560,12 +565,14 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     token);
                 if (!destinationEstablished)
                 {
-                    if (InFlightResultWasSuperseded(
+                    if (destinationGuidanceRevision
+                            != Volatile.Read(ref runtime.GuidanceRevision)
+                        || InFlightResultWasSuperseded(
                             destinationCorrectionRevision,
                             Volatile.Read(ref runtime.CorrectionRevision)))
                     {
                         runtime.History.Add(
-                            "Ignored the original destination result because a newer explicit correction is authoritative.");
+                            "Ignored the original destination result because newer explicit task guidance is authoritative.");
                     }
                     else
                     {
@@ -700,8 +707,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             for (var step = 1; step <= 24; step++)
             {
                 token.ThrowIfCancellationRequested();
-                await runtime.PauseGate.WaitAsync(token);
-                token.ThrowIfCancellationRequested();
+                await WaitForTaskReadyAsync(runtime, token);
 
                 RecordOrderedSourceCollectionEvidence(runtime);
                 DrainPendingGuidance(runtime);
@@ -746,8 +752,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     BuildPlannerHistory(runtime.History, runtime.VerifiedCheckpoints),
                     _settings.Current.BrowserAutomationModel,
                     token);
-                await runtime.PauseGate.WaitAsync(token);
-                token.ThrowIfCancellationRequested();
+                await WaitForTaskReadyAsync(runtime, token);
                 if (plannerGuidanceRevision != Volatile.Read(ref runtime.GuidanceRevision))
                 {
                     runtime.History.Add(
@@ -1436,11 +1441,19 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         runtime,
                         lastDecision.Action,
                         token,
-                        lastDecision.NextGoal);
+                        lastDecision.NextGoal,
+                        plannerGuidanceRevision);
                 }
                 catch (OperationCanceledException)
                     when (IsChildOperationCancellation(token.IsCancellationRequested))
                 {
+                    if (plannerGuidanceRevision
+                        != Volatile.Read(ref runtime.GuidanceRevision))
+                    {
+                        runtime.History.Add(
+                            "Ignored a stale in-flight browser action timeout after newer explicit task guidance.");
+                        continue;
+                    }
                     // The Helper gives each command its own bounded acknowledgement
                     // window. A page action can successfully navigate while its old
                     // content script disappears before returning that acknowledgement.
@@ -1466,12 +1479,23 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     }
                     continue;
                 }
-                if (InFlightResultWasSuperseded(
+                catch (Exception ex)
+                    when (!token.IsCancellationRequested
+                        && plannerGuidanceRevision
+                            != Volatile.Read(ref runtime.GuidanceRevision))
+                {
+                    runtime.History.Add(
+                        $"Ignored a stale in-flight browser action failure after newer explicit task guidance: {Short(ex.Message, 180)}");
+                    continue;
+                }
+                if (plannerGuidanceRevision
+                        != Volatile.Read(ref runtime.GuidanceRevision)
+                    || InFlightResultWasSuperseded(
                         plannerCorrectionRevision,
                         Volatile.Read(ref runtime.CorrectionRevision)))
                 {
                     runtime.History.Add(
-                        "Ignored the in-flight browser action result because a newer explicit correction is authoritative.");
+                        "Ignored the in-flight browser action result because newer explicit task guidance is authoritative.");
                     continue;
                 }
                 runtime.Receipts.Add(receipt);
@@ -2313,10 +2337,24 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         Runtime runtime,
         BrowserPlannerAction action,
         CancellationToken token,
-        string immediateGoal = "")
+        string immediateGoal = "",
+        int? expectedGuidanceRevision = null)
     {
-        await runtime.PauseGate.WaitAsync(token);
-        token.ThrowIfCancellationRequested();
+        if (expectedGuidanceRevision.HasValue)
+        {
+            await WaitForTaskReadyAsync(runtime, token);
+            if (expectedGuidanceRevision.Value
+                != Volatile.Read(ref runtime.GuidanceRevision))
+            {
+                throw new InvalidOperationException(
+                    "The pending browser action was superseded by newer explicit task guidance before execution.");
+            }
+        }
+        else
+        {
+            await runtime.PauseGate.WaitAsync(token);
+            token.ThrowIfCancellationRequested();
+        }
 
         if (ShouldUseTrustedEditorPaste(runtime.Request, runtime.Page, action))
         {
@@ -3188,21 +3226,10 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         await resumeTask;
         token.ThrowIfCancellationRequested();
         runtime.Intervention = null;
-        if (runtime.AdoptFreshActiveTabOnResume)
-        {
-            var previousTabId = runtime.Page.TabId;
-            runtime.AdoptFreshActiveTabOnResume = false;
-            runtime.Page = await _bridge.BeginTaskAsync(
-                runtime.TaskId,
-                useCurrentTab: true,
-                token);
-            AddControlledTab(runtime, runtime.Page);
-            runtime.History.Add(
-                $"User-authorized page handoff: the same task moved from tab:{previousTabId} to the fresh active tab:{runtime.Page.TabId} before resuming.");
-            AppLog.Info(
-                $"Browser task adopted user-authorized active tab: task={runtime.TaskId} fromTab={previousTabId} toTab={runtime.Page.TabId}");
-        }
-        else
+        var adoptedFreshActiveTab = await ApplyPendingActiveTabHandoffAsync(
+            runtime,
+            token);
+        if (!adoptedFreshActiveTab)
         {
             runtime.Page = await _bridge.ObserveAsync(
                 runtime.TaskId,
@@ -3211,6 +3238,51 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         }
         runtime.History.Add(resumedHistory);
     }
+
+    private async Task WaitForTaskReadyAsync(
+        Runtime runtime,
+        CancellationToken token)
+    {
+        await runtime.PauseGate.WaitAsync(token);
+        token.ThrowIfCancellationRequested();
+        await ApplyPendingActiveTabHandoffAsync(runtime, token);
+        token.ThrowIfCancellationRequested();
+    }
+
+    private async Task<bool> ApplyPendingActiveTabHandoffAsync(
+        Runtime runtime,
+        CancellationToken token)
+    {
+        lock (_sync)
+        {
+            if (!runtime.AdoptFreshActiveTabOnResume)
+                return false;
+            runtime.AdoptFreshActiveTabOnResume = false;
+        }
+
+        var previousTabId = runtime.Page?.TabId ?? 0;
+        runtime.Page = await _bridge.BeginTaskAsync(
+            runtime.TaskId,
+            useCurrentTab: true,
+            token);
+        AddControlledTab(runtime, runtime.Page);
+        runtime.History.Add(
+            $"User-authorized page handoff: the same task moved from tab:{previousTabId} to the fresh active tab:{runtime.Page.TabId} before continuing.");
+        AppLog.Info(
+            $"Browser task adopted user-authorized active tab: task={runtime.TaskId} fromTab={previousTabId} toTab={runtime.Page.TabId}");
+        return true;
+    }
+
+    internal static bool CanAcceptAuthorizedPageHandoff(
+        BrowserTaskState state) =>
+        state is BrowserTaskState.Planning
+            or BrowserTaskState.ReadingPage
+            or BrowserTaskState.WaitingForPage
+            or BrowserTaskState.AnalyzingImage
+            or BrowserTaskState.Executing
+            or BrowserTaskState.Verifying
+            or BrowserTaskState.Paused
+            or BrowserTaskState.NeedsUserAction;
 
     internal static bool ShouldAdoptFreshActiveTabForGuidance(
         BrowserUserIntervention intervention,
@@ -4107,13 +4179,23 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         string guidance) =>
         IsRelevantManualAnswer(
             new BrowserUserIntervention { Missing = requestedUserAction ?? "" },
-            guidance);
+            guidance,
+            null);
 
     internal static bool IsRelevantManualAnswer(
         BrowserUserIntervention intervention,
-        string guidance)
+        string guidance) =>
+        IsRelevantManualAnswer(intervention, guidance, null);
+
+    internal static bool IsRelevantManualAnswer(
+        BrowserUserIntervention intervention,
+        string guidance,
+        BrowserPageSnapshot page)
     {
-        var request = NormalizeControlText(intervention?.Missing);
+        var request = NormalizeControlText(string.Join(
+            " ",
+            intervention?.Missing,
+            intervention?.Explanation));
         var answer = NormalizeControlText(guidance);
         if (request.Length == 0 || answer.Length == 0)
             return false;
@@ -4221,12 +4303,103 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             }
         }
 
+        // The Helper's live field/group metadata is a stronger relevance
+        // signal than the grammatical shape of a reply. This lets a natural
+        // declarative answer resume the task when it names values belonging
+        // to the exact fields the intervention requested, while an unrelated
+        // sentence that merely begins with "I" remains ordinary conversation.
+        if (PageContainsRequestedAnswer(request, answer, page))
+            return true;
+
         var words = Regex.Matches(answer, @"[\p{L}\p{N}@._+:/-]+").Count;
         return words is >= 1 and <= 8
             && !Regex.IsMatch(
                 answer,
                 @"^(?:i|we|it|that|this|there|maybe|perhaps|also|please)\b",
                 RegexOptions.IgnoreCase);
+    }
+
+    private static bool PageContainsRequestedAnswer(
+        string request,
+        string answer,
+        BrowserPageSnapshot page)
+    {
+        if (page?.Controls == null)
+            return false;
+
+        var relevantControls = page.Controls
+            .Where(control => control is { Visible: true, Enabled: true }
+                && !string.IsNullOrWhiteSpace(control.FieldLabel)
+                && TextSharesMeaning(request, control.FieldLabel))
+            .ToArray();
+        if (relevantControls.Length == 0)
+            return false;
+
+        foreach (var control in relevantControls)
+        {
+            foreach (var candidate in new[]
+                     {
+                         control.AccessibleName,
+                         control.Text,
+                         control.AriaLabel,
+                         control.Title,
+                         control.Value,
+                     })
+            {
+                var normalizedCandidate = NormalizeControlText(candidate);
+                if (normalizedCandidate.Length < 2
+                    || string.Equals(
+                        normalizedCandidate,
+                        NormalizeControlText(control.FieldLabel),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                if (answer.Contains(
+                        normalizedCandidate,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TextSharesMeaning(string left, string right)
+    {
+        var leftText = NormalizeControlText(left);
+        var rightText = NormalizeControlText(right);
+        if (leftText.Length == 0 || rightText.Length == 0)
+            return false;
+        if (leftText.Contains(rightText, StringComparison.OrdinalIgnoreCase)
+            || rightText.Contains(leftText, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var leftTerms = MeaningfulControlTerms(leftText);
+        var rightTerms = MeaningfulControlTerms(rightText);
+        return leftTerms.Overlaps(rightTerms);
+    }
+
+    private static HashSet<string> MeaningfulControlTerms(string text)
+    {
+        var ignored = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "the", "and", "for", "with", "from", "please", "provide",
+            "enter", "type", "fill", "specify", "choose", "select",
+            "supply", "need", "required", "missing", "information",
+            "value", "field",
+        };
+        return Regex.Matches(text ?? "", @"[\p{L}\p{N}]+")
+            .Select(match => match.Value.ToLowerInvariant())
+            .Where(term => term.Length >= 3 && !ignored.Contains(term))
+            .Select(term => term.Length > 4 && term.EndsWith('s')
+                ? term[..^1]
+                : term)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     internal static bool IsExplicitSingleControlActionRequest(string request)

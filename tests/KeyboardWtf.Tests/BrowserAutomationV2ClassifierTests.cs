@@ -163,7 +163,7 @@ public sealed class BrowserAutomationV2ClassifierTests
     [Theory]
     [InlineData(true, true, true, false, true, true)]
     [InlineData(true, true, false, false, true, false)]
-    [InlineData(true, false, false, true, true, true)]
+    [InlineData(true, false, false, true, true, false)]
     [InlineData(true, false, false, true, false, false)]
     [InlineData(false, true, true, true, true, false)]
     public void Captured_context_requires_current_turn_ownership_or_explicit_future_authorization(
@@ -183,6 +183,43 @@ public sealed class BrowserAutomationV2ClassifierTests
                 authorizedForLater,
                 pageMutation));
     }
+
+    [Theory]
+    [InlineData(true, true, true, true)]
+    [InlineData(true, true, false, false)]
+    [InlineData(true, false, true, false)]
+    [InlineData(false, true, true, false)]
+    public void Semantic_context_reference_can_authorize_one_fresh_mutating_browser_task(
+        bool fresh,
+        bool semanticReference,
+        bool pageMutation,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            CommandRegistry.CanAttachCapturedBrowserContext(
+                fresh,
+                requestReferencesContext: false,
+                capturedForCurrentTurn: false,
+                explicitlyAuthorizedForLaterAction: false,
+                requestRequiresPageMutation: pageMutation,
+                currentRequestUsesCapturedContext: semanticReference));
+    }
+
+    [Theory]
+    [InlineData(true, "Fill the current form.", true)]
+    [InlineData(true, "Click the requested control.", true)]
+    [InlineData(true, "Open the project website.", false)]
+    [InlineData(false, "Fill the current form.", false)]
+    public void Available_ephemeral_context_defers_only_mutating_eager_browser_starts(
+        bool contextAvailable,
+        string request,
+        bool expected) =>
+        Assert.Equal(
+            expected,
+            CommandRegistry.ShouldDeferBrowserPreRouteForCapturedContext(
+                contextAvailable,
+                request));
 
     [Theory]
     [InlineData("Open the discussion tab.")]

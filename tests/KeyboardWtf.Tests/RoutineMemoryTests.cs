@@ -537,6 +537,34 @@ public sealed class RoutineMemoryTests : IDisposable
         Assert.Equal("native", arguments.GetProperty("target_kind").GetString());
     }
 
+    [Theory]
+    [InlineData("open atlas dashboard", "Open atlas dashboard.")]
+    [InlineData("use observatory console", "Please use observatory console!")]
+    public void DurableSpokenCommandAliasResolvesAfterReload(string savedAlias, string request)
+    {
+        Directory.CreateDirectory(_root);
+        var path = Path.Combine(_root, "mappings.json");
+        var mappings = new LearnedMappingService(path);
+        mappings.Remember(LearnedMappingKind.Link, savedAlias, "https://example.com/workspace");
+        var reloaded = new LearnedMappingService(path);
+        reloaded.Load();
+        using var conversation = new JarvisAutomationService(
+            new NotificationService(null),
+            new SettingsService(Path.Combine(_root, "settings.json")),
+            new JarvisActionHistoryService(Path.Combine(_root, "history.json")),
+            reloaded,
+            () => { });
+
+        Assert.True(conversation.TryResolveDurableOpenPreference(request, out var tool, out var arguments));
+        Assert.Equal("open_app", tool);
+        Assert.Equal(savedAlias, arguments.GetProperty("app_name").GetString());
+        Assert.Equal("auto", arguments.GetProperty("target_kind").GetString());
+        Assert.False(conversation.TryResolveDurableOpenPreference(
+            request.TrimEnd('.', '!') + " app", out _, out _));
+        Assert.False(conversation.TryResolveDurableOpenPreference(
+            "What do you think about " + savedAlias + "?", out _, out _));
+    }
+
     [Fact]
     public async Task WorkflowEditsUpdateOneAuthoritativeRecordAndSurviveFreshConversations()
     {

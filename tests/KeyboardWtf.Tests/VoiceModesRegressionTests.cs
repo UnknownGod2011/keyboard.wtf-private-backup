@@ -84,6 +84,21 @@ public sealed class VoiceModesRegressionTests
             CommandRegistry.SmartWritingTimeoutFor(recordingMs));
 
     [Fact]
+    public void Paid_transport_envelope_cannot_expire_before_the_owned_smart_writing_budget()
+    {
+        var longestOwnedOperation = CommandRegistry.SmartWritingTimeoutFor(
+            SmartWritingAudioCapture.MaximumSeconds * 1000L);
+
+        Assert.True(
+            KeyboardWtf.Services.PaidStaging.PaidAccountService.TransportTimeout
+            >= longestOwnedOperation + TimeSpan.FromSeconds(10));
+        Assert.InRange(
+            KeyboardWtf.Services.PaidStaging.PaidAccountService.TransportTimeout,
+            TimeSpan.FromSeconds(65),
+            TimeSpan.FromSeconds(90));
+    }
+
+    [Fact]
     public void Smart_writing_audio_capture_is_bounded_to_five_minutes() =>
         Assert.Equal(300, SmartWritingAudioCapture.MaximumSeconds);
 
