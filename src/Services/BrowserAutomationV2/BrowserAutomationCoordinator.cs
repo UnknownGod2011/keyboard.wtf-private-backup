@@ -810,9 +810,38 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 if (lastDecision.NeedsUserAction
                     || lastDecision.Action.Type == "needs_user_action")
                 {
+                    var intervention = BuildPlannerIntervention(lastDecision);
+                    if (IsRequestedInterventionAlreadySatisfied(
+                            intervention,
+                            runtime.Page))
+                    {
+                        var terminal = _verifier.VerifyTerminal(
+                            runtime.Request,
+                            new BrowserPlannerDecision { Done = true },
+                            runtime.Page,
+                            runtime.Receipts,
+                            runtime.OrderedSourceCollectionVerified);
+                        runtime.History.Add(
+                            "Ignored a requested user intervention because the fresh live field state already answers it. "
+                            + (terminal.Verified
+                                ? "The visible task outcome is complete."
+                                : $"Continue only for the remaining verified gap: {terminal.Error}"));
+                        AppLog.Info(
+                            $"Browser intervention already satisfied by live field state: task={runtime.TaskId} missing={Short(intervention.Missing, 140)} complete={terminal.Verified}");
+                        if (terminal.Verified)
+                        {
+                            Complete(
+                                runtime,
+                                BrowserAutomationOutcome.Completed,
+                                "The requested form values are present on the live page.",
+                                terminal.Evidence);
+                            return;
+                        }
+                        continue;
+                    }
                     await WaitForUserInterventionAsync(
                         runtime,
-                        BuildPlannerIntervention(lastDecision),
+                        intervention,
                         "User resumed after the requested step; page state was refreshed.",
                         token);
                     continue;
@@ -3407,6 +3436,69 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         var fingerprint = InterventionFingerprint(intervention);
         return skipUnavailableOptionalInputs
             || (skippedInterventions?.Contains(fingerprint) ?? false);
+    }
+
+    internal static bool IsRequestedInterventionAlreadySatisfied(
+        BrowserUserIntervention intervention,
+        BrowserPageSnapshot page)
+    {
+        var request = NormalizeControlText(string.Join(
+            " ",
+            intervention?.Missing,
+            intervention?.Explanation));
+        if (request.Length == 0
+            || page?.Controls == null
+            || IsProtectedIntervention(
+                intervention?.Missing ?? "",
+                intervention?.Explanation ?? "")
+            || !Regex.IsMatch(
+                request,
+                @"\b(?:provide|enter|type|fill|specify|choose|select|answer|value|field|rating)\b",
+                RegexOptions.IgnoreCase))
+        {
+            return false;
+        }
+
+        var requestTerms = MeaningfulControlTerms(request);
+        var fieldLabels = page.Controls
+            .Where(control => control is { Visible: true, Enabled: true }
+                && !string.IsNullOrWhiteSpace(control.FieldId)
+                && !string.IsNullOrWhiteSpace(control.FieldLabel))
+            .GroupBy(control => control.FieldId, StringComparer.Ordinal)
+            .Select(group => NormalizeControlText(group.First().FieldLabel))
+            .Where(label => label.Length > 0)
+            .ToArray();
+        var termFrequency = fieldLabels
+            .SelectMany(label => MeaningfulControlTerms(label).Distinct())
+            .GroupBy(term => term, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Count(),
+                StringComparer.OrdinalIgnoreCase);
+
+        return page.Controls
+            .Where(control => control is { Visible: true, Enabled: true, FieldAnswered: true }
+                && !string.IsNullOrWhiteSpace(control.FieldId)
+                && !string.IsNullOrWhiteSpace(control.FieldLabel))
+            .GroupBy(control => control.FieldId, StringComparer.Ordinal)
+            .Select(group => group.First().FieldLabel)
+            .Any(label =>
+            {
+                var normalizedLabel = NormalizeControlText(label);
+                if (request.Contains(normalizedLabel, StringComparison.OrdinalIgnoreCase)
+                    || normalizedLabel.Contains(request, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                var labelTerms = MeaningfulControlTerms(normalizedLabel);
+                return labelTerms.Any(term =>
+                        requestTerms.Contains(term)
+                        && termFrequency.TryGetValue(term, out var count)
+                        && count == 1)
+                    || (fieldLabels.Length == 1
+                        && labelTerms.Overlaps(requestTerms));
+            });
     }
 
     internal static string BuildSkippedInterventionGuidance(

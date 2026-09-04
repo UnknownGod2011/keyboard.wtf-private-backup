@@ -333,6 +333,66 @@ public sealed class BrowserAutomationProtocolTests
             page));
     }
 
+    [Fact]
+    public void Fresh_answered_field_state_suppresses_only_its_redundant_intervention()
+    {
+        var page = new BrowserPageSnapshot
+        {
+            Controls =
+            [
+                new BrowserControl
+                {
+                    Id = "stability-4",
+                    FieldId = "stability-rating",
+                    FieldLabel = "Overall performance and stability of the Chrome plugin",
+                    FieldAnswered = true,
+                    FieldRequired = true,
+                    Role = "radio",
+                    AccessibleName = "4",
+                    Visible = true,
+                    Enabled = true,
+                },
+                new BrowserControl
+                {
+                    Id = "usefulness-8",
+                    FieldId = "usefulness-rating",
+                    FieldLabel = "Usefulness of the Chrome plugin",
+                    FieldAnswered = false,
+                    FieldRequired = true,
+                    Role = "radio",
+                    AccessibleName = "8",
+                    Visible = true,
+                    Enabled = true,
+                },
+            ],
+        };
+
+        Assert.True(BrowserAutomationCoordinator.IsRequestedInterventionAlreadySatisfied(
+            new BrowserUserIntervention
+            {
+                Missing = "Please provide the required stability rating for the Chrome plugin.",
+                Explanation = "The overall performance and stability question is required.",
+                Required = true,
+            },
+            page));
+        Assert.False(BrowserAutomationCoordinator.IsRequestedInterventionAlreadySatisfied(
+            new BrowserUserIntervention
+            {
+                Missing = "Please provide the required usefulness rating for the Chrome plugin.",
+                Explanation = "The usefulness question is required.",
+                Required = true,
+            },
+            page));
+        Assert.False(BrowserAutomationCoordinator.IsRequestedInterventionAlreadySatisfied(
+            new BrowserUserIntervention
+            {
+                Missing = "Please complete the one-time password challenge.",
+                Explanation = "Security verification is required.",
+                Required = true,
+            },
+            page));
+    }
+
     [Theory]
     [InlineData(BrowserTaskState.Planning)]
     [InlineData(BrowserTaskState.ReadingPage)]
