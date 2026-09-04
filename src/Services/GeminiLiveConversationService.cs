@@ -1315,6 +1315,20 @@ public sealed class GeminiLiveConversationService : IDisposable
             return;
         }
 
+        // Gemini documents input transcription as independent of the model
+        // turn, so a short model response can otherwise arrive before the
+        // finalized transcript. Intercept a clear local terminal intent from
+        // either the low-latency interim transcript (when supplied) or the
+        // finalized transcript before any tool/browser/model response from
+        // this server message is allowed to win the turn.
+        if (root.TryGetProperty("serverContent", out var terminalContent)
+            && TryGetFarewellTranscription(terminalContent, out var transcriptKind))
+        {
+            AppLog.Info($"Jarvis local farewell recognized from {transcriptKind} input transcription.");
+            ScheduleAutoEnd("Heard that you are done.");
+            return;
+        }
+
         if (root.TryGetProperty("toolCall", out var toolCall))
         {
             await HandleToolCallAsync(toolCall, token);
@@ -2415,12 +2429,12 @@ public sealed class GeminiLiveConversationService : IDisposable
 
     internal static bool ShouldAutoEnd(string text)
     {
-        var normalized = " " + (text ?? "").ToLowerInvariant()
-            .Replace("*", "")
-            .Replace(".", " ")
-            .Replace(",", " ")
-            .Replace("!", " ")
-            .Replace("?", " ")
+        var normalized = " " + Regex.Replace(
+                (text ?? "")
+                    .ToLowerInvariant()
+                    .Replace('\u2019', '\''),
+                @"[^\p{L}\p{Nd}']+",
+                " ")
             .Trim() + " ";
 
         return normalized.Contains(" bye ")
@@ -2443,6 +2457,31 @@ public sealed class GeminiLiveConversationService : IDisposable
             || normalized.Contains(" fuck off ")
             || normalized.Contains(" f off ")
             || normalized.Contains(" go away ");
+    }
+
+    internal static bool TryGetFarewellTranscription(
+        JsonElement serverContent,
+        out string transcriptKind)
+    {
+        transcriptKind = "";
+        foreach (var candidate in new[]
+                 {
+                     (Name: "interimInputTranscription", Kind: "interim"),
+                     (Name: "inputTranscription", Kind: "final"),
+                 })
+        {
+            if (!serverContent.TryGetProperty(candidate.Name, out var transcription)
+                || !transcription.TryGetProperty("text", out var textElement)
+                || !ShouldAutoEnd(textElement.GetString()))
+            {
+                continue;
+            }
+
+            transcriptKind = candidate.Kind;
+            return true;
+        }
+
+        return false;
     }
 
     internal static bool ShouldAutoEnd(string transcriptFragment, string accumulatedTranscript) =>

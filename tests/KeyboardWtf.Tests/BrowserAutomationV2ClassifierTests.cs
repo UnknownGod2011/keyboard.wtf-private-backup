@@ -203,6 +203,9 @@ public sealed class BrowserAutomationV2ClassifierTests
     [InlineData("I selected a word. What does it mean?")]
     [InlineData("I highlighted a paragraph; give me a summary")]
     [InlineData("What is the meaning of the highlighted content?")]
+    [InlineData("Read the currently selected text and tell me what it describes")]
+    [InlineData("Review this highlighted passage and discuss its main idea")]
+    [InlineData("Inspect the selected text and interpret it for me")]
     public void Selection_style_questions_do_not_preempt_normal_jarvis(string request)
     {
         var result = _classifier.Classify(request);

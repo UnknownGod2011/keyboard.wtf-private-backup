@@ -1,5 +1,6 @@
 namespace KeyboardWtf.Tests;
 
+using System.Text.Json;
 using KeyboardWtf.Services;
 using Xunit;
 
@@ -148,6 +149,7 @@ public sealed class FinalPolishRegressionTests : IDisposable
     [InlineData("goodbye", true)]
     [InlineData("bye", true)]
     [InlineData("good bye", true)]
+    [InlineData("Good-bye\u2026", true)]
     [InlineData("go away", true)]
     [InlineData("stop Jarvis", true)]
     [InlineData("end chat", true)]
@@ -165,6 +167,34 @@ public sealed class FinalPolishRegressionTests : IDisposable
         Assert.True(GeminiLiveConversationService.ShouldAutoEnd("goodbye", saturatedTurn));
         Assert.True(GeminiLiveConversationService.ShouldAutoEnd("go away", saturatedTurn));
         Assert.False(GeminiLiveConversationService.ShouldAutoEnd("close tab", saturatedTurn));
+    }
+
+    [Theory]
+    [InlineData("interimInputTranscription")]
+    [InlineData("inputTranscription")]
+    public void Farewell_is_recognized_from_the_earliest_available_input_transcript(
+        string transcriptionProperty)
+    {
+        using var document = JsonDocument.Parse(
+            "{\"" + transcriptionProperty + "\":{\"text\":\"Okay, goodbye.\"}}");
+
+        Assert.True(GeminiLiveConversationService.TryGetFarewellTranscription(
+            document.RootElement,
+            out var kind));
+        Assert.Equal(
+            transcriptionProperty == "interimInputTranscription" ? "interim" : "final",
+            kind);
+    }
+
+    [Fact]
+    public void Normal_browser_close_is_not_a_farewell_in_an_interim_transcript()
+    {
+        using var document = JsonDocument.Parse(
+            """{"interimInputTranscription":{"text":"close the Chrome tab"}}""");
+
+        Assert.False(GeminiLiveConversationService.TryGetFarewellTranscription(
+            document.RootElement,
+            out _));
     }
 
     [Fact]

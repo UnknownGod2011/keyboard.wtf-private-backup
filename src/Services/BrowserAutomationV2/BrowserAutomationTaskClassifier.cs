@@ -113,7 +113,7 @@ public sealed class BrowserAutomationTaskClassifier
     // by normal Jarvis first so it can capture and answer the selection. A
     // page-changing verb or an explicit automation request still wins.
     private static readonly Regex SelectedContentQuestion = new(
-        @"\b(?:answer|solve|explain|summar(?:y|i[sz]e)|translate|analyse|analyze|define|meaning|mean)\b",
+        @"\b(?:answer|solve|explain|read|review|inspect|interpret|summar(?:y|i[sz]e)|translate|analyse|analyze|define|meaning|mean)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex ExplicitSelectedContext = new(
