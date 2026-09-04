@@ -107,6 +107,9 @@ public sealed class BrowserAutomationV2ClassifierTests
     [InlineData("Analyze this selected context; when I navigate to the form, use it to fill the fields.")]
     [InlineData("Keep this highlighted information. Once I tell you the page is ready, use browser automation to enter it.")]
     [InlineData("Wait for me to open the intended page, then fill it from the selected details.")]
+    [InlineData("Analyze the selected feedback and keep it for this conversation. Wait for my separate instruction before filling the survey; I have not moved to the form yet.")]
+    [InlineData("Review this highlighted application. Hold for our confirmation before entering anything on the page.")]
+    [InlineData("Read my selection; wait for us to confirm the destination before using browser automation.")]
     public void Future_user_controlled_browser_work_waits_instead_of_starting_now(string request)
     {
         var result = _classifier.Classify(request);
@@ -119,6 +122,8 @@ public sealed class BrowserAutomationV2ClassifierTests
     [Theory]
     [InlineData("Use the selected details to fill this form.")]
     [InlineData("Fill this page from the information I copied to the clipboard.")]
+    [InlineData("Use the selected feedback to fill this survey.")]
+    [InlineData("Fill the current form from my selection.")]
     public void Current_selected_context_mutation_waits_for_fresh_capture_before_pre_routing(
         string request)
     {

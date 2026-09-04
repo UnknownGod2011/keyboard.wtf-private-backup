@@ -25,7 +25,7 @@ public sealed class BrowserAutomationTaskClassifier
     // than any destination or example phrase.
     private static readonly Regex DeferredUserControlledInteraction = new(
         @"\b(?:when|once|after)\s+(?:i|we)\b.{0,180}\b(?:navigate|open|reach|switch|move|tell|say|confirm|let\s+you\s+know)\b"
-        + @"|\b(?:wait|hold)\b.{0,100}\b(?:until|for\s+me\s+to)\b"
+        + @"|\b(?:wait|hold)\b.{0,100}\b(?:until|for\s+(?:(?:me|us)\s+to|my|our))\b"
         + @"|\b(?:not\s+yet|later)\b.{0,120}\b(?:fill|click|enter|paste|submit|continue|automate|use)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
@@ -121,7 +121,7 @@ public sealed class BrowserAutomationTaskClassifier
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex ExplicitPageMutation = new(
-        @"\b(click|press|choose|select|unselect|check|uncheck|fill(?:ing)?|type|enter|paste|copy|write|insert|place|put|upload|download|send|post|publish|delete|dismiss|close\s+(?:the\s+)?(?:popup|banner|modal))\b",
+        @"\b(click|press|choose|select|unselect|check|uncheck|fill(?:ing)?|type|enter(?:ing)?|paste|copy|write|insert|place|put|upload|download|send|post|publish|delete|dismiss|close\s+(?:the\s+)?(?:popup|banner|modal))\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex ExplicitSubmit = new(
@@ -345,9 +345,11 @@ public sealed class BrowserAutomationTaskClassifier
             || FormOrAssessmentTarget.IsMatch(text ?? ""));
 
     internal static bool ReferencesCapturedUserContext(string text) =>
+        ExplicitSelectedContext.IsMatch(text ?? "")
+        ||
         Regex.IsMatch(
             text ?? "",
-            @"\b(?:selected|highlighted|copied|clipboard)\b.{0,80}\b(?:text|content|context|details|information|data|answers?)\b"
+            @"\b(?:copied|clipboard)\b.{0,80}\b(?:text|content|context|details|information|data|answers?)\b"
             + @"|\b(?:use|from|with|based\s+on)\b.{0,60}\b(?:the|that|my|previous|provided|supplied|captured)\s+(?:selection|selected\s+text|clipboard|context|details|information|data)\b",
             RegexOptions.IgnoreCase);
 
