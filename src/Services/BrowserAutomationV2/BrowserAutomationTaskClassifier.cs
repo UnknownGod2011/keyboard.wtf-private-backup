@@ -186,11 +186,14 @@ public sealed class BrowserAutomationTaskClassifier
                 "The user explicitly requested browser automation.",
                 current);
 
-        if (ExplicitAutomation.IsMatch(text) && !interaction)
+        // A suppressed automation mention is an explicit user constraint.
+        // Interaction words elsewhere (including prohibited actions) cannot
+        // turn that opt-out back into permission to start browser control.
+        if (ExplicitAutomation.IsMatch(text))
         {
             return Result(
                 BrowserAutomationDecision.SimpleTool,
-                "The browser-automation mention is negated or is a control request, and no live page interaction is required.",
+                "The browser-automation mention is negated or is a control request; use a direct capability or explain its limits rather than starting browser automation.",
                 current);
         }
 

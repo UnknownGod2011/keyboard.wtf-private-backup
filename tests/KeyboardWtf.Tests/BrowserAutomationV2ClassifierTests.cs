@@ -40,6 +40,10 @@ public sealed class BrowserAutomationV2ClassifierTests
     [Theory]
     [InlineData("Open https://example.com normally in Chrome. Do not use Browser Automation.")]
     [InlineData("Open example.com without browser automation.")]
+    [InlineData("Open https://example.com normally in Chrome, without Browser Automation. Do not enter or submit anything.")]
+    [InlineData("Open https://example.org. Do not use browser automation or click any controls.")]
+    [InlineData("Fill this page without browser automation.")]
+    [InlineData("Pause browser automation before entering the next value.")]
     [InlineData("Cancel browser automation.")]
     public void Negated_or_controlled_automation_mentions_do_not_start_a_browser_task(
         string request)
