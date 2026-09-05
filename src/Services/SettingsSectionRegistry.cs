@@ -95,21 +95,27 @@ public static class SettingsSectionRegistry
         if (padded.Length <= 2)
             return "";
 
-        // Longest aliases win. "Jarvis" is a product identity in a Settings
-        // request, not an implicit request for the Assistant section.
+        // The requested section precedes later constraints about other sections.
+        // Prefer the longest alias only at that same position. "Jarvis" is a
+        // product identity here, not an implicit request for Assistant settings.
+        var firstIndex = int.MaxValue;
+        var longestAtFirstIndex = 0;
+        var section = "";
         foreach (var alias in Aliases.Keys
-                     .Where(value => !string.Equals(value, "jarvis", StringComparison.OrdinalIgnoreCase))
-                     .OrderByDescending(value => NormalizeForMatch(value).Length))
+                     .Where(value => !string.Equals(value, "jarvis", StringComparison.OrdinalIgnoreCase)))
         {
             var normalizedAlias = NormalizeForMatch(alias);
-            if (normalizedAlias.Length > 0
-                && padded.Contains($" {normalizedAlias} ", StringComparison.OrdinalIgnoreCase))
+            var index = padded.IndexOf($" {normalizedAlias} ", StringComparison.OrdinalIgnoreCase);
+            if (index >= 0 && (index < firstIndex
+                || (index == firstIndex && normalizedAlias.Length > longestAtFirstIndex)))
             {
-                return Aliases[alias];
+                firstIndex = index;
+                longestAtFirstIndex = normalizedAlias.Length;
+                section = Aliases[alias];
             }
         }
 
-        return "";
+        return section;
     }
 
     private static string NormalizeForMatch(string value) =>

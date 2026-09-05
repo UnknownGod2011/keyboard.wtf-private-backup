@@ -100,6 +100,9 @@ public sealed class FinalPolishRegressionTests : IDisposable
     [InlineData("Show me your hotkey settings.", "hotkeys")]
     [InlineData("Open Jarvis assistant settings.", "assistant")]
     [InlineData("Open keyboard.wtf settings.", "")]
+    [InlineData("Open keyboard.wtf Settings, Account and Billing. Do not use Browser Automation.", "account-billing")]
+    [InlineData("Show me your hotkey settings; leave text to speech unchanged.", "hotkeys")]
+    [InlineData("Open keyboard.wtf voice notes settings.", "voice-notes")]
     public void Explicit_keyboard_wtf_settings_requests_resolve_to_one_local_route(
         string request,
         string expectedSection)

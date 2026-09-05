@@ -7,13 +7,21 @@ namespace KeyboardWtf.Tests;
 
 public sealed class JarvisServerEventOrderingTests
 {
-    [Fact]
-    public async Task Recognized_terminal_input_is_not_queued_behind_an_inflight_tool()
+    [Theory]
+    [InlineData("goodbye")]
+    [InlineData("go away")]
+    [InlineData("fuck off")]
+    [InlineData("end the conversation")]
+    [InlineData("bye Jarvis")]
+    [InlineData("goodbye Jarvis")]
+    [InlineData("that's all, goodbye")]
+    [InlineData("thanks, goodbye")]
+    public async Task Recognized_terminal_input_is_not_queued_behind_an_inflight_tool(string farewell)
     {
         await using var run = new MessageRun();
         var reader = run.ReadAsync(
             ToolCall("action-1"),
-            """{"serverContent":{"inputTranscription":{"text":"end this conversation"}}}""");
+            JsonSerializer.Serialize(new { serverContent = new { inputTranscription = new { text = farewell } } }));
 
         try
         {
@@ -27,6 +35,42 @@ public sealed class JarvisServerEventOrderingTests
             run.Release();
             await IgnoreCancelledAsync(reader);
         }
+    }
+
+    [Theory]
+    [InlineData("inputTranscription")]
+    [InlineData("interimInputTranscription")]
+    public async Task Terminal_input_owns_a_combined_frame_before_tools_or_context_observers(string transcriptionKey)
+    {
+        await using var run = new MessageRun();
+        run.Push(JsonSerializer.Serialize(new
+        {
+            serverContent = new Dictionary<string, object>
+            {
+                [transcriptionKey] = new { text = "End this conversation." },
+                ["outputTranscription"] = new { text = "This response must not win." },
+            },
+            toolCall = new { functionCalls = new[] { new { id = "late-action", name = "test_pending_action", args = new { } } } },
+        }));
+
+        await run.Ended.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.True(run.Session.IsCancellationRequested);
+        Assert.False(run.ToolEntered.Task.IsCompleted);
+        Assert.False(run.UserObserved.Task.IsCompleted);
+        Assert.Equal(0, run.PendingToolCount());
+    }
+
+    [Theory]
+    [InlineData("Can you hear me?")]
+    [InlineData("What can you help me with?")]
+    [InlineData("Explain this selected text.")]
+    public async Task Conversational_input_alone_is_observed_without_invoking_an_action(string text)
+    {
+        await using var run = new MessageRun();
+        run.Push(JsonSerializer.Serialize(new { serverContent = new { inputTranscription = new { text } } }));
+        await run.UserObserved.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.False(run.ToolEntered.Task.IsCompleted);
+        Assert.False(run.Session.IsCancellationRequested);
     }
 
     [Fact]
@@ -100,6 +144,7 @@ public sealed class JarvisServerEventOrderingTests
         public TaskCompletionSource<bool> ToolEntered { get; } = NewSignal();
         public TaskCompletionSource<bool> ToolCancelled { get; } = NewSignal();
         public TaskCompletionSource<bool> Ended { get; } = NewSignal();
+        public TaskCompletionSource<bool> UserObserved { get; } = NewSignal();
 
         public MessageRun()
         {
@@ -114,6 +159,7 @@ public sealed class JarvisServerEventOrderingTests
                 Ended.TrySetResult(true);
                 return Task.CompletedTask;
             });
+            _service.SetUserTranscriptObserver(_ => UserObserved.TrySetResult(true));
             _service.SetToolExecutor(async (_, _, token) =>
             {
                 ToolEntered.TrySetResult(true);
