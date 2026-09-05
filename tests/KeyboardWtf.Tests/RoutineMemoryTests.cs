@@ -400,6 +400,101 @@ public sealed class RoutineMemoryTests : IDisposable
     }
 
     [Fact]
+    public void TriggerFirstDurableLinkMappingUsesLinkOwnershipAndSurvivesReload()
+    {
+        Directory.CreateDirectory(_root);
+        var settingsPath = Path.Combine(_root, "settings.json");
+        var mappingsPath = Path.Combine(_root, "mappings.json");
+        var historyPath = Path.Combine(_root, "history.json");
+        var settings = new SettingsService(settingsPath);
+        settings.Load();
+        var mappings = new LearnedMappingService(mappingsPath);
+        mappings.Load();
+
+        using (var firstConversation = new JarvisAutomationService(
+                   new NotificationService(null),
+                   settings,
+                   new JarvisActionHistoryService(historyPath),
+                   mappings,
+                   () => { }))
+        {
+            Assert.True(firstConversation.TryApplyDurablePreferenceFromTranscript(
+                "Remember this deliberate mapping: whenever I say open team portal, open exactly https://example.com/workspace/inbox?view=all in the browser instead of opening the desktop app.",
+                out var tool,
+                out var saved));
+            Assert.Equal("remember_link_alias", tool);
+            Assert.True((bool)saved["ok"]);
+            Assert.True((bool)saved["persistence_verified"]);
+        }
+
+        var reloadedMappings = new LearnedMappingService(mappingsPath);
+        reloadedMappings.Load();
+        Assert.Equal(
+            "https://example.com/workspace/inbox?view=all",
+            reloadedMappings.FindExact(LearnedMappingKind.Link, "open team portal")?.Target);
+        Assert.Empty(reloadedMappings.Snapshot(LearnedMappingKind.Workflow));
+
+        using var laterConversation = new JarvisAutomationService(
+            new NotificationService(null),
+            new SettingsService(settingsPath),
+            new JarvisActionHistoryService(historyPath),
+            reloadedMappings,
+            () => { });
+        Assert.True(laterConversation.TryResolveDurableOpenPreference(
+            "Open team portal",
+            out var resolvedTool,
+            out var arguments));
+        Assert.Equal("open_app", resolvedTool);
+        Assert.Equal("open team portal", arguments.GetProperty("app_name").GetString());
+        Assert.Equal("auto", arguments.GetProperty("target_kind").GetString());
+    }
+
+    [Fact]
+    public void TriggerFirstDurableLinkParserLeavesMultiActionRoutineToWorkflowOwnership()
+    {
+        Directory.CreateDirectory(_root);
+        var settings = new SettingsService(Path.Combine(_root, "settings.json"));
+        settings.Load();
+        var mappings = new LearnedMappingService(Path.Combine(_root, "mappings.json"));
+        mappings.Load();
+        using var automation = new JarvisAutomationService(
+            new NotificationService(null),
+            settings,
+            new JarvisActionHistoryService(Path.Combine(_root, "history.json")),
+            mappings,
+            () => { });
+        const string request = "Whenever I say begin review, open https://example.com/review and then open https://example.org/notes. Remember this.";
+
+        Assert.False(automation.TryApplyDurablePreferenceFromTranscript(request, out _, out _));
+        Assert.True(automation.TryRememberWorkflowFromTranscript(
+            request,
+            completeTurn: true,
+            out var workflow));
+        Assert.True((bool)workflow["ok"]);
+        Assert.Single(settings.Current.JarvisWorkflows);
+    }
+
+    [Fact]
+    public void TriggerFirstLinkShapeWithoutPersistenceIntentIsNotRemembered()
+    {
+        Directory.CreateDirectory(_root);
+        var mappings = new LearnedMappingService(Path.Combine(_root, "mappings.json"));
+        mappings.Load();
+        using var automation = new JarvisAutomationService(
+            new NotificationService(null),
+            new SettingsService(Path.Combine(_root, "settings.json")),
+            new JarvisActionHistoryService(Path.Combine(_root, "history.json")),
+            mappings,
+            () => { });
+
+        Assert.False(automation.TryApplyDurablePreferenceFromTranscript(
+            "When I say open the report, open https://example.com/report.",
+            out _,
+            out _));
+        Assert.Empty(mappings.Snapshot());
+    }
+
+    [Fact]
     public void ExplicitCorrectionWithTrailingFromNowOnUsesRecentTarget()
     {
         Directory.CreateDirectory(_root);

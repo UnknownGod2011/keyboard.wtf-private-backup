@@ -2037,6 +2037,13 @@ public sealed class JarvisAutomationService : IDisposable
         toolName = "";
         result = null;
         var request = Regex.Replace((text ?? "").Trim(), @"\s+", " ");
+        if (TryParseTriggeredLinkPreference(request, out var triggeredAlias, out var triggeredUrl))
+        {
+            result = RememberLinkAlias(triggeredAlias, triggeredUrl);
+            toolName = "remember_link_alias";
+            return true;
+        }
+
         if (!IsExplicitDurablePreferenceRequest(request))
             return false;
 
@@ -2109,6 +2116,72 @@ public sealed class JarvisAutomationService : IDisposable
         }
 
         return false;
+    }
+
+    private static bool TryParseTriggeredLinkPreference(
+        string request,
+        out string alias,
+        out string url)
+    {
+        alias = "";
+        url = "";
+        if (string.IsNullOrWhiteSpace(request)
+            || Regex.IsMatch(
+                request,
+                @"\b(?:this\s+time|just\s+(?:this\s+)?once|for\s+now|temporarily|only\s+today)\b",
+                RegexOptions.IgnoreCase)
+            || !Regex.IsMatch(
+                request,
+                @"(?:\b(?:always|remember|save|persist)\b|\b(?:from\s+now\s+on|going\s+forward)\b|\b(?:create|add|set)\s+(?:a\s+)?(?:mapping|alias|preference)\b)",
+                RegexOptions.IgnoreCase))
+        {
+            return false;
+        }
+
+        var trigger = Regex.Match(
+            request,
+            @"(?:^|\b)(?:whenever|when)\s+i\s+say\s+(?<alias>.+?)[,;:]\s*(?<action>.+)$",
+            RegexOptions.IgnoreCase);
+        if (!trigger.Success)
+            return false;
+
+        var action = trigger.Groups["action"].Value.Trim();
+        var destination = Regex.Match(
+            action,
+            "^(?:please\\s+)?(?:open|use|launch|visit|go\\s+to|navigate\\s+to)\\s+(?:exact(?:ly)?\\s+)?(?<url>https?://[^\\s<>'\"]+)",
+            RegexOptions.IgnoreCase);
+        if (!destination.Success)
+            return false;
+
+        var urlMatches = Regex.Matches(action, "https?://[^\\s<>'\"]+", RegexOptions.IgnoreCase);
+        if (urlMatches.Count != 1)
+            return false;
+
+        var remainder = action[destination.Length..];
+        if (Regex.IsMatch(
+            remainder,
+            @"(?:[,;]|\b(?:and\s+then|then|and)\b)\s*(?:please\s+)?(?:open|use|launch|start|visit|go\s+to|navigate\s+to|click|fill|type|select)\b",
+            RegexOptions.IgnoreCase))
+        {
+            // A sequence remains a workflow. This parser owns only a single
+            // durable trigger-to-destination preference.
+            return false;
+        }
+
+        alias = CleanPreferenceAlias(trigger.Groups["alias"].Value);
+        var rawUrl = destination.Groups["url"].Value.TrimEnd('.', ',', ';', '!', '?');
+        if (string.IsNullOrWhiteSpace(alias)
+            || Regex.IsMatch(alias, @"https?://", RegexOptions.IgnoreCase)
+            || !Uri.TryCreate(rawUrl, UriKind.Absolute, out var parsed)
+            || (!string.Equals(parsed.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(parsed.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+        {
+            alias = "";
+            return false;
+        }
+
+        url = parsed.AbsoluteUri;
+        return true;
     }
 
     internal bool TryResolveDurableOpenPreference(
