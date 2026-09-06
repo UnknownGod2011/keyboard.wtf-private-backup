@@ -120,7 +120,7 @@ internal static class BrowserTrustedInput
 
     internal static void PressChordInWindow(IntPtr expectedWindow, params ushort[] keys) =>
         DispatchToWindow(expectedWindow, keys.Select(key => Key(key))
-            .Concat(keys.Reverse().Select(key => Key(key, keyUp: true))).ToArray());
+            .Concat(keys.AsEnumerable().Reverse().Select(key => Key(key, keyUp: true))).ToArray());
 
     // All direct and trusted browser keyboard dispatch shares one boundary.
     // Do not release physically held user modifiers: refuse the action instead.
