@@ -18,11 +18,9 @@ public sealed class JarvisAutomationService : IDisposable
     private const int SwRestore = 9;
     private const int SwMinimize = 6;
     private const int SwMaximize = 3;
-    private const uint WmClose = 0x0010;
     private const byte VkVolumeMute = 0xAD;
     private const byte VkVolumeDown = 0xAE;
     private const byte VkVolumeUp = 0xAF;
-    private const uint KeyeventfKeyup = 0x0002;
     private static readonly IReadOnlyDictionary<string, string> KnownWebApps =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -157,7 +155,9 @@ public sealed class JarvisAutomationService : IDisposable
             "window_action" => await WindowActionAsync(
                 GetString(args, "action"),
                 GetString(args, "app_name"),
-                token),
+                token,
+                GetString(args, "scope"),
+                GetString(args, "window_id")),
             "browser_action" => BrowserAction(GetString(args, "action")),
             "web_search" => WebSearch(
                 GetString(args, "query"),
@@ -229,9 +229,9 @@ public sealed class JarvisAutomationService : IDisposable
                 GetString(args, "id_or_alias"),
                 GetString(args, "kind")),
             "set_browser_preference" => SetBrowserPreference(GetString(args, "browser")),
-            "request_sensitive_action" => RequestSensitiveAction(
+            "request_sensitive_action" => await RequestSensitiveActionAsync(
                 GetString(args, "action"),
-                GetString(args, "target")),
+                GetString(args, "target"), token),
             "confirm_sensitive_action" => await ConfirmPendingActionAsync(token),
             "cancel_sensitive_action" => CancelPendingAction(),
             _ => Result(false, $"{toolName} is not a supported desktop action yet.", supported: false),
@@ -774,15 +774,32 @@ public sealed class JarvisAutomationService : IDisposable
     private async Task<Dictionary<string, object>> WindowActionAsync(
         string action,
         string appName,
-        CancellationToken token)
+        CancellationToken token,
+        string scope = null,
+        string windowId = null)
     {
         var normalized = NormalizeWords(action);
-        if (normalized is "close" or "quit" or "exit"
-            && !IsExplicitBrowserApplication(appName))
+        if (normalized is "close" or "quit" or "exit")
         {
-            var tabResult = await TryCloseMatchingBrowserTabAsync(appName, token);
-            if (tabResult != null)
-                return tabResult;
+            var all = string.Equals(scope, "all", StringComparison.OrdinalIgnoreCase);
+            var targets = NativeWindowCloser.Select(NativeWindowCloser.Enumerate(), appName, all, windowId, GetForegroundWindow());
+            if (targets.Length == 0 || (!all && targets.Length > 1))
+                return Result(false,
+                    targets.Length == 0 ? "No matching native window was found. No browser tabs or other windows were changed."
+                        : "Several windows match. Which window, or all matching windows, should I close?",
+                    needsClarification: true,
+                    extras: new() { ["windows"] = targets.Select(w => new { window_id = w.Id, w.Title, w.ProcessName }).ToArray() });
+            var outcome = await NativeWindowCloser.CloseAsync(targets, token);
+            AppLog.Info($"Jarvis native window close verified: targets={targets.Length} requested={outcome.Requested} remaining={outcome.Remaining.Length}");
+            return Logged("window_action", $"close {appName}", outcome.Succeeded,
+                outcome.Succeeded ? $"Closed the {targets.Length} requested window(s)."
+                    : $"{targets.Length - outcome.Remaining.Length} of {targets.Length} requested windows closed; {outcome.Remaining.Length} remain open, possibly waiting for an application dialog.",
+                extras: new()
+                {
+                    ["requested_count"] = targets.Length,
+                    ["closed_count"] = targets.Length - outcome.Remaining.Length,
+                    ["remaining_windows"] = outcome.Remaining.Select(w => new { window_id = w.Id, w.Title, w.ProcessName }).ToArray(),
+                });
         }
 
         return WindowAction(action, appName);
@@ -793,9 +810,9 @@ public sealed class JarvisAutomationService : IDisposable
         var normalized = NormalizeWords(action);
         if (normalized is "list" or "list windows")
         {
-            var windows = EnumerateWindows()
+            var windows = NativeWindowCloser.Enumerate()
                 .Take(15)
-                .Select(w => new { w.Title, w.ProcessName })
+                .Select(w => new { window_id = w.Id, w.Title, w.ProcessName })
                 .ToArray();
             return Result(true, windows.Length == 0 ? "No normal app windows were found." : "Open windows listed.",
                 extras: new() { ["windows"] = windows });
@@ -827,22 +844,7 @@ public sealed class JarvisAutomationService : IDisposable
             case "close":
             case "quit":
             case "exit":
-                if (!IsExplicitBrowserApplication(appName)
-                    && IsBrowserWindow(handle))
-                {
-                    return Logged(
-                        "window_action",
-                        $"close {appName}",
-                        false,
-                        "A matching browser tab was not verified, so the browser was left open.",
-                        supported: false);
-                }
-                var title = GetWindowTitle(handle);
-                var label = string.IsNullOrWhiteSpace(title)
-                    ? string.IsNullOrWhiteSpace(appName) ? "the active window" : appName
-                    : Limit(title, 80);
-                PostMessage(handle, WmClose, IntPtr.Zero, IntPtr.Zero);
-                return Logged("window_action", $"close {label}", true, $"Closed {label}.");
+                throw new InvalidOperationException("Close requests must use the verified native-window path.");
             default:
                 return Result(false, "Supported window actions are list, switch, minimize, maximize, restore, and close.", supported: false);
         }
@@ -902,89 +904,6 @@ public sealed class JarvisAutomationService : IDisposable
         }
     }
 
-    private async Task<Dictionary<string, object>> TryCloseMatchingBrowserTabAsync(
-        string target,
-        CancellationToken token)
-    {
-        target = (target ?? "").Trim();
-        if (_browserHelper == null || string.IsNullOrWhiteSpace(target))
-            return null;
-        var initial = _browserHelper.Status;
-        if (!initial.Connected || initial.WindowId is null)
-            return null;
-
-        var browserWindow = EnumerateWindows()
-            .FirstOrDefault(window => string.Equals(
-                window.ProcessName,
-                "chrome",
-                StringComparison.OrdinalIgnoreCase));
-        if (browserWindow == null || browserWindow.Handle == IntPtr.Zero)
-            return null;
-
-        ShowWindow(browserWindow.Handle, SwRestore);
-        SetForegroundWindow(browserWindow.Handle);
-        await Task.Delay(120, token);
-
-        var selection = ResolveBrowserTarget(target);
-        var active = _browserHelper.Status;
-        if (!BrowserTargetMatches(selection, active.ActiveTitle, active.ActiveUrl))
-        {
-            SendKeysOnUiThread("^+a");
-            await Task.Delay(180, token);
-            SendKeysOnUiThread(EscapeSendKeysText(selection));
-            await Task.Delay(100, token);
-            SendKeysOnUiThread("{ENTER}");
-
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2.5);
-            do
-            {
-                await Task.Delay(120, token);
-                active = _browserHelper.Status;
-                if (BrowserTargetMatches(selection, active.ActiveTitle, active.ActiveUrl))
-                    break;
-            }
-            while (DateTime.UtcNow < deadline);
-        }
-
-        if (!BrowserTargetMatches(selection, active.ActiveTitle, active.ActiveUrl))
-        {
-            SendKeysOnUiThread("{ESC}");
-            return null;
-        }
-
-        var closingTabId = active.TabId;
-        var closingUrl = active.ActiveUrl;
-        SendKeysOnUiThread("^w");
-        var verifyDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(2.5);
-        do
-        {
-            await Task.Delay(120, token);
-            var current = _browserHelper.Status;
-            if (current.TabId != closingTabId
-                || !string.Equals(current.ActiveUrl, closingUrl, StringComparison.Ordinal))
-            {
-                return Logged(
-                    "close_browser_tab",
-                    target,
-                    true,
-                    $"Closed the matching {target} browser tab.");
-            }
-        }
-        while (DateTime.UtcNow < verifyDeadline);
-
-        return Logged(
-            "close_browser_tab",
-            target,
-            false,
-            "Chrome did not confirm that the matching tab closed.",
-            supported: false);
-    }
-
-    private string ResolveBrowserTarget(string target)
-    {
-        var mapping = _mappings.FindExact(LearnedMappingKind.Link, target);
-        return mapping?.Target ?? target;
-    }
 
     internal static bool BrowserTargetMatches(string target, string title, string url)
     {
@@ -1021,9 +940,6 @@ public sealed class JarvisAutomationService : IDisposable
             return false;
         }
     }
-
-    private static string EscapeSendKeysText(string value) =>
-        Regex.Replace((value ?? "").Trim(), @"([+^%~(){}\[\]])", "{$1}");
 
     private static string NormalizeHost(string host) =>
         (host ?? "").StartsWith("www.", StringComparison.OrdinalIgnoreCase)
@@ -1179,16 +1095,7 @@ public sealed class JarvisAutomationService : IDisposable
 
         try
         {
-            if (string.Equals(keys, "^9^+{TAB}", StringComparison.Ordinal))
-            {
-                SendKeysOnUiThread("^9");
-                Thread.Sleep(80);
-                SendKeysOnUiThread("^+{TAB}");
-            }
-            else
-            {
-                SendKeysOnUiThread(keys);
-            }
+            SendKeysOnUiThread(keys, activeWindow);
         }
         catch (Exception ex)
         {
@@ -1275,7 +1182,7 @@ public sealed class JarvisAutomationService : IDisposable
             try
             {
                 ClipboardHelper.SetText(marker);
-                SendKeysOnUiThread("^c");
+                SendKeysOnUiThread("^c", context.Handle);
                 await Task.Delay(delayMs, token);
                 selected = ClipboardHelper.GetText();
             }
@@ -1352,11 +1259,13 @@ public sealed class JarvisAutomationService : IDisposable
     {
         if (string.IsNullOrWhiteSpace(text))
             return Result(false, "What text should replace the selection?", needsClarification: true);
+        var target = GetForegroundWindow();
         var previous = ClipboardHelper.Capture();
         try
         {
             ClipboardHelper.SetText(text);
-            SendKeysOnUiThread("^v");
+            token.ThrowIfCancellationRequested();
+            SendKeysOnUiThread("^v", target);
             await Task.Delay(220, token);
         }
         finally
@@ -1370,11 +1279,13 @@ public sealed class JarvisAutomationService : IDisposable
     {
         if (string.IsNullOrWhiteSpace(text))
             return Result(false, "What should I type?", needsClarification: true);
+        var target = GetForegroundWindow();
         var previous = ClipboardHelper.Capture();
         try
         {
             ClipboardHelper.SetText(text);
-            SendKeysOnUiThread("^v");
+            token.ThrowIfCancellationRequested();
+            SendKeysOnUiThread("^v", target);
             await Task.Delay(220, token);
         }
         finally
@@ -3191,7 +3102,7 @@ public sealed class JarvisAutomationService : IDisposable
             : string.Join(" | ", triggers.Select(trigger => $"[{Limit(trigger, 48)}]"));
     }
 
-    private Dictionary<string, object> RequestSensitiveAction(string action, string target)
+    private async Task<Dictionary<string, object>> RequestSensitiveActionAsync(string action, string target, CancellationToken token)
     {
         var normalized = NormalizeWords(action);
         var allowed = new[]
@@ -3206,7 +3117,7 @@ public sealed class JarvisAutomationService : IDisposable
         if (_settings.Current.JarvisPermissionMode == JarvisPermissionMode.AutoExecute
             && normalized is "close active app" or "close app")
         {
-            var result = WindowAction("close", normalized == "close app" ? target : "");
+            var result = await WindowActionAsync("close", normalized == "close app" ? target : "", token);
             result["auto_executed"] = true;
             return result;
         }
@@ -3257,7 +3168,11 @@ public sealed class JarvisAutomationService : IDisposable
         lock (_pendingLock)
             _pending = null;
         if (pending.IsSensitive)
+        {
+            if (pending.Action is "close app" or "close active app")
+                return await WindowActionAsync("close", pending.Action == "close app" ? pending.Target : "", token);
             return ExecuteSensitiveAction(pending);
+        }
 
         _executingApprovedAction = true;
         try
@@ -3282,21 +3197,8 @@ public sealed class JarvisAutomationService : IDisposable
         switch (pending.Action)
         {
             case "close active app":
-            {
-                var handle = GetForegroundWindow();
-                if (handle == IntPtr.Zero)
-                    return Logged("close_app", "active app", false, "No active app window was found.");
-                PostMessage(handle, WmClose, IntPtr.Zero, IntPtr.Zero);
-                return Logged("close_app", GetWindowTitle(handle), true, "Closed the active app.");
-            }
             case "close app":
-            {
-                var handle = FindWindowByName(pending.Target);
-                if (handle == IntPtr.Zero)
-                    return Logged("close_app", pending.Target, false, "That app window was not found.");
-                PostMessage(handle, WmClose, IntPtr.Zero, IntPtr.Zero);
-                return Logged("close_app", pending.Target, true, $"Closed {pending.Target}.");
-            }
+                throw new InvalidOperationException("Close requests must use the verified native-window path.");
             case "lock screen":
                 LockWorkStation();
                 return Logged("lock_screen", "", true, "Computer locked.");
@@ -3711,30 +3613,35 @@ public sealed class JarvisAutomationService : IDisposable
         && new[] { "chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "arc" }
             .Contains(processName, StringComparer.OrdinalIgnoreCase);
 
-    private static void SendKeysOnUiThread(string keys)
+    private static void SendKeysOnUiThread(string keys, IntPtr expectedWindow = default)
     {
-        var form = Application.OpenForms.Cast<Form>().FirstOrDefault();
-        if (form?.InvokeRequired == true)
-            form.Invoke(() => SendKeys.SendWait(keys));
-        else
-            SendKeys.SendWait(keys);
+        var target = expectedWindow == IntPtr.Zero ? GetForegroundWindow() : expectedWindow;
+        BrowserTrustedInput.PressChordInWindow(target, NativeShortcutKeys(keys));
     }
+
+    internal static ushort[] NativeShortcutKeys(string shortcut) => shortcut switch
+    {
+        "^t" => [0x11, 0x54], "^w" => [0x11, 0x57], "^+t" => [0x11, 0x10, 0x54],
+        "^r" => [0x11, 0x52], "^l" => [0x11, 0x4C], "^f" => [0x11, 0x46],
+        "^j" => [0x11, 0x4A], "^h" => [0x11, 0x48], "^c" => [0x11, 0x43], "^v" => [0x11, 0x56],
+        "%{LEFT}" => [0x12, 0x25], "%{RIGHT}" => [0x12, 0x27],
+        "{TAB}" => [0x09], "{ESC}" => [0x1B], "{UP}" => [0x26], "{DOWN}" => [0x28],
+        "{LEFT}" => [0x25], "{RIGHT}" => [0x27], "{PGUP}" => [0x21], "{PGDN}" => [0x22],
+        "{HOME}" => [0x24], "{END}" => [0x23],
+        _ => throw new InvalidOperationException("This keyboard shortcut is not supported."),
+    };
 
     private static void PressMediaKey(byte key, int count)
     {
         for (var i = 0; i < count; i++)
         {
-            keybd_event(key, 0, 0, UIntPtr.Zero);
-            keybd_event(key, 0, KeyeventfKeyup, UIntPtr.Zero);
+            BrowserTrustedInput.PressChordInWindow(GetForegroundWindow(), key);
         }
     }
 
     private static void SendChord(byte[] keys)
     {
-        foreach (var key in keys)
-            keybd_event(key, 0, 0, UIntPtr.Zero);
-        for (var index = keys.Length - 1; index >= 0; index--)
-            keybd_event(keys[index], 0, KeyeventfKeyup, UIntPtr.Zero);
+        BrowserTrustedInput.PressChordInWindow(GetForegroundWindow(), keys.Select(key => (ushort)key).ToArray());
     }
 
     private List<JarvisTodo> LoadTodos()
@@ -3811,12 +3718,10 @@ public sealed class JarvisAutomationService : IDisposable
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int command);
-    [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] private static extern int GetWindowTextLength(IntPtr hWnd);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
     [DllImport("user32.dll")] private static extern bool LockWorkStation();
-    [DllImport("user32.dll")] private static extern void keybd_event(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
 }
 
 internal sealed record SelectionContext(IntPtr Handle, string ProcessName, string WindowTitle);

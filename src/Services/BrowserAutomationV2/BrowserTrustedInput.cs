@@ -7,6 +7,8 @@ using System.Text;
 
 internal static class BrowserTrustedInput
 {
+    private static readonly object DispatchLock = new();
+    private static readonly int[] Modifiers = [0x10, 0x11, 0x12, 0x5B, 0x5C];
     private const uint InputKeyboard = 1;
     private const uint KeyeventfKeyup = 0x0002;
     private const uint KeyeventfUnicode = 0x0004;
@@ -112,14 +114,64 @@ internal static class BrowserTrustedInput
     {
         if (inputs.Length == 0)
             return;
-        FocusChromeWindow(expectedWindowTitle);
-
-        var sent = SendInput((uint)inputs.Length, inputs, NativeInputSize);
-        if (sent != inputs.Length)
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows did not dispatch the browser keyboard input.");
+        var target = FocusChromeWindow(expectedWindowTitle);
+        DispatchToWindow(target, inputs);
     }
 
-    private static void FocusChromeWindow(string expectedWindowTitle)
+    internal static void PressChordInWindow(IntPtr expectedWindow, params ushort[] keys) =>
+        DispatchToWindow(expectedWindow, keys.Select(key => Key(key))
+            .Concat(keys.Reverse().Select(key => Key(key, keyUp: true))).ToArray());
+
+    // All direct and trusted browser keyboard dispatch shares one boundary.
+    // Do not release physically held user modifiers: refuse the action instead.
+    internal static void WithInputOwnership(IntPtr expectedWindow, Func<IntPtr> foreground, Func<int, bool> isDown, Action send)
+    {
+        lock (DispatchLock)
+        {
+            if (expectedWindow == IntPtr.Zero || foreground() != expectedWindow)
+                throw new InvalidOperationException("The target window changed. No keyboard input was sent.");
+            if (Modifiers.Any(isDown))
+                throw new InvalidOperationException("A keyboard modifier is held. Release the keys and repeat the request; no keyboard input was sent.");
+            if (foreground() != expectedWindow)
+                throw new InvalidOperationException("The target window changed. No keyboard input was sent.");
+            send();
+        }
+    }
+
+    private static void DispatchToWindow(IntPtr target, Input[] inputs) => WithInputOwnership(
+        target, GetForegroundWindow, key => (GetAsyncKeyState(key) & 0x8000) != 0, () =>
+        {
+            // One SendInput batch prevents our down/up events being interleaved
+            // with each other or with user input. A partial dispatch releases only
+            // keys whose downs this batch actually inserted, never global modifiers.
+            var sent = SendInput((uint)inputs.Length, inputs, NativeInputSize);
+            if (sent == inputs.Length)
+                return;
+            var error = Marshal.GetLastWin32Error();
+            var held = new Dictionary<(ushort Key, ushort Scan), Input>();
+            foreach (var input in inputs.Take((int)sent))
+            {
+                var keyboard = input.Union.Keyboard;
+                var id = (keyboard.VirtualKey, keyboard.ScanCode);
+                if ((keyboard.Flags & KeyeventfKeyup) != 0)
+                    held.Remove(id);
+                else
+                    held[id] = input;
+            }
+            var releases = held.Values.Reverse().Select(input =>
+            {
+                input.Union.Keyboard.Flags |= KeyeventfKeyup;
+                return input;
+            }).ToArray();
+            if (releases.Length > 0)
+                _ = SendInput((uint)releases.Length, releases, NativeInputSize);
+            throw new Win32Exception(error, "Windows did not dispatch the complete keyboard action. It was not retried.");
+        });
+
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int key);
+
+    private static IntPtr FocusChromeWindow(string expectedWindowTitle)
     {
         var foreground = GetForegroundWindow();
         var target = FindChromeWindow(expectedWindowTitle);
@@ -129,7 +181,7 @@ internal static class BrowserTrustedInput
                 "The controlled Chrome window could not be identified safely for trusted browser input.");
         }
         if (foreground == target)
-            return;
+            return target;
 
         var currentThread = GetCurrentThreadId();
         var foregroundThread = foreground == IntPtr.Zero
@@ -165,6 +217,7 @@ internal static class BrowserTrustedInput
             throw new InvalidOperationException(
                 "Windows did not allow Jarvis to focus the controlled Chrome window.");
         }
+        return target;
     }
 
     private static IntPtr FindChromeWindow(string expectedWindowTitle)

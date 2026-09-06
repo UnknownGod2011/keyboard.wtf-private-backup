@@ -1935,11 +1935,13 @@ public sealed class GeminiLiveConversationService : IDisposable
                     "url"),
                 FunctionDeclaration(
                     "window_action",
-                    "List normal app windows or switch, minimize, maximize, restore, or close a window. In auto-execute mode, closing normal app windows is allowed without confirmation.",
+                    "List or control native app windows. For closing ALL windows of a named app, send ONE close call with scope all; do not loop over guessed foreground shortcuts. This does not close individual browser tabs. In auto-execute mode normal app closes need no confirmation.",
                     new()
                     {
                         ["action"] = Schema("string", "One of: list, switch, minimize, maximize, restore, close."),
                         ["app_name"] = Schema("string", "Optional app name or window title. Omit to act on the foreground window."),
+                        ["scope"] = Schema("string", "For close: one (default) or all matching windows of app_name. Use all only when the user requested all matching windows."),
+                        ["window_id"] = Schema("string", "Optional exact window_id returned by list or clarification. Never invent an ID."),
                     },
                     "action"),
                 FunctionDeclaration(
@@ -2596,7 +2598,9 @@ public sealed class GeminiLiveConversationService : IDisposable
         var peak = 0;
         for (var i = 0; i + 1 < bytes.Length; i += 2)
         {
-            var sample = Math.Abs((short)(bytes[i] | (bytes[i + 1] << 8)));
+            // Widen before Abs: -32768 is valid PCM16, but its absolute value
+            // cannot fit in a short. Metering must never discard a loud chunk.
+            var sample = Math.Abs((int)(short)(bytes[i] | (bytes[i + 1] << 8)));
             if (sample > peak)
                 peak = sample;
         }

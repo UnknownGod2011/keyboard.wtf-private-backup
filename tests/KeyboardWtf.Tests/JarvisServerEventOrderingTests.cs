@@ -5,6 +5,7 @@ using Xunit;
 
 namespace KeyboardWtf.Tests;
 
+[Collection("Live event integration")]
 public sealed class JarvisServerEventOrderingTests
 {
     [Theory]
@@ -224,3 +225,9 @@ public sealed class JarvisServerEventOrderingTests
             new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 }
+
+// These exercise real queued receive/tool handlers and the process-wide UI
+// publisher. Run without concurrent native overlay/hotkey integration tests;
+// otherwise their global UI activity and blocking waits contaminate this timing.
+[CollectionDefinition("Live event integration", DisableParallelization = true)]
+public sealed class LiveEventIntegrationCollection { }

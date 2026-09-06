@@ -107,6 +107,7 @@ internal sealed class LiveToolCallDispatcher : IDisposable
         try
         {
             await previous;
+            var results = new List<(Call Call, Dictionary<string, object> Response)>();
             foreach (var call in calls)
             {
                 var token = call.Cancellation.Token;
@@ -134,31 +135,42 @@ internal sealed class LiveToolCallDispatcher : IDisposable
                         guard.Record(call.Name, call.Args, response);
                     }
                     token.ThrowIfCancellationRequested();
-                    await _respond(new
-                    {
-                        toolResponse = new
-                        {
-                            functionResponses = new[] { new { id = call.Id, name = call.Name, response } },
-                        },
-                    }, token);
+                    results.Add((call, response));
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested) { }
                 catch (Exception exception)
                 {
                     AppLog.Warning(exception, $"Jarvis tool dispatch failed: {call.Name}");
                 }
-                finally
-                {
-                    lock (_sync) _pending.Remove(call.Id);
-                    call.Cancellation.Dispose();
-                }
             }
+            // One provider request owns one combined response, as in 1.4.17.
+            // Keep completed calls cancellable until the batch is published:
+            // cancellation arriving during another action must suppress them too.
+            _lifetime.Token.ThrowIfCancellationRequested();
+            var responses = results
+                .Where(result => !result.Call.Cancellation.IsCancellationRequested)
+                .Select(result => new { id = result.Call.Id, name = result.Call.Name, response = result.Response })
+                .ToArray();
+            if (responses.Length > 0)
+                await _respond(new { toolResponse = new { functionResponses = responses } }, _lifetime.Token);
         }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
         catch (Exception exception)
         {
             // Every earlier batch observes its own failures. This is a final
             // diagnostic boundary, never permission to replay a failed action.
             AppLog.Warning(exception, "Jarvis tool queue ended");
+        }
+        finally
+        {
+            lock (_sync)
+            {
+                foreach (var call in calls)
+                {
+                    _pending.Remove(call.Id);
+                    call.Cancellation.Dispose();
+                }
+            }
         }
     }
 

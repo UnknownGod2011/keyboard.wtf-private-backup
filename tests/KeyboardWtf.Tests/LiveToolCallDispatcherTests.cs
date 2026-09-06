@@ -8,6 +8,73 @@ namespace KeyboardWtf.Tests;
 public sealed class LiveToolCallDispatcherTests
 {
     [Fact]
+    public async Task Multiple_actions_in_one_provider_batch_return_one_combined_response()
+    {
+        var entered = Signal();
+        var release = Signal();
+        var responses = new ConcurrentQueue<string>();
+        using var queue = Queue(async (_, args, token) =>
+        {
+            if (args.GetProperty("value").GetString() == "second")
+            {
+                entered.TrySetResult(true);
+                await release.Task.WaitAsync(token);
+            }
+            return Ok();
+        }, responses);
+        queue.Enqueue(JsonSerializer.SerializeToElement(new
+        {
+            functionCalls = new[]
+            {
+                new { id = "one", name = "test_action", args = new { value = "first" } },
+                new { id = "two", name = "test_action", args = new { value = "second" } },
+            },
+        }), new());
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        var earlyResponses = responses.Count;
+        release.TrySetResult(true);
+        await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal(0, earlyResponses);
+        var batch = JsonDocument.Parse(Assert.Single(responses)).RootElement
+            .GetProperty("toolResponse").GetProperty("functionResponses");
+        Assert.Equal(new[] { "one", "two" }, batch.EnumerateArray().Select(item => item.GetProperty("id").GetString()));
+        Assert.Equal(0, queue.PendingCount);
+    }
+
+    [Fact]
+    public async Task Cancellation_during_a_batch_suppresses_an_already_finished_calls_pending_result()
+    {
+        var entered = Signal();
+        var release = Signal();
+        var responses = new ConcurrentQueue<string>();
+        using var queue = Queue(async (_, args, token) =>
+        {
+            if (args.GetProperty("value").GetString() == "second")
+            {
+                entered.TrySetResult(true);
+                await release.Task.WaitAsync(token);
+            }
+            return Ok();
+        }, responses);
+        queue.Enqueue(JsonSerializer.SerializeToElement(new
+        {
+            functionCalls = new[]
+            {
+                new { id = "one", name = "test_action", args = new { value = "first" } },
+                new { id = "two", name = "test_action", args = new { value = "second" } },
+            },
+        }), new());
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        queue.Cancel(JsonSerializer.SerializeToElement(new[] { "one" }));
+        release.TrySetResult(true);
+        await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+        var batch = JsonDocument.Parse(Assert.Single(responses)).RootElement
+            .GetProperty("toolResponse").GetProperty("functionResponses");
+        Assert.Equal("two", Assert.Single(batch.EnumerateArray()).GetProperty("id").GetString());
+        Assert.Equal(0, queue.PendingCount);
+    }
+
+    [Fact]
     public async Task Later_transcript_cannot_replace_the_context_of_an_inflight_action()
     {
         var entered = Signal();

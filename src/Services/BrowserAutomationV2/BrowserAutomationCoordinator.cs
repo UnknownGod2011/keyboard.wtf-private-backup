@@ -5534,8 +5534,12 @@ public sealed class BrowserAutomationCoordinator : IDisposable
     private static string SafeDomain(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : "";
 
-    private static string FriendlyError(Exception ex) => ex switch
+    internal static string FriendlyError(Exception ex) => ex switch
     {
+        PaidApiException { StatusCode: System.Net.HttpStatusCode.PaymentRequired } =>
+            "Browser Automation could not reserve enough usable credits. Check available and reserved credits in Account & Billing. Chrome and its tabs were left open.",
+        PaidApiException { StatusCode: System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden } =>
+            "Browser Automation could not authorize the paid request. Refresh Account & Billing to check your session and plan. Chrome and its tabs were left open.",
         TimeoutException => "The browser task timed out. Chrome and its tabs were left open.",
         HttpRequestException => "The browser planner is temporarily unavailable. Chrome and its tabs were left open.",
         InvalidOperationException => Short(ex.Message, 240),
