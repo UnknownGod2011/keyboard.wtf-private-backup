@@ -89,10 +89,10 @@ public sealed class LiveToolCallDispatcherTests
             observedDuringAction = context;
             return Ok();
         }, responses);
-        queue.Observe(text => context = text, "first request");
+        queue.Observe((text, _) => context = text, "first request");
         queue.Enqueue(Call("first", "value"), new());
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
-        queue.Observe(text => context = text, "different request");
+        queue.Observe((text, _) => context = text, "different request");
         Assert.Equal("first request", context);
         release.TrySetResult(true);
         await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
@@ -114,7 +114,7 @@ public sealed class LiveToolCallDispatcherTests
         }, new());
         queue.Enqueue(Call("first", "value"), new());
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
-        queue.Observe(_ => observed = true, "new request");
+        queue.Observe((_, _) => observed = true, "new request");
         queue.Stop();
         await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
         Assert.False(observed);
@@ -254,12 +254,49 @@ public sealed class LiveToolCallDispatcherTests
         Assert.Equal(0, queue.PendingCount);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Cancellation_while_transport_is_busy_suppresses_the_cancelled_result(bool includeUnrelated)
+    {
+        var waitingForTransport = Signal();
+        var transportReady = Signal();
+        var responses = new ConcurrentQueue<string>();
+        using var queue = new LiveToolCallDispatcher(CancellationToken.None,
+            (_, _, _) => Task.FromResult(Ok()), async (buildResponse, token) =>
+            {
+                waitingForTransport.TrySetResult(true);
+                await transportReady.Task.WaitAsync(token);
+                var response = buildResponse();
+                if (response != null)
+                    responses.Enqueue(JsonSerializer.Serialize(response));
+            });
+        var calls = new List<object> { new { id = "cancel-while-sending", name = "test_action", args = new { value = "first" } } };
+        if (includeUnrelated)
+            calls.Add(new { id = "unrelated", name = "test_action", args = new { value = "second" } });
+        queue.Enqueue(JsonSerializer.SerializeToElement(new { functionCalls = calls }), new());
+        await waitingForTransport.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        queue.Cancel(JsonSerializer.SerializeToElement(new[] { "cancel-while-sending" }));
+        transportReady.TrySetResult(true);
+        await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+        if (includeUnrelated)
+        {
+            var batch = JsonDocument.Parse(Assert.Single(responses)).RootElement
+                .GetProperty("toolResponse").GetProperty("functionResponses");
+            Assert.Equal("unrelated", Assert.Single(batch.EnumerateArray()).GetProperty("id").GetString());
+        }
+        else Assert.Empty(responses);
+        Assert.Equal(0, queue.PendingCount);
+    }
+
     private static LiveToolCallDispatcher Queue(
         Func<string, JsonElement, CancellationToken, Task<Dictionary<string, object>>> execute,
-        ConcurrentQueue<string> responses) => new(CancellationToken.None, execute, (response, token) =>
+        ConcurrentQueue<string> responses) => new(CancellationToken.None, execute, (buildResponse, token) =>
         {
             token.ThrowIfCancellationRequested();
-            responses.Enqueue(JsonSerializer.Serialize(response));
+            var response = buildResponse();
+            if (response != null)
+                responses.Enqueue(JsonSerializer.Serialize(response));
             return Task.CompletedTask;
         });
 

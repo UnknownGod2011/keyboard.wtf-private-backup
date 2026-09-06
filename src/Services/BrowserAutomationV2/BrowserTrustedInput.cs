@@ -26,21 +26,21 @@ internal static class BrowserTrustedInput
 
     internal static int NativeInputSize => Marshal.SizeOf<Input>();
     internal static uint CurrentThreadId => GetCurrentThreadId();
-    internal static void FocusChromeWindowForAutomation(string expectedWindowTitle = "") =>
-        FocusChromeWindow(expectedWindowTitle);
+    internal static void FocusChromeWindowForAutomation(string expectedWindowTitle = "", CancellationToken token = default) =>
+        FocusChromeWindow(expectedWindowTitle, token);
 
-    public static void PressEnter(string expectedWindowTitle = "") => Send(
-        expectedWindowTitle,
+    public static void PressEnter(string expectedWindowTitle = "", CancellationToken token = default) => Send(
+        expectedWindowTitle, token,
         Key(VkReturn),
         Key(VkReturn, keyUp: true));
 
-    public static void PressSpace(string expectedWindowTitle = "") => Send(
-        expectedWindowTitle,
+    public static void PressSpace(string expectedWindowTitle = "", CancellationToken token = default) => Send(
+        expectedWindowTitle, token,
         Key(VkSpace),
         Key(VkSpace, keyUp: true));
 
-    public static void PressAltArrowDown(string expectedWindowTitle = "") => Send(
-        expectedWindowTitle,
+    public static void PressAltArrowDown(string expectedWindowTitle = "", CancellationToken token = default) => Send(
+        expectedWindowTitle, token,
         Key(VkMenu),
         Key(VkDown),
         Key(VkDown, keyUp: true),
@@ -48,7 +48,7 @@ internal static class BrowserTrustedInput
 
     public static void TypeTextAndPressEnter(
         string text,
-        string expectedWindowTitle = "")
+        string expectedWindowTitle = "", CancellationToken token = default)
     {
         if (string.IsNullOrWhiteSpace(text))
             throw new ArgumentException("Listbox type-ahead text is required.", nameof(text));
@@ -61,11 +61,11 @@ internal static class BrowserTrustedInput
         }
         inputs.Add(Key(VkReturn));
         inputs.Add(Key(VkReturn, keyUp: true));
-        Send(expectedWindowTitle, inputs.ToArray());
+        Send(expectedWindowTitle, token, inputs.ToArray());
     }
 
-    public static void Paste(string expectedWindowTitle = "") => Send(
-        expectedWindowTitle,
+    public static void Paste(string expectedWindowTitle = "", CancellationToken token = default) => Send(
+        expectedWindowTitle, token,
         Key(VkControl),
         Key(VkV),
         Key(VkV, keyUp: true),
@@ -73,7 +73,7 @@ internal static class BrowserTrustedInput
 
     public static void SelectPreviousText(
         int textElementCount,
-        string expectedWindowTitle = "")
+        string expectedWindowTitle = "", CancellationToken token = default)
     {
         if (textElementCount is <= 0 or > 4096)
             throw new ArgumentOutOfRangeException(
@@ -90,55 +90,67 @@ internal static class BrowserTrustedInput
             inputs.Add(Key(VkLeft, keyUp: true));
         }
         inputs.Add(Key(VkShift, keyUp: true));
-        Send(expectedWindowTitle, inputs.ToArray());
+        Send(expectedWindowTitle, token, inputs.ToArray());
     }
 
-    public static void CopySelection(string expectedWindowTitle = "") => Send(
-        expectedWindowTitle,
+    public static void CopySelection(string expectedWindowTitle = "", CancellationToken token = default) => Send(
+        expectedWindowTitle, token,
         Key(VkControl),
         Key(VkC),
         Key(VkC, keyUp: true),
         Key(VkControl, keyUp: true));
 
-    public static void DeleteSelection(string expectedWindowTitle = "") => Send(
-        expectedWindowTitle,
+    public static void DeleteSelection(string expectedWindowTitle = "", CancellationToken token = default) => Send(
+        expectedWindowTitle, token,
         Key(VkBack),
         Key(VkBack, keyUp: true));
 
-    public static void CollapseSelectionToEnd(string expectedWindowTitle = "") => Send(
-        expectedWindowTitle,
+    public static void CollapseSelectionToEnd(string expectedWindowTitle = "", CancellationToken token = default) => Send(
+        expectedWindowTitle, token,
         Key(VkRight),
         Key(VkRight, keyUp: true));
 
-    private static void Send(string expectedWindowTitle, params Input[] inputs)
+    private static void Send(string expectedWindowTitle, CancellationToken token, params Input[] inputs)
     {
         if (inputs.Length == 0)
             return;
-        var target = FocusChromeWindow(expectedWindowTitle);
-        DispatchToWindow(target, inputs);
+        var target = FocusChromeWindow(expectedWindowTitle, token);
+        DispatchToWindow(target, inputs, token);
     }
 
-    internal static void PressChordInWindow(IntPtr expectedWindow, params ushort[] keys) =>
+    internal static void PressChordInWindow(IntPtr expectedWindow, CancellationToken token, params ushort[] keys) =>
         DispatchToWindow(expectedWindow, keys.Select(key => Key(key))
-            .Concat(keys.AsEnumerable().Reverse().Select(key => Key(key, keyUp: true))).ToArray());
+            .Concat(keys.AsEnumerable().Reverse().Select(key => Key(key, keyUp: true))).ToArray(), token);
+
+    internal static void EnsureNoUserModifierIsHeld(CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (Modifiers.Any(key => (GetAsyncKeyState(key) & 0x8000) != 0))
+            throw new InvalidOperationException("A keyboard modifier is held. No window focus or keyboard input was changed.");
+        token.ThrowIfCancellationRequested();
+    }
 
     // All direct and trusted browser keyboard dispatch shares one boundary.
     // Do not release physically held user modifiers: refuse the action instead.
-    internal static void WithInputOwnership(IntPtr expectedWindow, Func<IntPtr> foreground, Func<int, bool> isDown, Action send)
+    internal static void WithInputOwnership(IntPtr expectedWindow, Func<IntPtr> foreground, Func<int, bool> isDown, Action send,
+        CancellationToken token = default)
     {
+        token.ThrowIfCancellationRequested();
         lock (DispatchLock)
         {
+            token.ThrowIfCancellationRequested();
             if (expectedWindow == IntPtr.Zero || foreground() != expectedWindow)
                 throw new InvalidOperationException("The target window changed. No keyboard input was sent.");
             if (Modifiers.Any(isDown))
                 throw new InvalidOperationException("A keyboard modifier is held. Release the keys and repeat the request; no keyboard input was sent.");
             if (foreground() != expectedWindow)
                 throw new InvalidOperationException("The target window changed. No keyboard input was sent.");
+            token.ThrowIfCancellationRequested();
             send();
         }
     }
 
-    private static void DispatchToWindow(IntPtr target, Input[] inputs) => WithInputOwnership(
+    private static void DispatchToWindow(IntPtr target, Input[] inputs, CancellationToken token) => WithInputOwnership(
         target, GetForegroundWindow, key => (GetAsyncKeyState(key) & 0x8000) != 0, () =>
         {
             // One SendInput batch prevents our down/up events being interleaved
@@ -166,13 +178,15 @@ internal static class BrowserTrustedInput
             if (releases.Length > 0)
                 _ = SendInput((uint)releases.Length, releases, NativeInputSize);
             throw new Win32Exception(error, "Windows did not dispatch the complete keyboard action. It was not retried.");
-        });
+        }, token);
 
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int key);
 
-    private static IntPtr FocusChromeWindow(string expectedWindowTitle)
+    private static IntPtr FocusChromeWindow(string expectedWindowTitle, CancellationToken token)
     {
+        token.ThrowIfCancellationRequested();
+        EnsureNoUserModifierIsHeld(token);
         var foreground = GetForegroundWindow();
         var target = FindChromeWindow(expectedWindowTitle);
         if (target == IntPtr.Zero)
@@ -183,6 +197,7 @@ internal static class BrowserTrustedInput
         if (foreground == target)
             return target;
 
+        token.ThrowIfCancellationRequested();
         var currentThread = GetCurrentThreadId();
         var foregroundThread = foreground == IntPtr.Zero
             ? 0
@@ -197,10 +212,15 @@ internal static class BrowserTrustedInput
             && AttachThreadInput(currentThread, targetThread, true);
         try
         {
+            token.ThrowIfCancellationRequested();
+            EnsureNoUserModifierIsHeld(token);
             if (IsIconic(target))
                 ShowWindow(target, 9);
+            token.ThrowIfCancellationRequested();
             BringWindowToTop(target);
+            token.ThrowIfCancellationRequested();
             SetForegroundWindow(target);
+            token.ThrowIfCancellationRequested();
             SetFocus(target);
         }
         finally
@@ -212,6 +232,7 @@ internal static class BrowserTrustedInput
         }
 
         Thread.Sleep(120);
+        token.ThrowIfCancellationRequested();
         if (GetForegroundWindow() != target)
         {
             throw new InvalidOperationException(

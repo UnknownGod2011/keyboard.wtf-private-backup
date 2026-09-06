@@ -165,7 +165,7 @@ public sealed class JarvisServerEventOrderingTests
                 Ended.TrySetResult(true);
                 return Task.CompletedTask;
             });
-            _service.SetUserTranscriptObserver(_ => UserObserved.TrySetResult(true));
+            _service.SetUserTranscriptObserver((_, _) => UserObserved.TrySetResult(true));
             _service.SetToolExecutor(async (_, _, token) =>
             {
                 ToolToken = token;

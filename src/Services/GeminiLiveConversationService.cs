@@ -46,7 +46,7 @@ public sealed class GeminiLiveConversationService : IDisposable
     private readonly PaidAccountService _paidAccount;
 
     private Func<string, JsonElement, CancellationToken, Task<Dictionary<string, object>>> _toolExecutor;
-    private Action<string> _userTranscriptObserver;
+    private Action<string, CancellationToken> _userTranscriptObserver;
     private Func<Task> _sessionEndingObserver;
     private ClientWebSocket _socket;
     private CancellationTokenSource _sessionCts;
@@ -96,6 +96,7 @@ public sealed class GeminiLiveConversationService : IDisposable
         && _socket?.State == WebSocketState.Open;
     public bool IsStarting => Volatile.Read(ref _startInProgress) == 1;
     public bool UsesPaidBackend => _paidAccount?.Enabled == true;
+    internal CancellationToken SessionCancellation => _sessionCts?.Token ?? new CancellationToken(canceled: true);
 
     public Task WarmPaidBackendAsync(CancellationToken token = default) =>
         _paidAccount?.WarmBackendAsync(token) ?? Task.CompletedTask;
@@ -103,7 +104,7 @@ public sealed class GeminiLiveConversationService : IDisposable
     public void SetToolExecutor(Func<string, JsonElement, CancellationToken, Task<Dictionary<string, object>>> executor) =>
         _toolExecutor = executor;
 
-    public void SetUserTranscriptObserver(Action<string> observer) =>
+    public void SetUserTranscriptObserver(Action<string, CancellationToken> observer) =>
         _userTranscriptObserver = observer;
 
     public void SetSessionEndingObserver(Func<Task> observer) =>
@@ -1455,7 +1456,7 @@ public sealed class GeminiLiveConversationService : IDisposable
         return diagnostics.ToolCalls;
     }
 
-    private async Task SendToolResponseAsync(object response, ClientWebSocket expectedSocket, CancellationToken token)
+    private async Task SendToolResponseAsync(Func<object> buildResponse, ClientWebSocket expectedSocket, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         await _sendLock.WaitAsync(token);
@@ -1464,6 +1465,9 @@ public sealed class GeminiLiveConversationService : IDisposable
             token.ThrowIfCancellationRequested();
             if (!ReferenceEquals(_socket, expectedSocket) || expectedSocket?.State != WebSocketState.Open)
                 throw new OperationCanceledException("The tool's physical Live connection has ended.", token);
+            var response = buildResponse();
+            if (response == null)
+                return;
             var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(response));
             await expectedSocket.SendAsync(bytes, WebSocketMessageType.Text, true, token);
         }

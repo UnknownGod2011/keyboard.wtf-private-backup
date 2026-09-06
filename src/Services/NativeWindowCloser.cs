@@ -86,6 +86,7 @@ internal static class NativeWindowCloser
             token.ThrowIfCancellationRequested();
             if (!SameIdentity(target, read(target.Handle)))
                 continue; // Already closed, or handle recycled. Never touch its replacement.
+            token.ThrowIfCancellationRequested();
             if (requestClose(target.Handle))
                 requested++;
         }

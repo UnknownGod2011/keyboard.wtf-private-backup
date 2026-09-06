@@ -542,6 +542,63 @@ public sealed class BrowserAutomationProtocolTests
             suppressCancellationAnnouncement: true));
     }
 
+    [Theory]
+    [InlineData(BrowserTaskState.Planning)]
+    [InlineData(BrowserTaskState.Executing)]
+    [InlineData(BrowserTaskState.WaitingForPage)]
+    [InlineData(BrowserTaskState.NeedsUserAction)]
+    [InlineData(BrowserTaskState.Partial)]
+    public void Local_cancel_immediately_clears_every_visible_browser_task_state(BrowserTaskState state)
+    {
+        var coordinator = new BrowserAutomationCoordinator(null, null, null, null);
+        var runtimeType = typeof(BrowserAutomationCoordinator).GetNestedType(
+            "Runtime", System.Reflection.BindingFlags.NonPublic)!;
+        var runtime = Activator.CreateInstance(runtimeType, nonPublic: true)!;
+        runtimeType.GetProperty("State")!.SetValue(runtime, state);
+        runtimeType.GetProperty("Intervention")!.SetValue(runtime, new BrowserUserIntervention
+        {
+            Missing = "A required value",
+            Required = true,
+        });
+        typeof(BrowserAutomationCoordinator).GetField(
+            "_active", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(coordinator, runtime);
+
+        Assert.True(coordinator.RequestCancel("test cancellation", announceOutcome: false));
+        var snapshot = coordinator.Snapshot();
+        Assert.Equal(BrowserTaskState.Cancelled, snapshot.State);
+        Assert.Equal(BrowserAutomationOutcome.Cancelled, snapshot.Outcome);
+        Assert.Null(snapshot.Intervention);
+        Assert.False(snapshot.CanCancel);
+        ((CancellationTokenSource)runtimeType.GetProperty("Cancellation")!.GetValue(runtime)!).Dispose();
+    }
+
+    [Fact]
+    public void Superseded_runtime_cannot_overwrite_the_active_task_status()
+    {
+        var coordinator = new BrowserAutomationCoordinator(null, null, null, null);
+        var runtimeType = typeof(BrowserAutomationCoordinator).GetNestedType(
+            "Runtime", System.Reflection.BindingFlags.NonPublic)!;
+        var activeField = typeof(BrowserAutomationCoordinator).GetField(
+            "_active", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var publish = typeof(BrowserAutomationCoordinator).GetMethod(
+            "Publish", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var stale = Activator.CreateInstance(runtimeType, nonPublic: true)!;
+        var current = Activator.CreateInstance(runtimeType, nonPublic: true)!;
+        var observed = new List<string>();
+        coordinator.StatusChanged += snapshot => observed.Add(snapshot.TaskId);
+
+        activeField.SetValue(coordinator, current);
+        publish.Invoke(coordinator, [stale]);
+        publish.Invoke(coordinator, [current]);
+
+        Assert.Equal(
+            [(string)runtimeType.GetProperty("TaskId")!.GetValue(current)!],
+            observed);
+        ((CancellationTokenSource)runtimeType.GetProperty("Cancellation")!.GetValue(stale)!).Dispose();
+        ((CancellationTokenSource)runtimeType.GetProperty("Cancellation")!.GetValue(current)!).Dispose();
+    }
+
     [Fact]
     public void Native_message_frames_round_trip_without_truncation()
     {

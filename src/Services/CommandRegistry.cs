@@ -174,11 +174,12 @@ public sealed class CommandRegistry
             $"Press the {requestedMode} shortcut again after Jarvis closes.");
         return true;
     }
-    public void ObserveJarvisTranscript(string text) =>
-        TryPreRouteJarvisTranscript(text);
+    public void ObserveJarvisTranscript(string text, CancellationToken token) =>
+        TryPreRouteJarvisTranscript(text, token);
 
-    public bool TryPreRouteJarvisTranscript(string text, bool fromLocalTextSubmission = false)
+    public bool TryPreRouteJarvisTranscript(string text, CancellationToken token, bool fromLocalTextSubmission = false)
     {
+        token.ThrowIfCancellationRequested();
         _automation?.ObserveUserTranscript(text);
         var userTurn = (text ?? "").Trim();
         if (userTurn.Length == 0)
@@ -307,7 +308,8 @@ public sealed class CommandRegistry
             Dictionary<string, object> preferenceOpenResult;
             try
             {
-                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+                timeout.CancelAfter(TimeSpan.FromSeconds(12));
                 preferenceOpenResult = _automation.ExecuteAsync(
                         preferenceOpenTool,
                         preferenceOpenArguments,
@@ -324,6 +326,7 @@ public sealed class CommandRegistry
                         ? "The saved preference did not finish in time."
                         : ex.Message);
             }
+            token.ThrowIfCancellationRequested();
             RecordAuthoritativePreRoute(
                 userTurn,
                 preferenceOpenTool,
@@ -340,6 +343,7 @@ public sealed class CommandRegistry
         if (_automation != null
             && _automation.TryEditWorkflowFromTranscript(userTurn, out var editResult))
         {
+            token.ThrowIfCancellationRequested();
             RecordAuthoritativePreRoute(
                 userTurn,
                 "edit_workflow",
@@ -358,7 +362,8 @@ public sealed class CommandRegistry
             Dictionary<string, object> workflowResult;
             try
             {
-                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+                timeout.CancelAfter(TimeSpan.FromSeconds(20));
                 workflowResult = _automation.ExecuteAsync(
                         "run_workflow",
                         JsonSerializer.SerializeToElement(new { name = workflowName }),
@@ -373,6 +378,7 @@ public sealed class CommandRegistry
                     ? "The saved workflow did not finish in time."
                     : ex.Message);
             }
+            token.ThrowIfCancellationRequested();
             var ok = workflowResult.TryGetValue("ok", out var okValue)
                 && okValue is bool succeeded
                 && succeeded;
@@ -427,6 +433,7 @@ public sealed class CommandRegistry
                 userTurn,
                 out var settingsSection))
         {
+            token.ThrowIfCancellationRequested();
             var settingsResult = OpenKeyboardWtfSettings(settingsSection);
             RecordAuthoritativePreRoute(
                 userTurn,
@@ -447,7 +454,8 @@ public sealed class CommandRegistry
             var message = "";
             try
             {
-                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+                timeout.CancelAfter(TimeSpan.FromSeconds(6));
                 var receipt = _browserAutomation
                     .ActivateExistingTabAsync(tabSelection, timeout.Token)
                     .GetAwaiter()
@@ -465,6 +473,7 @@ public sealed class CommandRegistry
                     ? "Chrome did not confirm the tab switch in time."
                     : ex.Message;
             }
+            token.ThrowIfCancellationRequested();
 
             lock (_browserPreRouteLock)
             {
@@ -489,7 +498,8 @@ public sealed class CommandRegistry
         if (_automation != null
             && JarvisAutomationService.IsDirectBrowserShortcutRequest(text))
         {
-            var shortcut = _automation.ExecuteBrowserShortcut(text);
+            var shortcut = _automation.ExecuteBrowserShortcut(text, token);
+            token.ThrowIfCancellationRequested();
             var ok = shortcut.TryGetValue("ok", out var value)
                 && value is bool success
                 && success;
@@ -617,6 +627,7 @@ public sealed class CommandRegistry
             return false;
         }
 
+        token.ThrowIfCancellationRequested();
         var result = _browserAutomation.Start(userTurn);
         if (!result.Started || string.IsNullOrWhiteSpace(result.TaskId))
             return false;

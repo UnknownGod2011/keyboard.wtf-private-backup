@@ -41,6 +41,32 @@ public sealed class KeyboardInputOwnershipTests
         Assert.Equal(1, sent);
     }
 
+    [Fact]
+    public void Cancellation_before_keyboard_ownership_never_observes_or_sends_input()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var observed = false;
+        var sent = false;
+        Assert.ThrowsAny<OperationCanceledException>(() => BrowserTrustedInput.WithInputOwnership(
+            (IntPtr)17, () => { observed = true; return (IntPtr)17; }, _ => false,
+            () => sent = true, cancellation.Token));
+        Assert.False(observed);
+        Assert.False(sent);
+    }
+
+    [Fact]
+    public void Cancellation_during_modifier_validation_never_sends_input()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var sent = false;
+        Assert.ThrowsAny<OperationCanceledException>(() => BrowserTrustedInput.WithInputOwnership(
+            (IntPtr)17, () => (IntPtr)17,
+            _ => { cancellation.Cancel(); return false; },
+            () => sent = true, cancellation.Token));
+        Assert.False(sent);
+    }
+
     [Theory]
     [InlineData("new tab")]
     [InlineData("close tab")]

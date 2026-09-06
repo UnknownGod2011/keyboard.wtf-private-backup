@@ -99,6 +99,19 @@ public sealed class NativeWindowCloserTests
         Assert.Equal((IntPtr)1, Assert.Single(sent));
     }
 
+    [Fact]
+    public async Task Cancellation_during_identity_validation_prevents_the_native_close()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var target = Explorer(1);
+        var sent = 0;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => NativeWindowCloser.CloseAsync(
+            [target], cancellation.Token,
+            _ => { cancellation.Cancel(); return target; },
+            _ => { sent++; return true; }));
+        Assert.Equal(0, sent);
+    }
+
     private static Window Explorer(int id) => Make(id, "explorer", $"Folder {id}", "CabinetWClass");
     private static Window Make(int id, string process, string title, string className = "AppWindow") =>
         new((IntPtr)id, (uint)id, (uint)id, className, process, title);

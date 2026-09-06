@@ -12,7 +12,7 @@ internal sealed class LiveToolCallDispatcher : IDisposable
     private readonly Dictionary<string, CancellationTokenSource> _pending = new(StringComparer.Ordinal);
     private readonly HashSet<string> _seen = new(StringComparer.Ordinal);
     private readonly Func<string, JsonElement, CancellationToken, Task<Dictionary<string, object>>> _execute;
-    private readonly Func<object, CancellationToken, Task> _respond;
+    private readonly Func<Func<object>, CancellationToken, Task> _respond;
     private Task _completion = Task.CompletedTask;
     private int _stopped;
     private int _disposed;
@@ -21,7 +21,7 @@ internal sealed class LiveToolCallDispatcher : IDisposable
     internal LiveToolCallDispatcher(
         CancellationToken token,
         Func<string, JsonElement, CancellationToken, Task<Dictionary<string, object>>> execute,
-        Func<object, CancellationToken, Task> respond)
+        Func<Func<object>, CancellationToken, Task> respond)
     {
         _lifetime = CancellationTokenSource.CreateLinkedTokenSource(token);
         _execute = execute;
@@ -31,7 +31,7 @@ internal sealed class LiveToolCallDispatcher : IDisposable
     internal Task Completion { get { lock (_sync) return _completion; } }
     internal int PendingCount { get { lock (_sync) return _pending.Count + _pendingObservations; } }
 
-    internal void Observe(Action<string> observer, string transcript)
+    internal void Observe(Action<string, CancellationToken> observer, string transcript)
     {
         if (observer == null)
             return;
@@ -47,7 +47,7 @@ internal sealed class LiveToolCallDispatcher : IDisposable
                 {
                     await previous;
                     _lifetime.Token.ThrowIfCancellationRequested();
-                    observer(transcript);
+                    observer(transcript, _lifetime.Token);
                 }
                 catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
                 catch (Exception exception) { AppLog.Warning(exception, "Jarvis transcript observer failed"); }
@@ -147,12 +147,17 @@ internal sealed class LiveToolCallDispatcher : IDisposable
             // Keep completed calls cancellable until the batch is published:
             // cancellation arriving during another action must suppress them too.
             _lifetime.Token.ThrowIfCancellationRequested();
-            var responses = results
-                .Where(result => !result.Call.Cancellation.IsCancellationRequested)
-                .Select(result => new { id = result.Call.Id, name = result.Call.Name, response = result.Response })
-                .ToArray();
-            if (responses.Length > 0)
-                await _respond(new { toolResponse = new { functionResponses = responses } }, _lifetime.Token);
+            // Materialize only once the transport owns its send lock. A result
+            // cancelled while waiting for audio/socket output must not survive
+            // in an already-created message; unrelated results still publish.
+            await _respond(() =>
+            {
+                var responses = results
+                    .Where(result => !result.Call.Cancellation.IsCancellationRequested)
+                    .Select(result => new { id = result.Call.Id, name = result.Call.Name, response = result.Response })
+                    .ToArray();
+                return responses.Length == 0 ? null : new { toolResponse = new { functionResponses = responses } };
+            }, _lifetime.Token);
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
         catch (Exception exception)

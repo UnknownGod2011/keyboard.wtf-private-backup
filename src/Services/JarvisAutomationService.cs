@@ -158,7 +158,7 @@ public sealed class JarvisAutomationService : IDisposable
                 token,
                 GetString(args, "scope"),
                 GetString(args, "window_id")),
-            "browser_action" => BrowserAction(GetString(args, "action")),
+            "browser_action" => BrowserAction(GetString(args, "action"), token),
             "web_search" => WebSearch(
                 GetString(args, "query"),
                 GetString(args, "engine") ?? GetString(args, "service"),
@@ -168,7 +168,7 @@ public sealed class JarvisAutomationService : IDisposable
             "get_selected_text" => await GetSelectedTextAsync(token),
             "replace_selected_text" => await ReplaceSelectedTextAsync(GetString(args, "text"), token),
             "type_text" => await TypeTextAsync(GetString(args, "text"), token),
-            "press_key" => PressKey(GetString(args, "key")),
+            "press_key" => PressKey(GetString(args, "key"), token),
             "search_files" => await SearchFilesAsync(
                 GetString(args, "query"),
                 GetString(args, "location"),
@@ -183,7 +183,7 @@ public sealed class JarvisAutomationService : IDisposable
                 GetString(args, "label")),
             "cancel_timer" => CancelTimer(GetString(args, "query")),
             "list_timers" => ListTimers(),
-            "system_control" => SystemControl(GetString(args, "action"), GetInt(args, "value")),
+            "system_control" => SystemControl(GetString(args, "action"), GetInt(args, "value"), token),
             "system_status" => SystemStatus(),
             "play_media" => PlayMedia(GetString(args, "query"), GetString(args, "service")),
             "open_service_page" => OpenServicePage(
@@ -194,8 +194,8 @@ public sealed class JarvisAutomationService : IDisposable
             "take_photo" => await TakePhotoAsync(token),
             "take_screenshot" => TakeScreenshot(),
             "inspect_screen" => await InspectScreenAsync(GetString(args, "request"), token),
-            "virtual_desktop_action" => VirtualDesktopAction(GetString(args, "action")),
-            "windows_recording_action" => WindowsRecordingAction(GetString(args, "action")),
+            "virtual_desktop_action" => VirtualDesktopAction(GetString(args, "action"), token),
+            "windows_recording_action" => WindowsRecordingAction(GetString(args, "action"), token),
             "open_gmail_draft" => OpenGmailDraft(
                 GetString(args, "recipient"),
                 GetString(args, "subject"),
@@ -946,8 +946,8 @@ public sealed class JarvisAutomationService : IDisposable
             ? host[4..]
             : host ?? "";
 
-    internal Dictionary<string, object> ExecuteBrowserShortcut(string action) =>
-        BrowserAction(action);
+    internal Dictionary<string, object> ExecuteBrowserShortcut(string action, CancellationToken token) =>
+        BrowserAction(action, token);
 
     internal static bool IsDirectBrowserShortcutRequest(string request) =>
         TryGetBrowserTabSelection(request, out _, out _)
@@ -1031,7 +1031,7 @@ public sealed class JarvisAutomationService : IDisposable
         return false;
     }
 
-    private Dictionary<string, object> BrowserAction(string action)
+    private Dictionary<string, object> BrowserAction(string action, CancellationToken token)
     {
         var keys = BrowserShortcutForAction(action);
         if (keys == null)
@@ -1061,7 +1061,7 @@ public sealed class JarvisAutomationService : IDisposable
             {
                 try
                 {
-                    BrowserTrustedInput.FocusChromeWindowForAutomation(browser.Title);
+                    BrowserTrustedInput.FocusChromeWindowForAutomation(browser.Title, token);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -1075,13 +1075,17 @@ public sealed class JarvisAutomationService : IDisposable
             }
             else
             {
+                BrowserTrustedInput.EnsureNoUserModifierIsHeld(token);
+                token.ThrowIfCancellationRequested();
                 ShowWindow(browser.Handle, SwRestore);
+                token.ThrowIfCancellationRequested();
                 SetForegroundWindow(browser.Handle);
             }
-            Thread.Sleep(120);
-            activeWindow = GetForegroundWindow();
+            if (token.WaitHandle.WaitOne(120))
+                token.ThrowIfCancellationRequested();
+            activeWindow = browser.Handle;
             activeProcess = GetProcessName(activeWindow);
-            foregroundedBrowser = IsBrowserProcess(activeProcess);
+            foregroundedBrowser = GetForegroundWindow() == activeWindow && IsBrowserProcess(activeProcess);
             if (!foregroundedBrowser)
             {
                 return Result(
@@ -1095,7 +1099,7 @@ public sealed class JarvisAutomationService : IDisposable
 
         try
         {
-            SendKeysOnUiThread(keys, activeWindow);
+            SendKeysOnUiThread(keys, token, activeWindow);
         }
         catch (Exception ex)
         {
@@ -1182,7 +1186,7 @@ public sealed class JarvisAutomationService : IDisposable
             try
             {
                 ClipboardHelper.SetText(marker);
-                SendKeysOnUiThread("^c", context.Handle);
+                SendKeysOnUiThread("^c", token, context.Handle);
                 await Task.Delay(delayMs, token);
                 selected = ClipboardHelper.GetText();
             }
@@ -1265,7 +1269,7 @@ public sealed class JarvisAutomationService : IDisposable
         {
             ClipboardHelper.SetText(text);
             token.ThrowIfCancellationRequested();
-            SendKeysOnUiThread("^v", target);
+            SendKeysOnUiThread("^v", token, target);
             await Task.Delay(220, token);
         }
         finally
@@ -1285,7 +1289,7 @@ public sealed class JarvisAutomationService : IDisposable
         {
             ClipboardHelper.SetText(text);
             token.ThrowIfCancellationRequested();
-            SendKeysOnUiThread("^v", target);
+            SendKeysOnUiThread("^v", token, target);
             await Task.Delay(220, token);
         }
         finally
@@ -1295,7 +1299,7 @@ public sealed class JarvisAutomationService : IDisposable
         return Logged("type_text", Limit(text, 120), true, "Typed the text into the active field.");
     }
 
-    private Dictionary<string, object> PressKey(string key)
+    private Dictionary<string, object> PressKey(string key, CancellationToken token)
     {
         var sequence = NormalizeWords(key) switch
         {
@@ -1313,7 +1317,7 @@ public sealed class JarvisAutomationService : IDisposable
         };
         if (sequence == null)
             return Result(false, "That key is not supported.", supported: false);
-        SendKeysOnUiThread(sequence);
+        SendKeysOnUiThread(sequence, token);
         return Logged("press_key", key, true, $"Pressed {key}.");
     }
 
@@ -1484,20 +1488,20 @@ public sealed class JarvisAutomationService : IDisposable
         return $"{seconds} second{(seconds == 1 ? "" : "s")}";
     }
 
-    private Dictionary<string, object> SystemControl(string action, int value)
+    private Dictionary<string, object> SystemControl(string action, int value, CancellationToken token)
     {
         var normalized = NormalizeWords(action);
         switch (normalized)
         {
             case "volume up":
-                PressMediaKey(VkVolumeUp, Math.Clamp(value <= 0 ? 2 : value, 1, 20));
+                PressMediaKey(VkVolumeUp, Math.Clamp(value <= 0 ? 2 : value, 1, 20), token);
                 return Logged("system_control", action, true, "Volume increased.");
             case "volume down":
-                PressMediaKey(VkVolumeDown, Math.Clamp(value <= 0 ? 2 : value, 1, 20));
+                PressMediaKey(VkVolumeDown, Math.Clamp(value <= 0 ? 2 : value, 1, 20), token);
                 return Logged("system_control", action, true, "Volume decreased.");
             case "mute":
             case "toggle mute":
-                PressMediaKey(VkVolumeMute, 1);
+                PressMediaKey(VkVolumeMute, 1, token);
                 return Logged("system_control", action, true, "Mute toggled.");
             case "bluetooth settings":
                 return OpenUrl("ms-settings:bluetooth");
@@ -1761,14 +1765,14 @@ public sealed class JarvisAutomationService : IDisposable
     public Task<Dictionary<string, object>> CapturePhotoFromSettingsAsync(CancellationToken token) =>
         TakePhotoAsync(token);
 
-    private Dictionary<string, object> VirtualDesktopAction(string action)
+    private Dictionary<string, object> VirtualDesktopAction(string action, CancellationToken token)
     {
         var normalized = NormalizeWords(action);
         var key = VirtualDesktopKeyForAction(normalized);
         if (key == 0)
             return Result(false, "Supported virtual desktop actions are create, next, previous, and close.", supported: false);
 
-        SendChord([0x5B, 0x11, key]);
+        SendChord([0x5B, 0x11, key], token);
         var message = key switch
         {
             0x44 => "Requested a new virtual desktop.",
@@ -1797,7 +1801,7 @@ public sealed class JarvisAutomationService : IDisposable
         };
     }
 
-    private Dictionary<string, object> WindowsRecordingAction(string action)
+    private Dictionary<string, object> WindowsRecordingAction(string action, CancellationToken token)
     {
         var normalized = NormalizeWords(action);
         var shortcut = WindowsRecordingShortcutForAction(normalized);
@@ -1809,7 +1813,7 @@ public sealed class JarvisAutomationService : IDisposable
                 supported: false);
         }
 
-        SendChord(shortcut);
+        SendChord(shortcut, token);
         var regionCapture = shortcut.SequenceEqual(new byte[] { 0x5B, 0x10, 0x52 });
         var message = regionCapture
             ? "Opened the Windows screen-region recording picker. Windows controls the selected area and save result."
@@ -3613,10 +3617,10 @@ public sealed class JarvisAutomationService : IDisposable
         && new[] { "chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "arc" }
             .Contains(processName, StringComparer.OrdinalIgnoreCase);
 
-    private static void SendKeysOnUiThread(string keys, IntPtr expectedWindow = default)
+    private static void SendKeysOnUiThread(string keys, CancellationToken token, IntPtr expectedWindow = default)
     {
         var target = expectedWindow == IntPtr.Zero ? GetForegroundWindow() : expectedWindow;
-        BrowserTrustedInput.PressChordInWindow(target, NativeShortcutKeys(keys));
+        BrowserTrustedInput.PressChordInWindow(target, token, NativeShortcutKeys(keys));
     }
 
     internal static ushort[] NativeShortcutKeys(string shortcut) => shortcut switch
@@ -3631,17 +3635,18 @@ public sealed class JarvisAutomationService : IDisposable
         _ => throw new InvalidOperationException("This keyboard shortcut is not supported."),
     };
 
-    private static void PressMediaKey(byte key, int count)
+    private static void PressMediaKey(byte key, int count, CancellationToken token)
     {
+        var target = GetForegroundWindow();
         for (var i = 0; i < count; i++)
         {
-            BrowserTrustedInput.PressChordInWindow(GetForegroundWindow(), key);
+            BrowserTrustedInput.PressChordInWindow(target, token, key);
         }
     }
 
-    private static void SendChord(byte[] keys)
+    private static void SendChord(byte[] keys, CancellationToken token)
     {
-        BrowserTrustedInput.PressChordInWindow(GetForegroundWindow(), keys.Select(key => (ushort)key).ToArray());
+        BrowserTrustedInput.PressChordInWindow(GetForegroundWindow(), token, keys.Select(key => (ushort)key).ToArray());
     }
 
     private List<JarvisTodo> LoadTodos()

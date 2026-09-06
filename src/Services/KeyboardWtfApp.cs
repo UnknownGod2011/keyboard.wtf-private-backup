@@ -261,11 +261,12 @@ public sealed class KeyboardWtfApp : IDisposable
         // Live conversation receive the turn. CommandRegistry supplies the
         // matching verified receipt to the model, which lets Jarvis say
         // "started" or "switched" rather than silently returning early.
-        _commands?.TryPreRouteJarvisTranscript(text, fromLocalTextSubmission: true);
+        using var turnCancellation = CancellationTokenSource.CreateLinkedTokenSource(token, _liveConversation.SessionCancellation);
+        _commands?.TryPreRouteJarvisTranscript(text, turnCancellation.Token, fromLocalTextSubmission: true);
 
         await _liveConversation.SendTextTurnAsync(
             BrowserAutomationText.Truncate(text.Trim(), 4000),
-            token);
+            turnCancellation.Token);
     }
 
     public string StartupExecutablePath => ResolveStartupExecutablePath();

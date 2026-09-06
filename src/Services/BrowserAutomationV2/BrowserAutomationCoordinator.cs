@@ -477,6 +477,15 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             SetState(runtime, BrowserTaskState.Cancelling, reason);
             runtime.Cancellation.Cancel();
             runtime.PauseGate.Resume();
+            // Local cancellation owns the visible lifecycle immediately. The
+            // helper and execution cleanup continue against this same runtime,
+            // but neither may republish stale progress or success afterward.
+            SetTerminal(
+                runtime,
+                BrowserTaskState.Cancelled,
+                BrowserAutomationOutcome.Cancelled,
+                "Browser automation cancelled.",
+                "");
             cleanupRequired = true;
         }
 
@@ -505,19 +514,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             // ExecuteAsync owns terminal cleanup and logs.
         }
 
-        lock (_sync)
-        {
-            if (runtime.State == BrowserTaskState.Cancelling
-                && runtime.Execution?.IsCompleted == true)
-            {
-                SetTerminal(
-                    runtime,
-                    BrowserTaskState.Cancelled,
-                    BrowserAutomationOutcome.Cancelled,
-                    "Browser automation cancelled.",
-                    "");
-            }
-        }
+        // The terminal state was published synchronously by
+        // TryBeginCancellation; this method only completes bounded cleanup.
     }
 
     public void AddGuidance(string guidance)
@@ -1744,6 +1742,12 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         {
             try { await _bridge.EndTaskAsync(runtime.TaskId, CancellationToken.None); } catch { }
             runtime.VisionRecovery = false;
+            // Cancellation may publish its terminal UI state before this task
+            // has finished unwinding. Release mutable task content here, on
+            // the execution owner, rather than racing a concurrent clear
+            // against planner/executor code that is still observing the token.
+            if (IsTerminal(runtime.State))
+                ReleaseTaskContent(runtime);
             Publish(runtime);
         }
     }
@@ -4743,7 +4747,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
 
             await Task.Delay(90, token);
             token.ThrowIfCancellationRequested();
-            BrowserTrustedInput.Paste(before.Title);
+            BrowserTrustedInput.Paste(before.Title, token);
             await Task.Delay(550, token);
             token.ThrowIfCancellationRequested();
             var after = await _bridge.ObserveAsync(runtime.TaskId, before.TabId, token);
@@ -4783,9 +4787,9 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         {
                             BrowserTrustedInput.SelectPreviousText(
                                 markerElementCount,
-                                after.Title);
+                                after.Title, token);
                             await Task.Delay(140, token);
-                            BrowserTrustedInput.CopySelection(after.Title);
+                            BrowserTrustedInput.CopySelection(after.Title, token);
                             await Task.Delay(280, token);
                             var copiedText = ClipboardHelper.GetText();
                             valueMatches = string.Equals(
@@ -4794,7 +4798,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                                 StringComparison.Ordinal);
                             if (valueMatches)
                             {
-                                BrowserTrustedInput.DeleteSelection(after.Title);
+                                BrowserTrustedInput.DeleteSelection(after.Title, token);
                                 await Task.Delay(180, token);
                                 after = await _bridge.ObserveAsync(
                                     runtime.TaskId,
@@ -4808,7 +4812,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                                 // Never delete an unverified selection: if the
                                 // paste did not land, that could remove content
                                 // that was already in the user's document.
-                                BrowserTrustedInput.CollapseSelectionToEnd(after.Title);
+                                BrowserTrustedInput.CollapseSelectionToEnd(after.Title, token);
                             }
                             AppLog.Info(
                                 $"Browser editor read-back: task={runtime.TaskId} expectedLength={action.Text.Length} "
@@ -4931,7 +4935,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             action,
             before,
             control,
-            () => BrowserTrustedInput.PressEnter(before.Title),
+            () => BrowserTrustedInput.PressEnter(before.Title, token),
             token);
 
     private async Task<BrowserActionReceipt> ExecuteTrustedSpaceAsync(
@@ -4945,7 +4949,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             action,
             before,
             control,
-            () => BrowserTrustedInput.PressSpace(before.Title),
+            () => BrowserTrustedInput.PressSpace(before.Title, token),
             token);
 
     private async Task<BrowserActionReceipt> ExecuteTrustedAltArrowDownAsync(
@@ -4959,7 +4963,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             action,
             before,
             control,
-            () => BrowserTrustedInput.PressAltArrowDown(before.Title),
+            () => BrowserTrustedInput.PressAltArrowDown(before.Title, token),
             token);
 
     private async Task<BrowserActionReceipt> ExecuteTrustedListboxSelectionAsync(
@@ -4976,7 +4980,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
 
         token.ThrowIfCancellationRequested();
         await Task.Delay(75, token);
-        BrowserTrustedInput.TypeTextAndPressEnter(requestedOption, before.Title);
+        BrowserTrustedInput.TypeTextAndPressEnter(requestedOption, before.Title, token);
         await Task.Delay(650, token);
         token.ThrowIfCancellationRequested();
         var after = await _bridge.ObserveAsync(runtime.TaskId, before.TabId, token);
@@ -5213,6 +5217,15 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         string action,
         string result)
     {
+        if (runtime.Cancellation.IsCancellationRequested
+            && !string.IsNullOrWhiteSpace(runtime.CancellationReason)
+            && state != BrowserTaskState.Cancelled)
+        {
+            state = BrowserTaskState.Cancelled;
+            outcome = BrowserAutomationOutcome.Cancelled;
+            action = "Browser automation cancelled.";
+            result = "";
+        }
         runtime.UserPaused = false;
         runtime.Intervention = null;
         runtime.PauseGate.Resume();
@@ -5227,7 +5240,14 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 : "";
         Publish(runtime);
         AnnounceOutcome(runtime, state);
-        ReleaseTaskContent(runtime);
+        // An explicit cancel becomes visible immediately, but its execution
+        // task can still be unwinding. Do not clear collections concurrently
+        // with that owner; ExecuteAsync releases them in its finally block.
+        if (state != BrowserTaskState.Cancelled
+            || runtime.Execution?.IsCompleted != false)
+        {
+            ReleaseTaskContent(runtime);
+        }
     }
 
     private static void ReleaseTaskContent(Runtime runtime)
@@ -5324,6 +5344,14 @@ public sealed class BrowserAutomationCoordinator : IDisposable
 
     private void SetState(Runtime runtime, BrowserTaskState state, string action)
     {
+        if (runtime.Cancellation.IsCancellationRequested
+            && !string.IsNullOrWhiteSpace(runtime.CancellationReason)
+            && state is not BrowserTaskState.Cancelling and not BrowserTaskState.Cancelled)
+        {
+            AppLog.Info(
+                $"Ignored stale browser state after cancellation: task={runtime.TaskId} state={state}");
+            return;
+        }
         if (runtime.UserPaused
             && state is not BrowserTaskState.Cancelling
             and not BrowserTaskState.Cancelled
@@ -5369,8 +5397,20 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         if (snapshot == null)
             return;
         lock (_sync)
+        {
+            // A cancelled runtime can finish after the user has started a new
+            // task. It no longer owns global status or the progress surface.
+            if (!ReferenceEquals(_active, runtime))
+            {
+                AppLog.Info($"Ignored stale browser publish: task={runtime.TaskId}");
+                return;
+            }
             _last = snapshot;
-        StatusChanged?.Invoke(snapshot);
+            // Keep status ordering atomic with _active replacement. The only
+            // UI subscriber marshals asynchronously, so this does not block on
+            // rendering and a newer runtime is always enqueued afterward.
+            StatusChanged?.Invoke(snapshot);
+        }
     }
 
     private static BrowserAutomationSnapshot BuildSnapshot(Runtime runtime)
