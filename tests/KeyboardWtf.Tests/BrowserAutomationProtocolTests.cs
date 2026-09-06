@@ -9,6 +9,63 @@ namespace KeyboardWtf.Tests;
 public sealed class BrowserAutomationProtocolTests
 {
     [Theory]
+    [InlineData("type")]
+    [InlineData("paste")]
+    public void Planner_wire_write_without_mode_is_rejected_even_when_reasoning_says_replace(string type)
+    {
+        // Captured real planner failure: full final value, but no action.replace.
+        var json = JsonSerializer.Serialize(new
+        {
+            evaluation = "Use replace=true to preserve the existing text and add the suffix.",
+            action = new { type, targetId = "notes", text = "Existing note / reviewed" },
+        });
+        Assert.Throws<InvalidDataException>(() => BrowserAutomationPlanner.ParseDecision(json));
+    }
+
+    [Theory]
+    [InlineData("type", true, "Existing note / reviewed")]
+    [InlineData("type", false, " / reviewed")]
+    [InlineData("paste", true, "Replacement")]
+    [InlineData("paste", false, " suffix")]
+    public void Planner_wire_write_preserves_explicit_replacement_or_insertion(string type, bool replace, string text)
+    {
+        var json = JsonSerializer.Serialize(new { action = new { type, replace, text } });
+        var action = BrowserAutomationPlanner.ParseDecision(json).Action;
+        Assert.Equal(replace, action.Replace);
+        Assert.Equal(text, action.Text);
+    }
+
+    [Fact]
+    public async Task Ambiguous_wire_write_uses_existing_single_retry_and_never_executes()
+    {
+        var calls = 0;
+        var decision = await BrowserAutomationPlanner.ExecutePaidPlanWithMalformedRetryAsync(
+            _ =>
+            {
+                calls++;
+                return Task.FromResult(BrowserAutomationPlanner.ParseDecision(calls == 1
+                    ? "{\"action\":{\"type\":\"type\",\"text\":\"Existing note / reviewed\"}}"
+                    : "{\"action\":{\"type\":\"type\",\"text\":\" / reviewed\",\"replace\":false}}"));
+            }, CancellationToken.None);
+        Assert.Equal(2, calls);
+        Assert.False(decision.Action.Replace);
+        Assert.Equal(" / reviewed", decision.Action.Text);
+    }
+
+    [Fact]
+    public void Planner_write_mode_is_required_by_schema_and_described_to_model()
+    {
+        var schema = typeof(BrowserAutomationPlanner).GetField("Schema",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetValue(null);
+        var json = JsonSerializer.SerializeToElement(schema);
+        var required = json.GetProperty("properties").GetProperty("action").GetProperty("required");
+        Assert.Contains(required.EnumerateArray(), item => item.GetString() == "replace");
+        var prompt = BrowserAutomationPlanner.BuildPrompt("Edit the notes", new(), [], []);
+        Assert.Contains("only the new text to insert/append", prompt);
+        Assert.Contains("complete desired field value", prompt);
+    }
+
+    [Theory]
     [InlineData("No tab with id: 42.")]
     [InlineData("The requested tab is not owned by this browser task.")]
     public void Missing_task_tab_failures_get_one_bounded_recovery(string error)
@@ -2677,70 +2734,6 @@ public sealed class BrowserAutomationProtocolTests
             cleared,
             action,
             receipt));
-    }
-
-    [Fact]
-    public void Complete_form_field_assignment_replaces_a_restored_stale_value()
-    {
-        var action = new BrowserPlannerAction
-        {
-            Type = "type",
-            TargetId = "first-name",
-            TargetName = "First Name",
-            Text = "Morgan",
-        };
-        var control = new BrowserControl
-        {
-            Id = "first-name",
-            Role = "textbox",
-            AccessibleName = "First Name",
-            Value = "Avery",
-            Editable = true,
-            SafeActions = ["focus", "type"],
-        };
-
-        Assert.True(BrowserAutomationCoordinator.ShouldReplaceExistingEditableValue(
-            action,
-            control,
-            "Fill the First Name field with Morgan.",
-            "Fill the known form values."));
-
-        control.Value = "Morgan";
-        Assert.False(BrowserAutomationCoordinator.ShouldReplaceExistingEditableValue(
-            action,
-            control,
-            "Fill the First Name field with Morgan.",
-            "Fill the known form values."));
-    }
-
-    [Theory]
-    [InlineData("Append this sentence to the field.")]
-    [InlineData("Continue typing after the existing text.")]
-    [InlineData("Add this value to the end.")]
-    public void Explicit_additive_typing_does_not_replace_existing_text(string request)
-    {
-        var action = new BrowserPlannerAction
-        {
-            Type = "type",
-            TargetId = "notes",
-            TargetName = "Notes",
-            Text = "Another sentence",
-        };
-        var control = new BrowserControl
-        {
-            Id = "notes",
-            Role = "textbox",
-            AccessibleName = "Notes",
-            Value = "Existing sentence",
-            Editable = true,
-            SafeActions = ["focus", "type"],
-        };
-
-        Assert.False(BrowserAutomationCoordinator.ShouldReplaceExistingEditableValue(
-            action,
-            control,
-            "Type another sentence.",
-            request));
     }
 
     [Fact]

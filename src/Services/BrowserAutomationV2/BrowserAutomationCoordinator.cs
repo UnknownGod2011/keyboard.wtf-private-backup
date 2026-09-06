@@ -2281,43 +2281,6 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         && (control.Role.Equals("combobox", StringComparison.OrdinalIgnoreCase)
             || control.Role.Equals("listbox", StringComparison.OrdinalIgnoreCase));
 
-    internal static bool ShouldReplaceExistingEditableValue(
-        BrowserPlannerAction action,
-        BrowserControl control,
-        string immediateGoal,
-        string userConstraints)
-    {
-        if (action?.Type != "type"
-            || action.Replace
-            || control?.Editable != true
-            || string.IsNullOrWhiteSpace(action.Text)
-            || string.IsNullOrWhiteSpace(control.Value)
-            || EquivalentInputValue(control.Value, action.Text, allowContainedText: false))
-        {
-            return false;
-        }
-
-        var intent = $"{immediateGoal} {userConstraints}";
-        if (Regex.IsMatch(
-                intent,
-                @"\b(?:append|continue\s+typing|keep\s+(?:the\s+)?existing|without\s+(?:clearing|replacing)|add\s+.+?\s+(?:after|to\s+the\s+end))\b",
-                RegexOptions.IgnoreCase))
-        {
-            return false;
-        }
-
-        // Planner `type` actions describe a complete value for an ordinary
-        // editable field. When a controlled form restores an older value,
-        // treating an omitted `replace` flag as append can duplicate the text
-        // forever while every read-back correctly reports a mismatch. Preserve
-        // explicit additive requests, but otherwise make the field assignment
-        // atomic at the existing executor boundary.
-        return control.SafeActions.Contains("type", StringComparer.OrdinalIgnoreCase)
-            && (control.Role.Equals("textbox", StringComparison.OrdinalIgnoreCase)
-                || control.Role.Equals("searchbox", StringComparison.OrdinalIgnoreCase)
-                || control.InputType.Length > 0);
-    }
-
     internal static bool TryNormalizeNativeDateTyping(
         BrowserPlannerAction action,
         BrowserControl control,
@@ -2444,16 +2407,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             runtime.History.Add(
                 "Normalized an explicit natural-language date to the native date control's ISO value format.");
         }
-        if (ShouldReplaceExistingEditableValue(
-                action,
-                liveTarget,
-                immediateGoal,
-                BuildUserConstraintContext(runtime)))
-        {
-            action.Replace = true;
-            runtime.History.Add(
-                "Normalized the complete form-field assignment to replace a stale existing value.");
-        }
+        // Text mutation mode is explicit in the validated planner action.
+        // Do not reinterpret insertion as replacement from words in the goal.
         if (IsBroadNonEditorContainerAction(action, liveTarget))
         {
             return new BrowserActionReceipt

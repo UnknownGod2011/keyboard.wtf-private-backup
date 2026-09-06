@@ -6,6 +6,17 @@ using Xunit;
 
 public sealed class FinalPolishRegressionTests : IDisposable
 {
+    [Fact]
+    public void Account_usable_now_excludes_reserved_credits_and_discloses_the_hold()
+    {
+        var html = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "src", "Resources", "web", "settings.html"));
+        var usage = html[html.IndexOf("document.getElementById('paidUsage').textContent", StringComparison.Ordinal)..];
+        usage = usage[..usage.IndexOf("const signInMessage", StringComparison.Ordinal)];
+        Assert.Contains("formatPaidCredits(available)", usage);
+        Assert.DoesNotContain("formatPaidCredits(totalUsable)", usage);
+        Assert.Contains("reserved pending settlement", usage);
+    }
+
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
         "keyboard-wtf-final-polish-tests",

@@ -26,8 +26,9 @@ public sealed class JarvisServerEventOrderingTests
         try
         {
             await run.ToolEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
-            var shutdown = await Task.WhenAny(run.Ended.Task, Task.Delay(500));
-            Assert.Same(run.Ended.Task, shutdown);
+            await reader.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.True(run.LocalTerminationRequested() || run.Ended.Task.IsCompletedSuccessfully);
+            await run.Ended.Task.WaitAsync(TimeSpan.FromSeconds(3));
             Assert.True(run.Session.IsCancellationRequested);
         }
         finally
@@ -84,8 +85,12 @@ public sealed class JarvisServerEventOrderingTests
         try
         {
             await run.ToolEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
-            var cancelled = await Task.WhenAny(run.ToolCancelled.Task, Task.Delay(500));
-            Assert.Same(run.ToolCancelled.Task, cancelled);
+            // ReadAsync and this assertion both resume from ToolEntered. First
+            // prove that the cancellation frame was delivered; otherwise a
+            // loaded test runner can race its 500ms timer against its own sender.
+            await reader.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.True(run.ToolToken.IsCancellationRequested);
+            await run.ToolCancelled.Task.WaitAsync(TimeSpan.FromSeconds(3));
             Assert.False(run.Session.IsCancellationRequested);
         }
         finally
@@ -105,9 +110,8 @@ public sealed class JarvisServerEventOrderingTests
         Assert.Equal(1, run.PendingToolCount());
 
         run.Push("""{"serverContent":{"inputTranscription":{"text":"That's all, goodbye."}}}""");
-        var shutdown = await Task.WhenAny(run.Ended.Task, Task.Delay(500));
-
-        Assert.Same(run.Ended.Task, shutdown);
+        Assert.True(run.LocalTerminationRequested() || run.Ended.Task.IsCompletedSuccessfully);
+        await run.Ended.Task.WaitAsync(TimeSpan.FromSeconds(3));
         Assert.True(run.Session.IsCancellationRequested);
     }
 
@@ -143,6 +147,7 @@ public sealed class JarvisServerEventOrderingTests
         public CancellationTokenSource Session { get; } = new();
         public TaskCompletionSource<bool> ToolEntered { get; } = NewSignal();
         public TaskCompletionSource<bool> ToolCancelled { get; } = NewSignal();
+        public CancellationToken ToolToken { get; private set; }
         public TaskCompletionSource<bool> Ended { get; } = NewSignal();
         public TaskCompletionSource<bool> UserObserved { get; } = NewSignal();
 
@@ -162,6 +167,7 @@ public sealed class JarvisServerEventOrderingTests
             _service.SetUserTranscriptObserver(_ => UserObserved.TrySetResult(true));
             _service.SetToolExecutor(async (_, _, token) =>
             {
+                ToolToken = token;
                 ToolEntered.TrySetResult(true);
                 try { await _release.Task.WaitAsync(token); }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -197,6 +203,9 @@ public sealed class JarvisServerEventOrderingTests
                 : (int)dispatcher.GetType().GetProperty(
                     "PendingCount", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(dispatcher)!;
         }
+
+        public bool LocalTerminationRequested() => (int)typeof(GeminiLiveConversationService).GetField(
+            "_autoEnding", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(_service)! == 1;
 
         public void Release()
         {

@@ -142,7 +142,7 @@ public sealed class BrowserAutomationPlanner : IDisposable
                     ["submitAfter"] = new { type = "boolean" },
                     ["captureBeforeAction"] = new { type = "boolean" },
                 },
-                required = new[] { "type" },
+                required = new[] { "type", "replace" },
             },
             ["done"] = new { type = "boolean" },
             ["resultSummary"] = StringSchema(),
@@ -425,8 +425,7 @@ public sealed class BrowserAutomationPlanner : IDisposable
             .GetProperty("parts")[0]
             .GetProperty("text")
             .GetString();
-        return JsonSerializer.Deserialize<BrowserPlannerDecision>(text ?? "{}", JsonOptions)
-            ?? throw new InvalidDataException("Gemini returned an empty browser plan.");
+        return ParseDecision(text ?? "{}");
     }
 
     private async Task<BrowserPlannerDecision> SendPaidStructuredAsync(
@@ -442,8 +441,27 @@ public sealed class BrowserAutomationPlanner : IDisposable
             image is null ? null : new[] { image },
             image is null ? "browser-plan" : "browser-vision-recovery",
             token);
-        return JsonSerializer.Deserialize<BrowserPlannerDecision>(response.Text, JsonOptions)
+        return ParseDecision(response.Text);
+    }
+
+    internal static BrowserPlannerDecision ParseDecision(string text)
+    {
+        using var document = JsonDocument.Parse(text);
+        var decision = document.RootElement.Deserialize<BrowserPlannerDecision>(JsonOptions)
             ?? throw new InvalidDataException("Cloud AI returned an empty browser plan.");
+        if (decision.Action?.Type?.Trim().ToLowerInvariant() is "type" or "paste")
+        {
+            // Missing is not append: a model may describe a replacement in its
+            // reasoning yet omit the flag. Reject that ambiguous wire action
+            // through the existing bounded malformed-plan recovery.
+            var action = document.RootElement.EnumerateObject().First(
+                property => property.Name.Equals("action", StringComparison.OrdinalIgnoreCase)).Value;
+            if (!action.EnumerateObject().Any(property =>
+                    property.Name.Equals("replace", StringComparison.OrdinalIgnoreCase)
+                    && property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False))
+                throw new InvalidDataException("A browser text write must explicitly specify replace=true or replace=false.");
+        }
+        return decision;
     }
 
     internal static string BuildPrompt(
@@ -468,6 +486,7 @@ public sealed class BrowserAutomationPlanner : IDisposable
         builder.AppendLine("Task-owned tab history entries use stable target IDs such as tab:123. To switch among those tabs, use activate_tab and copy that exact tab:<id> value into action.targetId; never guess a tab ID.");
         builder.AppendLine("For an obvious search field, type the query with replace=true and submitAfter=true.");
         builder.AppendLine("Use paste for long text or a rich/contenteditable document editor. Use type for ordinary form inputs. Only target a control that is explicitly editable; never use a broad document, tabs, toolbar, side-panel, or container merely because its label sounds relevant.");
+        builder.AppendLine("Every type/paste action must explicitly set action.replace. With replace=true, action.text is the complete desired field value. With replace=false, action.text is only the new text to insert/append, never the existing value plus the new text. Put the flag in action, not merely in evaluation. For non-writing actions set replace=false.");
         builder.AppendLine("If the user has already placed the cursor in a verified editor, paste may omit a target. The executor will use that active cursor only when the live helper confirms it is an editable surface; otherwise ask for the smallest necessary user action.");
         builder.AppendLine("Treat every independently verified field value, selected option, completed navigation, and date-range phase as a preserved checkpoint. Do not overwrite it, repeat it after a harmless rerender, or navigate back to an ancestor/home page unless fresh evidence proves the checkpoint is wrong.");
         builder.AppendLine("When the current URL and page state already contain the requested entities or parameters, continue from that progressed state and inspect the result; never restart the workflow merely because the page layout is unfamiliar.");

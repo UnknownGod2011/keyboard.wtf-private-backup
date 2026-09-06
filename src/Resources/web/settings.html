@@ -2663,7 +2663,9 @@ function renderPaidAccount(account) {
   document.getElementById('paidBalanceBar').style.width = accountLoading ? '0' : `${percentage}%`;
   document.getElementById('paidUsage').textContent = accountLoading
     ? 'Loading server-owned usage...'
-    : `${formatPaidCredits(used)} used this cycle - ${formatPaidCredits(totalUsable)} usable now`;
+    : `${formatPaidCredits(used)} used this cycle - ${formatPaidCredits(available)} usable now`
+      + (Number(account.reservedCreditMicros || 0) > 0
+        ? ` - ${formatPaidCredits(account.reservedCreditMicros)} reserved pending settlement` : '');
   const signInMessage = signInState === 'starting'
     ? 'Starting secure Google sign-in...'
     : signInState === 'waiting_for_google'
