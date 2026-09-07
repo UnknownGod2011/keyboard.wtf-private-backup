@@ -1,6 +1,6 @@
 # keyboard.wtf 1.4.19 stabilization contract
 
-Current checkpoint: source `7824b192791fdec9267c778b720329046693c6cc`; installer `74DD9513B5117FF2909CE8910AB84F712584C74670E8F8049203BF349F36B205` (84,276,700 bytes); Helper 2.1.26 / protocol 2.1.21. Human evidence overrides internal evidence.
+Installed checkpoint: source `171662e3cd28c5f17f1c8851db9314842c0218d7`; installer `7A732BD8984459D744ACB525782C04B7BF3192B3AB9D09D722E5A2B56EC56B14` (84,264,285 bytes); Helper 2.1.26 / protocol 2.1.21. Human evidence overrides internal evidence.
 
 ## P01 — Startup consistency
 Status: FIXING
@@ -205,10 +205,10 @@ Protect: Existing writing quality.
 ## P21 — Learned mappings and workflows
 Status: FIXED-SOURCE
 Expected: A selected URL or valid hostname plus a custom trigger stores one durable Link that executes after conversation/app restart and outranks generic lookup.
-Latest evidence: Latest human flow selected a bare hostname and Link persistence visibly failed; no mapping was written.
-Root cause: Link selection/persistence rejected scheme-less hosts, and pre-route lookup rejected exact custom aliases containing web-target words.
-Fix: One strict web normalizer now canonicalizes safe bare hosts to HTTPS across selection/parser/persistence/open; exact aliases resolve without vocabulary filtering.
-Evidence: 61 focused routing/memory/browser tests pass, including Link-only save, update, malformed rejection, reload, and custom-trigger resolution.
+Latest evidence: Exact installed `171662e3...` selected a bare hostname, accepted the custom-trigger request, but left the previous Link unchanged and persisted nothing new.
+Root cause: Live instructions allow selection fallback, but the advertised `remember_link_alias` schema still requires `url`; workflow pre-route cannot own the selected-target form.
+Fix: Make the existing Link tool's URL optional as documented so its sole local owner captures, validates and persists the current selection.
+Evidence: Session `2db82030...` proves the failure; 47 focused mapping/routing, 940 desktop, 262 backend and 12 Firestore tests now pass with the real Live schema and existing selection fallback aligned.
 Touches: Learned mapping parser/store/route.
 Protect: Workflow/tombstone behavior.
 

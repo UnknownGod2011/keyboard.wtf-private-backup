@@ -2276,8 +2276,7 @@ public sealed class GeminiLiveConversationService : IDisposable
                         ["alias"] = Schema("string", "The phrase the user wants to say later."),
                         ["url"] = Schema("string", "The http/https URL or valid hostname. Omit it to use the current selection."),
                     },
-                    "alias",
-                    "url"),
+                    "alias"),
                 FunctionDeclaration(
                     "remember_workflow_alias",
                     "Save a user-approved local alias for an existing workflow.",

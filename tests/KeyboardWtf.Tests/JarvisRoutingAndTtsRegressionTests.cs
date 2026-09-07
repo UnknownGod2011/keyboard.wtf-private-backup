@@ -39,6 +39,30 @@ public sealed class JarvisRoutingAndTtsRegressionTests
     }
 
     [Fact]
+    public void Link_alias_tool_allows_the_existing_selection_fallback()
+    {
+        var buildTools = typeof(GeminiLiveConversationService).GetMethod(
+            "BuildTools",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(buildTools);
+
+        var tools = JsonSerializer.SerializeToElement(buildTools.Invoke(null, null));
+        var declaration = tools[0]
+            .GetProperty("functionDeclarations")
+            .EnumerateArray()
+            .Single(item => item.GetProperty("name").GetString() == "remember_link_alias");
+        var parameters = declaration.GetProperty("parameters");
+        var required = parameters.GetProperty("required")
+            .EnumerateArray()
+            .Select(item => item.GetString())
+            .ToArray();
+
+        Assert.Contains("alias", required);
+        Assert.DoesNotContain("url", required);
+        Assert.True(parameters.GetProperty("properties").TryGetProperty("url", out _));
+    }
+
+    [Fact]
     public void Deterministic_tool_failure_is_not_executed_twice_in_one_turn()
     {
         var guard = new ToolAttemptGuard();
