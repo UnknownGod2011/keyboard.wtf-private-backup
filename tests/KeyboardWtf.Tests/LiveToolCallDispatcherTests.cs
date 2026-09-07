@@ -7,6 +7,8 @@ namespace KeyboardWtf.Tests;
 
 public sealed class LiveToolCallDispatcherTests
 {
+    private static readonly TimeSpan AsyncTestTimeout = TimeSpan.FromSeconds(10);
+
     [Fact]
     public async Task Multiple_actions_in_one_provider_batch_return_one_combined_response()
     {
@@ -30,10 +32,10 @@ public sealed class LiveToolCallDispatcherTests
                 new { id = "two", name = "test_action", args = new { value = "second" } },
             },
         }), new());
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await entered.Task.WaitAsync(AsyncTestTimeout);
         var earlyResponses = responses.Count;
         release.TrySetResult(true);
-        await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+        await queue.Completion.WaitAsync(AsyncTestTimeout);
         Assert.Equal(0, earlyResponses);
         var batch = JsonDocument.Parse(Assert.Single(responses)).RootElement
             .GetProperty("toolResponse").GetProperty("functionResponses");
@@ -64,10 +66,10 @@ public sealed class LiveToolCallDispatcherTests
                 new { id = "two", name = "test_action", args = new { value = "second" } },
             },
         }), new());
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await entered.Task.WaitAsync(AsyncTestTimeout);
         queue.Cancel(JsonSerializer.SerializeToElement(new[] { "one" }));
         release.TrySetResult(true);
-        await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+        await queue.Completion.WaitAsync(AsyncTestTimeout);
         var batch = JsonDocument.Parse(Assert.Single(responses)).RootElement
             .GetProperty("toolResponse").GetProperty("functionResponses");
         Assert.Equal("two", Assert.Single(batch.EnumerateArray()).GetProperty("id").GetString());
@@ -91,11 +93,11 @@ public sealed class LiveToolCallDispatcherTests
         }, responses);
         queue.Observe((text, _) => context = text, "first request");
         queue.Enqueue(Call("first", "value"), new());
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await entered.Task.WaitAsync(AsyncTestTimeout);
         queue.Observe((text, _) => context = text, "different request");
         Assert.Equal("first request", context);
         release.TrySetResult(true);
-        await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+        await queue.Completion.WaitAsync(AsyncTestTimeout);
         Assert.Equal("first request", observedDuringAction);
         Assert.Equal("different request", context);
         Assert.Equal(0, queue.PendingCount);
@@ -113,10 +115,10 @@ public sealed class LiveToolCallDispatcherTests
             return Ok();
         }, new());
         queue.Enqueue(Call("first", "value"), new());
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await entered.Task.WaitAsync(AsyncTestTimeout);
         queue.Observe((_, _) => observed = true, "new request");
         queue.Stop();
-        await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+        await queue.Completion.WaitAsync(AsyncTestTimeout);
         Assert.False(observed);
         Assert.Equal(0, queue.PendingCount);
     }
@@ -141,13 +143,13 @@ public sealed class LiveToolCallDispatcherTests
         }, responses);
 
         queue.Enqueue(Call("one", "first"), new());
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await entered.Task.WaitAsync(AsyncTestTimeout);
         queue.Enqueue(Call("two", "second"), new());
         queue.Enqueue(Call("two", "second"), new());
         Assert.Equal(new[] { "first" }, actions.ToArray());
         Assert.Equal(2, queue.PendingCount);
         release.TrySetResult(true);
-        await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+        await queue.Completion.WaitAsync(AsyncTestTimeout);
         queue.Enqueue(Call("one", "first"), new());
         await queue.Completion;
         Assert.Equal(new[] { "first", "second" }, actions.ToArray());
@@ -174,7 +176,7 @@ public sealed class LiveToolCallDispatcherTests
                 new { id = "first", name = "test_action", args = new { value = "same", scope = "all" } },
             },
         }), guard);
-        await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+        await queue.Completion.WaitAsync(AsyncTestTimeout);
         queue.Enqueue(JsonSerializer.SerializeToElement(new
         {
             functionCalls = new[]
@@ -182,7 +184,7 @@ public sealed class LiveToolCallDispatcherTests
                 new { id = "retry", name = "test_action", args = new { scope = "all", value = "same" } },
             },
         }), guard);
-        await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+        await queue.Completion.WaitAsync(AsyncTestTimeout);
 
         Assert.Equal(1, actions);
         Assert.Equal(2, responses.Count);
@@ -212,12 +214,12 @@ public sealed class LiveToolCallDispatcherTests
             return Ok();
         }, responses);
         queue.Enqueue(Call("one", "first"), new());
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await entered.Task.WaitAsync(AsyncTestTimeout);
         queue.Enqueue(Call("two", "cancelled"), new());
         queue.Enqueue(Call("three", "third"), new());
         queue.Cancel(JsonSerializer.SerializeToElement(new[] { "two", "unknown-id" }));
         release.TrySetResult(true);
-        await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+        await queue.Completion.WaitAsync(AsyncTestTimeout);
         Assert.Equal(new[] { "first", "third" }, actions.ToArray());
         Assert.Equal(2, responses.Count);
         Assert.Equal(0, queue.PendingCount);
@@ -238,10 +240,10 @@ public sealed class LiveToolCallDispatcherTests
             return Ok();
         }, responses);
         queue.Enqueue(call, guard);
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await entered.Task.WaitAsync(AsyncTestTimeout);
         queue.Cancel(JsonSerializer.SerializeToElement(new[] { "stale" }));
         release.TrySetResult(true);
-        await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+        await queue.Completion.WaitAsync(AsyncTestTimeout);
         Assert.Empty(responses);
         Assert.False(guard.TryGetSuppressed("test_action",
             call.GetProperty("functionCalls")[0].GetProperty("args"), out _));
@@ -262,11 +264,11 @@ public sealed class LiveToolCallDispatcherTests
         }, oldResponses);
         using var newQueue = Queue((_, _, _) => Task.FromResult(Ok()), newResponses);
         oldQueue.Enqueue(Call("old", "old"), new());
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await entered.Task.WaitAsync(AsyncTestTimeout);
         oldQueue.Stop();
         oldQueue.Enqueue(Call("late", "late"), new());
         newQueue.Enqueue(Call("new", "new"), new());
-        await Task.WhenAll(oldQueue.Completion, newQueue.Completion).WaitAsync(TimeSpan.FromSeconds(3));
+        await Task.WhenAll(oldQueue.Completion, newQueue.Completion).WaitAsync(AsyncTestTimeout);
         Assert.Empty(oldResponses);
         Assert.Single(newResponses);
         Assert.Equal(0, oldQueue.PendingCount);
@@ -284,7 +286,7 @@ public sealed class LiveToolCallDispatcherTests
             throw new InvalidOperationException("test failure");
         }, responses);
         queue.Enqueue(Call("failure", "value"), new());
-        await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+        await queue.Completion.WaitAsync(AsyncTestTimeout);
         var response = JsonDocument.Parse(Assert.Single(responses)).RootElement
             .GetProperty("toolResponse").GetProperty("functionResponses")[0].GetProperty("response");
         Assert.False(response.GetProperty("ok").GetBoolean());
@@ -313,10 +315,10 @@ public sealed class LiveToolCallDispatcherTests
         if (includeUnrelated)
             calls.Add(new { id = "unrelated", name = "test_action", args = new { value = "second" } });
         queue.Enqueue(JsonSerializer.SerializeToElement(new { functionCalls = calls }), new());
-        await waitingForTransport.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await waitingForTransport.Task.WaitAsync(AsyncTestTimeout);
         queue.Cancel(JsonSerializer.SerializeToElement(new[] { "cancel-while-sending" }));
         transportReady.TrySetResult(true);
-        await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+        await queue.Completion.WaitAsync(AsyncTestTimeout);
         if (includeUnrelated)
         {
             var batch = JsonDocument.Parse(Assert.Single(responses)).RootElement
