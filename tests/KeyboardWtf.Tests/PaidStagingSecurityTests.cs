@@ -272,6 +272,19 @@ public sealed class PaidStagingSecurityTests
         }
     }
 
+    [Fact]
+    public void Proactive_access_token_refresh_is_scheduled_before_expiry()
+    {
+        var now = DateTimeOffset.Parse("2026-09-07T10:00:00Z");
+
+        Assert.Equal(
+            TimeSpan.FromMinutes(55),
+            PaidAccountService.ProactiveTokenRefreshDelay(now.AddHours(1), now));
+        Assert.Equal(
+            TimeSpan.FromSeconds(1),
+            PaidAccountService.ProactiveTokenRefreshDelay(now.AddMinutes(4), now));
+    }
+
     [Theory]
     [InlineData(401, true)]
     [InlineData(403, true)]

@@ -1208,10 +1208,21 @@ public sealed class CommandRegistry
             {
                 return ToolResult(
                     false,
-                    "The selected text is not a valid http or https link. Select one link and try again.",
+                    "The selected text is not a valid web link. Select one URL or hostname and try again.",
                     supported: false);
             }
             args = JsonSerializer.SerializeToElement(new { alias, url });
+        }
+        else if (!BrowserLauncherService.TryNormalizeUrl(url, out var normalizedUrl))
+        {
+            return ToolResult(
+                false,
+                "The supplied destination is not a valid web link.",
+                supported: false);
+        }
+        else
+        {
+            args = JsonSerializer.SerializeToElement(new { alias, url = normalizedUrl.AbsoluteUri });
         }
         return await _automation.ExecuteAsync("remember_link_alias", args, token);
     }
@@ -1224,9 +1235,8 @@ public sealed class CommandRegistry
             || !result.TryGetValue("text", out var textValue))
             return "";
         var text = textValue?.ToString()?.Trim() ?? "";
-        return Uri.TryCreate(text, UriKind.Absolute, out var uri)
-            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
-            ? uri.ToString()
+        return BrowserLauncherService.TryNormalizeUrl(text, out var uri)
+            ? uri.AbsoluteUri
             : "";
     }
 

@@ -30,7 +30,7 @@ public sealed class BrowserLauncherService
         browserUsed = "";
         if (!TryNormalizeUrl(url, out var uri))
         {
-            message = "Only absolute http and https links can be opened.";
+            message = "Only valid http/https links or web hostnames can be opened.";
             return false;
         }
 
@@ -138,8 +138,35 @@ public sealed class BrowserLauncherService
     public static bool TryNormalizeUrl(string url, out Uri uri)
     {
         uri = null;
-        return !string.IsNullOrWhiteSpace(url)
-            && Uri.TryCreate(url.Trim(), UriKind.Absolute, out uri)
+        var candidate = (url ?? "").Trim().Trim('"', '\'');
+        if (candidate.Length == 0)
+            return false;
+
+        var hasExplicitScheme = candidate.Contains("://", StringComparison.Ordinal);
+        if (!hasExplicitScheme)
+        {
+            // A selected or spoken web destination may reasonably be a bare
+            // hostname. Infer HTTPS only for an unambiguous DNS/IP host; never
+            // reinterpret free text, paths, credentials, or another scheme.
+            if (candidate.Any(char.IsWhiteSpace)
+                || candidate.Contains('\\')
+                || candidate.Contains('@')
+                || candidate.StartsWith("//", StringComparison.Ordinal)
+                || !Uri.TryCreate("https://" + candidate, UriKind.Absolute, out var inferred)
+                || string.IsNullOrWhiteSpace(inferred.Host)
+                || (Uri.CheckHostName(inferred.Host) == UriHostNameType.Unknown)
+                || (!inferred.Host.Contains('.')
+                    && Uri.CheckHostName(inferred.Host) != UriHostNameType.IPv4
+                    && Uri.CheckHostName(inferred.Host) != UriHostNameType.IPv6))
+            {
+                return false;
+            }
+
+            candidate = inferred.AbsoluteUri;
+        }
+
+        return Uri.TryCreate(candidate, UriKind.Absolute, out uri)
+            && !string.IsNullOrWhiteSpace(uri.Host)
             && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
     }
 

@@ -10,9 +10,10 @@ public sealed class JarvisRoutingAndTtsRegressionTests
     [Theory]
     [InlineData("https://example.com/portal", true)]
     [InlineData("http://localhost:8080/test", true)]
+    [InlineData("example.com", true)]
     [InlineData("javascript:alert(1)", false)]
     [InlineData("not a URL", false)]
-    public void Explicit_selected_link_alias_accepts_only_http_or_https(
+    public void Explicit_selected_link_alias_accepts_safe_web_destinations(
         string selected,
         bool expected)
     {
@@ -23,6 +24,18 @@ public sealed class JarvisRoutingAndTtsRegressionTests
         };
 
         Assert.Equal(expected, CommandRegistry.TryGetSelectedHttpUrl(result).Length > 0);
+    }
+
+    [Fact]
+    public void Selected_hostname_is_canonicalized_before_link_persistence()
+    {
+        var result = new Dictionary<string, object>
+        {
+            ["ok"] = true,
+            ["text"] = "example.com",
+        };
+
+        Assert.Equal("https://example.com/", CommandRegistry.TryGetSelectedHttpUrl(result));
     }
 
     [Fact]

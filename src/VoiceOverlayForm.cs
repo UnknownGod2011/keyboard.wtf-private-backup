@@ -94,10 +94,13 @@ internal sealed class VoiceOverlayForm : Form
     {
         get
         {
+            const int wsExTopmost = 0x00000008;
             const int wsExToolWindow = 0x00000080;
             const int wsExNoActivate = 0x08000000;
             var cp = base.CreateParams;
-            cp.ExStyle |= wsExToolWindow | wsExNoActivate;
+            // Put the invariant on every native handle, including a recreated
+            // one. This keeps Jarvis above ordinary apps without activating it.
+            cp.ExStyle |= wsExTopmost | wsExToolWindow | wsExNoActivate;
             return cp;
         }
     }

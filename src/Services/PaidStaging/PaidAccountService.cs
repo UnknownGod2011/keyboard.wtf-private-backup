@@ -92,6 +92,8 @@ internal sealed record PaidInlineAudio(string MimeType, string Data);
 internal sealed class PaidAccountService : IDisposable
 {
     internal static readonly TimeSpan TransportTimeout = TimeSpan.FromSeconds(75);
+    internal static readonly TimeSpan ProactiveTokenRefreshLead = TimeSpan.FromMinutes(5);
+    internal static readonly TimeSpan ProactiveTokenRefreshRetry = TimeSpan.FromMinutes(1);
     internal static readonly IReadOnlyList<TimeSpan> LiveSlotConflictRetryDelays =
     [
         TimeSpan.FromSeconds(1),
@@ -115,6 +117,7 @@ internal sealed class PaidAccountService : IDisposable
     private readonly Action<string> _browserLauncher;
     private readonly SemaphoreSlim _authGate = new(1, 1);
     private readonly object _signInSync = new();
+    private readonly System.Threading.Timer _proactiveTokenRefreshTimer;
     private PaidSessionTokens _tokens;
     private PaidAccountSnapshot _account;
     private Task<PaidAccountSnapshot> _activeSignInTask;
@@ -122,6 +125,7 @@ internal sealed class PaidAccountService : IDisposable
     private string _signInState = "idle";
     private DateTimeOffset? _signInExpiresAt;
     private string _lastError = "";
+    private int _proactiveTokenRefreshRunning;
     private bool _disposed;
 
     public PaidAccountService(
@@ -141,6 +145,11 @@ internal sealed class PaidAccountService : IDisposable
         // shared transport envelope above the longest supported paid request
         // so valid long Smart Writing work is not cut off by HttpClient first.
         _http.Timeout = TransportTimeout;
+        _proactiveTokenRefreshTimer = new System.Threading.Timer(
+            _ => _ = RefreshAccessTokenProactivelyAsync(),
+            null,
+            Timeout.InfiniteTimeSpan,
+            Timeout.InfiniteTimeSpan);
         _browserLauncher = browserLauncher ?? (url => Process.Start(new ProcessStartInfo
         {
             FileName = url,
@@ -189,6 +198,7 @@ internal sealed class PaidAccountService : IDisposable
             _lastError = UserError(exception);
             AppLog.Warning(exception, "Paid account startup refresh failed");
         }
+        ScheduleProactiveTokenRefresh();
     }
 
     public Task<PaidAccountSnapshot> SignInAsync(CancellationToken cancellationToken = default) =>
@@ -462,6 +472,7 @@ internal sealed class PaidAccountService : IDisposable
         {
             _tokens = null;
             _account = null;
+            CancelProactiveTokenRefresh();
             _sessionStore.Clear();
             _lastError = "";
             lock (_signInSync)
@@ -793,6 +804,7 @@ internal sealed class PaidAccountService : IDisposable
     {
         _tokens = null;
         _account = null;
+        CancelProactiveTokenRefresh();
         _sessionStore.Clear();
         _lastError = message ?? "The desktop session is no longer valid. Sign in again.";
         lock (_signInSync)
@@ -850,6 +862,64 @@ internal sealed class PaidAccountService : IDisposable
             response.DeviceId,
             deviceInstallationId);
         _sessionStore.Save(_tokens);
+        ScheduleProactiveTokenRefresh();
+    }
+
+    internal static TimeSpan ProactiveTokenRefreshDelay(
+        DateTimeOffset accessTokenExpiresAt,
+        DateTimeOffset now)
+    {
+        var delay = accessTokenExpiresAt - now - ProactiveTokenRefreshLead;
+        return delay > TimeSpan.FromSeconds(1) ? delay : TimeSpan.FromSeconds(1);
+    }
+
+    private void ScheduleProactiveTokenRefresh()
+    {
+        var tokens = _tokens;
+        if (_disposed || tokens is null)
+            return;
+        _proactiveTokenRefreshTimer.Change(
+            ProactiveTokenRefreshDelay(tokens.AccessTokenExpiresAt, DateTimeOffset.UtcNow),
+            Timeout.InfiniteTimeSpan);
+    }
+
+    private void CancelProactiveTokenRefresh() =>
+        _proactiveTokenRefreshTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+
+    private async Task RefreshAccessTokenProactivelyAsync()
+    {
+        if (_disposed || Interlocked.CompareExchange(ref _proactiveTokenRefreshRunning, 1, 0) != 0)
+            return;
+        try
+        {
+            if (_tokens is null)
+                return;
+            if (_tokens.AccessTokenExpiresAt > DateTimeOffset.UtcNow + ProactiveTokenRefreshLead)
+            {
+                ScheduleProactiveTokenRefresh();
+                return;
+            }
+            await RefreshTokensAsync(CancellationToken.None, forceRefresh: true);
+            AppLog.Info("Paid account access token refreshed before expiry");
+        }
+        catch (Exception) when (_disposed)
+        {
+            // App shutdown owns cancellation/disposal of background warmup.
+        }
+        catch (Exception exception) when (!_disposed && exception is not OperationCanceledException)
+        {
+            AppLog.Warning(exception, "Proactive paid access-token refresh failed; normal authenticated fallback remains available");
+            if (_tokens is not null)
+            {
+                _proactiveTokenRefreshTimer.Change(
+                    ProactiveTokenRefreshRetry,
+                    Timeout.InfiniteTimeSpan);
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _proactiveTokenRefreshRunning, 0);
+        }
     }
 
     private void OpenWeb(string relative)
@@ -953,9 +1023,11 @@ internal sealed class PaidAccountService : IDisposable
         if (_disposed)
             return;
         _disposed = true;
+        _proactiveTokenRefreshTimer.Dispose();
         CancelSignIn();
         _activeSignInCancellation?.Dispose();
-        if (_activeSignInTask is not { IsCompleted: false })
+        if (_activeSignInTask is not { IsCompleted: false }
+            && Volatile.Read(ref _proactiveTokenRefreshRunning) == 0)
             _authGate.Dispose();
         _http.Dispose();
     }

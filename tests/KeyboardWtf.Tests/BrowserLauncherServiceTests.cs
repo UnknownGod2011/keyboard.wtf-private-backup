@@ -27,4 +27,26 @@ public sealed class BrowserLauncherServiceTests
     {
         Assert.False(BrowserLauncherService.TryNormalizeUrl("file:///C:/Windows", out _));
     }
+
+    [Theory]
+    [InlineData("https://example.com/portal", "https://example.com/portal")]
+    [InlineData("http://localhost:8080/test", "http://localhost:8080/test")]
+    [InlineData("example.com", "https://example.com/")]
+    [InlineData("example.com/path?q=1", "https://example.com/path?q=1")]
+    public void WebDestinationsUseOneSafeCanonicalForm(string input, string expected)
+    {
+        Assert.True(BrowserLauncherService.TryNormalizeUrl(input, out var uri));
+        Assert.Equal(expected, uri.AbsoluteUri);
+    }
+
+    [Theory]
+    [InlineData("not a URL")]
+    [InlineData("localhost")]
+    [InlineData("user@example.com")]
+    [InlineData("javascript:alert(1)")]
+    [InlineData("C:\\Windows\\file.example")]
+    public void AmbiguousOrUnsafeBareDestinationsAreRejected(string input)
+    {
+        Assert.False(BrowserLauncherService.TryNormalizeUrl(input, out _));
+    }
 }

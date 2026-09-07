@@ -156,6 +156,44 @@ public sealed class LiveToolCallDispatcherTests
     }
 
     [Fact]
+    public async Task Semantic_duplicate_with_a_new_provider_id_is_acknowledged_silently_once()
+    {
+        var actions = 0;
+        var responses = new ConcurrentQueue<string>();
+        var guard = new ToolAttemptGuard();
+        using var queue = Queue((_, _, _) =>
+        {
+            Interlocked.Increment(ref actions);
+            return Task.FromResult(Ok());
+        }, responses);
+
+        queue.Enqueue(JsonSerializer.SerializeToElement(new
+        {
+            functionCalls = new[]
+            {
+                new { id = "first", name = "test_action", args = new { value = "same", scope = "all" } },
+            },
+        }), guard);
+        await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+        queue.Enqueue(JsonSerializer.SerializeToElement(new
+        {
+            functionCalls = new[]
+            {
+                new { id = "retry", name = "test_action", args = new { scope = "all", value = "same" } },
+            },
+        }), guard);
+        await queue.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(1, actions);
+        Assert.Equal(2, responses.Count);
+        var duplicate = JsonDocument.Parse(responses.Last()).RootElement
+            .GetProperty("toolResponse").GetProperty("functionResponses")[0].GetProperty("response");
+        Assert.True(duplicate.GetProperty("duplicate_suppressed").GetBoolean());
+        Assert.Equal("SILENT", duplicate.GetProperty("scheduling").GetString());
+        Assert.Equal("", duplicate.GetProperty("message").GetString());
+    }
+
+    [Fact]
     public async Task Cancelled_queued_action_never_executes_but_an_unrelated_action_still_does()
     {
         var entered = Signal();

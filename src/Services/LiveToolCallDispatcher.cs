@@ -134,6 +134,13 @@ internal sealed class LiveToolCallDispatcher : IDisposable
                         token.ThrowIfCancellationRequested();
                         guard.Record(call.Name, call.Args, response);
                     }
+                    else
+                    {
+                        // A Live function call still requires a protocol response
+                        // even when its effect already completed. Request silent
+                        // scheduling and keep the duplicate payload non-narrative.
+                        response["scheduling"] = "SILENT";
+                    }
                     token.ThrowIfCancellationRequested();
                     results.Add((call, response));
                 }

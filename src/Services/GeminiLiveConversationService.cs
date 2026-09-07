@@ -1545,11 +1545,19 @@ public sealed class GeminiLiveConversationService : IDisposable
                     userWords = await AwaitCurrentUserTranscriptChangeAsync(
                         transcriptRevision,
                         token);
-                    if (!ShouldAutoEnd(userWords))
+                    if (!ShouldAutoEnd(userWords) && !string.IsNullOrWhiteSpace(userWords))
                     {
                         return ToolError(
                             "The current user request does not explicitly end Jarvis or the conversation. Keep the conversation active and complete any requested browser/window action instead.",
                             supported: false);
+                    }
+                    if (string.IsNullOrWhiteSpace(userWords))
+                    {
+                        // Some Live turns produce the dedicated end tool without
+                        // emitting input transcription. The model tool is a safe
+                        // secondary termination signal only when no contradictory
+                        // authoritative transcript exists after the ordering wait.
+                        AppLog.Info("Jarvis accepted the dedicated end tool without an input transcription.");
                     }
                 }
 
@@ -1706,7 +1714,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             "App names and file names do not need to be exact. Use open_app, open_folder, open_path, or search_files with the user's natural approximate wording; the local resolver performs fuzzy matching and returns choices when confidence is low. Preserve an explicit Desktop, Documents, Downloads, or other location in the tool location field because the local resolver treats it as a strong scope. " +
             "If the local resolver returns multiple candidates, read only the short names, ask the user to choose, and then retry with the chosen name or path. Do not guess between ambiguous matches. " +
             "If the user corrects an app, file, folder, link, or browser choice only for this time, keep it temporary. If they clearly say always, from now on, going forward, or remember that, persist the correction immediately with the matching existing remember tool and use it in future conversations; never claim it was saved until local read-back succeeds. A current explicit instruction overrides a saved preference for that one turn. " +
-            "When the user explicitly asks to remember a selected http/https link for a phrase such as open test portal, call remember_link_alias with the phrase as alias. If the URL is omitted, the local tool safely reads the current selection, validates it, and restores the clipboard. Do not claim the alias was saved until that tool succeeds. " +
+            "When the user explicitly asks to remember a selected web URL or valid hostname for a phrase such as open test portal, call remember_link_alias with the phrase as alias. If the destination is omitted, the local tool safely reads the current selection, validates it, normalizes a bare hostname to HTTPS, and restores the clipboard. Do not claim the alias was saved until that tool succeeds. " +
             "Use list_learned_mappings and forget_learned_mapping for requests to inspect or forget local mappings. " +
             "Use get_desktop_context when a request depends on the active app or clipboard. Re-evaluate routing independently for every user turn; never carry selected-content mode or page-action mode forward from the previous turn. If the current request explicitly says the user selected or highlighted something, call get_selected_text for that current turn and use the returned selection as normal answer context. Never reuse a selection or get_selected_text result from an earlier turn. The local tool performs a fresh bounded capture and only uses a recent same-window fallback when fresh Windows capture is momentarily unavailable. The selection may be one word needing a definition, a paragraph needing a summary, questions needing answers, or any other content, including content inside a webpage or form. Do not start browser automation for that turn unless the same current request explicitly asks to fill, enter, click, choose, submit, paste, or otherwise modify the page. A current request to fill, complete, or solve a form, quiz, questionnaire, assessment, or survey without mentioning a selection is a page-action request and should use browser automation; do not ask the user to select text merely because the previous turn used a selection. For a bare answer this, solve these, explain this, or what does this mean request with neither explicit selection context nor a clear page-action target, ask one short clarification. " +
             "Use the existing open_url, web_search, browser_action, and app tools for simple browser work such as opening a site, opening a known URL, searching Google, searching YouTube, searching Amazon through a direct search URL, opening or closing tabs, refreshing, or going back. Never start smart browser automation for those simple tasks. " +
@@ -2262,11 +2270,11 @@ public sealed class GeminiLiveConversationService : IDisposable
                     "path"),
                 FunctionDeclaration(
                     "remember_link_alias",
-                    "Save a user-approved local alias for an http or https link.",
+                    "Save a user-approved local alias for an http/https link or valid hostname.",
                     new()
                     {
                         ["alias"] = Schema("string", "The phrase the user wants to say later."),
-                        ["url"] = Schema("string", "The absolute http or https URL."),
+                        ["url"] = Schema("string", "The http/https URL or valid hostname. Omit it to use the current selection."),
                     },
                     "alias",
                     "url"),
@@ -2710,9 +2718,10 @@ internal sealed class ToolAttemptGuard
                 ["ok"] = attempt.Succeeded,
                 ["supported"] = !attempt.DeterministicFailure,
                 ["duplicate_suppressed"] = true,
-                ["message"] = attempt.Succeeded
-                    ? "That exact action already completed for this request. Do not repeat it."
-                    : "That exact action already failed for this request. Do not retry it again; use a genuinely different capability or explain the limitation once.",
+                // The first response already supplied the user-facing result.
+                // Do not give a duplicate provider retry another sentence to
+                // paraphrase back to the user.
+                ["message"] = "",
             };
             return true;
         }
@@ -2757,8 +2766,44 @@ internal sealed class ToolAttemptGuard
     }
 
     private static string Key(string toolName, JsonElement args) =>
-        (toolName ?? "").Trim() + "\n" +
-        (args.ValueKind == JsonValueKind.Undefined ? "{}" : args.GetRawText());
+        (toolName ?? "").Trim() + "\n" + CanonicalJson(args);
+
+    private static string CanonicalJson(JsonElement value)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+            WriteCanonicalJson(writer, value);
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    private static void WriteCanonicalJson(Utf8JsonWriter writer, JsonElement value)
+    {
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.Object:
+                writer.WriteStartObject();
+                foreach (var property in value.EnumerateObject().OrderBy(property => property.Name, StringComparer.Ordinal))
+                {
+                    writer.WritePropertyName(property.Name);
+                    WriteCanonicalJson(writer, property.Value);
+                }
+                writer.WriteEndObject();
+                break;
+            case JsonValueKind.Array:
+                writer.WriteStartArray();
+                foreach (var item in value.EnumerateArray())
+                    WriteCanonicalJson(writer, item);
+                writer.WriteEndArray();
+                break;
+            case JsonValueKind.Undefined:
+                writer.WriteStartObject();
+                writer.WriteEndObject();
+                break;
+            default:
+                value.WriteTo(writer);
+                break;
+        }
+    }
 
     private sealed record Attempt(int Count, bool Succeeded, bool DeterministicFailure);
 }

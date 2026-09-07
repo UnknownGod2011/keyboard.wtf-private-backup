@@ -450,6 +450,79 @@ public sealed class RoutineMemoryTests : IDisposable
     }
 
     [Fact]
+    public async Task BareHostnameCustomTriggerUsesOneDurableLinkAndSurvivesReloadAndUpdate()
+    {
+        Directory.CreateDirectory(_root);
+        var settingsPath = Path.Combine(_root, "settings.json");
+        var mappingsPath = Path.Combine(_root, "mappings.json");
+        var historyPath = Path.Combine(_root, "history.json");
+        var settings = new SettingsService(settingsPath);
+        settings.Load();
+        settings.Current.JarvisPermissionMode = JarvisPermissionMode.AutoExecute;
+        var mappings = new LearnedMappingService(mappingsPath);
+        mappings.Load();
+
+        using (var firstConversation = new JarvisAutomationService(
+                   new NotificationService(null),
+                   settings,
+                   new JarvisActionHistoryService(historyPath),
+                   mappings,
+                   () => { }))
+        {
+            Assert.True(firstConversation.TryApplyDurablePreferenceFromTranscript(
+                "Remember to open example.com whenever I say open my website.",
+                out var tool,
+                out var saved));
+            Assert.Equal("remember_link_alias", tool);
+            Assert.True((bool)saved["ok"]);
+            Assert.True((bool)saved["persistence_verified"]);
+
+            var updated = await firstConversation.ExecuteAsync(
+                "remember_link_alias",
+                JsonSerializer.SerializeToElement(new
+                {
+                    alias = "open my website",
+                    url = "example.org/new",
+                }),
+                CancellationToken.None);
+            Assert.True((bool)updated["ok"]);
+
+            var malformed = await firstConversation.ExecuteAsync(
+                "remember_link_alias",
+                JsonSerializer.SerializeToElement(new
+                {
+                    alias = "open unsafe target",
+                    url = "not a URL",
+                }),
+                CancellationToken.None);
+            Assert.False((bool)malformed["ok"]);
+        }
+
+        var reloadedMappings = new LearnedMappingService(mappingsPath);
+        reloadedMappings.Load();
+        Assert.Single(reloadedMappings.Snapshot(LearnedMappingKind.Link));
+        Assert.Empty(reloadedMappings.Snapshot(LearnedMappingKind.Workflow));
+        Assert.Equal(
+            "https://example.org/new",
+            reloadedMappings.FindExact(LearnedMappingKind.Link, "open my website")?.Target);
+        Assert.Null(reloadedMappings.FindExact(LearnedMappingKind.Link, "open unsafe target"));
+
+        using var restartedConversation = new JarvisAutomationService(
+            new NotificationService(null),
+            new SettingsService(settingsPath),
+            new JarvisActionHistoryService(Path.Combine(_root, "restarted-history.json")),
+            reloadedMappings,
+            () => { });
+        Assert.True(restartedConversation.TryResolveDurableOpenPreference(
+            "Open my website",
+            out var resolvedTool,
+            out var arguments));
+        Assert.Equal("open_app", resolvedTool);
+        Assert.Equal("open my website", arguments.GetProperty("app_name").GetString());
+        Assert.Equal("auto", arguments.GetProperty("target_kind").GetString());
+    }
+
+    [Fact]
     public void TriggerFirstDurableLinkParserLeavesMultiActionRoutineToWorkflowOwnership()
     {
         Directory.CreateDirectory(_root);

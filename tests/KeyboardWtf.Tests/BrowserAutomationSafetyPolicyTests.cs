@@ -216,6 +216,22 @@ public sealed class BrowserAutomationSafetyPolicyTests
     }
 
     [Fact]
+    public void Requested_same_task_answer_authorizes_that_personal_field_value()
+    {
+        var result = _policy.EvaluateAction(
+            "Fill this form.\nUser guidance: The email address is alice@example.com.",
+            new BrowserPlannerAction
+            {
+                Type = "type",
+                TargetRole = "textbox",
+                TargetName = "Email address",
+                Text = "alice@example.com",
+            });
+
+        Assert.True(result.MayStart);
+    }
+
+    [Fact]
     public void Negated_progress_reset_is_not_permission()
     {
         var result = _policy.EvaluateAction(

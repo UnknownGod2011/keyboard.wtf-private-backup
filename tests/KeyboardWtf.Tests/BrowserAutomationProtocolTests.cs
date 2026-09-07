@@ -1714,32 +1714,23 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
-    public void Only_the_first_successful_navigation_from_a_protected_tab_gets_a_readiness_wait()
+    public void Only_the_first_successful_task_navigation_gets_a_readiness_wait()
     {
         var navigated = new BrowserActionReceipt { Ok = true, Navigation = true };
 
-        Assert.True(BrowserAutomationCoordinator.ShouldStabilizeProtectedBootstrapNavigation(
-            initialTabWasProtectedOrBlank: true,
+        Assert.True(BrowserAutomationCoordinator.ShouldStabilizeFirstNavigation(
             alreadyStabilized: false,
             actionType: "navigate",
             navigated));
-        Assert.False(BrowserAutomationCoordinator.ShouldStabilizeProtectedBootstrapNavigation(
-            initialTabWasProtectedOrBlank: false,
-            alreadyStabilized: false,
-            actionType: "navigate",
-            navigated));
-        Assert.False(BrowserAutomationCoordinator.ShouldStabilizeProtectedBootstrapNavigation(
-            initialTabWasProtectedOrBlank: true,
+        Assert.False(BrowserAutomationCoordinator.ShouldStabilizeFirstNavigation(
             alreadyStabilized: true,
             actionType: "navigate",
             navigated));
-        Assert.False(BrowserAutomationCoordinator.ShouldStabilizeProtectedBootstrapNavigation(
-            initialTabWasProtectedOrBlank: true,
+        Assert.False(BrowserAutomationCoordinator.ShouldStabilizeFirstNavigation(
             alreadyStabilized: false,
             actionType: "click",
             navigated));
-        Assert.False(BrowserAutomationCoordinator.ShouldStabilizeProtectedBootstrapNavigation(
-            initialTabWasProtectedOrBlank: true,
+        Assert.False(BrowserAutomationCoordinator.ShouldStabilizeFirstNavigation(
             alreadyStabilized: false,
             actionType: "navigate",
             new BrowserActionReceipt { Ok = false, Navigation = true }));

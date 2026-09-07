@@ -50,6 +50,9 @@ public sealed class VoiceOverlayFormTests
                 Assert.True(overlay.IsHandleCreated);
                 Assert.Equal(originalHandle, overlay.Handle);
                 Assert.Equal(uiThreadId, GetWindowThreadProcessId(overlay.Handle, IntPtr.Zero));
+                var extendedStyle = GetWindowLongPtr(overlay.Handle, GwlExStyle).ToInt64();
+                Assert.NotEqual(0, extendedStyle & WsExTopmost);
+                Assert.NotEqual(0, extendedStyle & WsExNoActivate);
             }
             catch (Exception ex)
             {
@@ -74,4 +77,11 @@ public sealed class VoiceOverlayFormTests
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr window, IntPtr processId);
+
+    private const int GwlExStyle = -20;
+    private const long WsExTopmost = 0x00000008;
+    private const long WsExNoActivate = 0x08000000;
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
 }

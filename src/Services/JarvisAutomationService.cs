@@ -583,21 +583,9 @@ public sealed class JarvisAutomationService : IDisposable
     private static bool TryNormalizeExplicitWebUrl(string value, out string url)
     {
         url = "";
-        var candidate = value.Trim();
-        if (!candidate.Contains('.'))
+        if (!BrowserLauncherService.TryNormalizeUrl(value, out var uri))
             return false;
-        if (!candidate.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-            && !candidate.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-        {
-            candidate = "https://" + candidate;
-        }
-        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri)
-            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
-            || string.IsNullOrWhiteSpace(uri.Host))
-        {
-            return false;
-        }
-        url = uri.ToString();
+        url = uri.AbsoluteUri;
         return true;
     }
 
@@ -1923,11 +1911,14 @@ public sealed class JarvisAutomationService : IDisposable
 
     private Dictionary<string, object> RememberLinkAlias(string alias, string url)
     {
+        if (!BrowserLauncherService.TryNormalizeUrl(url, out var normalizedUrl))
+            return Result(false, "The link mapping needs one valid web URL or hostname.", supported: false);
+        var canonicalUrl = normalizedUrl.AbsoluteUri;
         var entry = _mappings.RememberExclusive(
             LearnedMappingKind.Link,
             alias,
-            url,
-            url,
+            canonicalUrl,
+            canonicalUrl,
             DurablePreferenceKinds);
         var persisted = _mappings.FindExact(LearnedMappingKind.Link, alias);
         if (!MappingRecordsMatch(entry, persisted))
@@ -1985,13 +1976,15 @@ public sealed class JarvisAutomationService : IDisposable
 
         var explicitLink = Regex.Match(
             request,
-            @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward|remember(?:\s+that)?))\s+(?:open|use)\s+(?<url>https?://\S+|[\p{L}\p{N}.-]+\.[\p{L}]{2,}\S*)\s+(?:when\s+i\s+say|for)\s+(?<alias>.+?)[.!?]*$",
+            @"^(?:(?:please\s+)?(?:always|from\s+now\s+on|going\s+forward|remember(?:\s+that|\s+to)?))\s+(?:open|use)\s+(?<url>\S+)\s+(?:(?:when|whenever)\s+i\s+say|for)\s+(?<alias>.+?)[.!?]*$",
             RegexOptions.IgnoreCase);
         if (explicitLink.Success)
         {
             var alias = CleanPreferenceAlias(explicitLink.Groups["alias"].Value);
-            var url = NormalizeUrl(explicitLink.Groups["url"].Value.TrimEnd('.', '!', '?'));
-            result = RememberLinkAlias(alias, url);
+            var rawUrl = explicitLink.Groups["url"].Value.TrimEnd('.', '!', '?');
+            if (!BrowserLauncherService.TryNormalizeUrl(rawUrl, out var normalizedUrl))
+                return false;
+            result = RememberLinkAlias(alias, normalizedUrl.AbsoluteUri);
             toolName = "remember_link_alias";
             return true;
         }
@@ -2063,13 +2056,9 @@ public sealed class JarvisAutomationService : IDisposable
         var action = trigger.Groups["action"].Value.Trim();
         var destination = Regex.Match(
             action,
-            "^(?:please\\s+)?(?:open|use|launch|visit|go\\s+to|navigate\\s+to)\\s+(?:exact(?:ly)?\\s+)?(?<url>https?://[^\\s<>'\"]+)",
+            "^(?:please\\s+)?(?:open|use|launch|visit|go\\s+to|navigate\\s+to)\\s+(?:exact(?:ly)?\\s+)?(?<url>[^\\s<>'\"]+)",
             RegexOptions.IgnoreCase);
         if (!destination.Success)
-            return false;
-
-        var urlMatches = Regex.Matches(action, "https?://[^\\s<>'\"]+", RegexOptions.IgnoreCase);
-        if (urlMatches.Count != 1)
             return false;
 
         var remainder = action[destination.Length..];
@@ -2087,9 +2076,7 @@ public sealed class JarvisAutomationService : IDisposable
         var rawUrl = destination.Groups["url"].Value.TrimEnd('.', ',', ';', '!', '?');
         if (string.IsNullOrWhiteSpace(alias)
             || Regex.IsMatch(alias, @"https?://", RegexOptions.IgnoreCase)
-            || !Uri.TryCreate(rawUrl, UriKind.Absolute, out var parsed)
-            || (!string.Equals(parsed.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(parsed.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+            || !BrowserLauncherService.TryNormalizeUrl(rawUrl, out var parsed))
         {
             alias = "";
             return false;
@@ -2115,15 +2102,8 @@ public sealed class JarvisAutomationService : IDisposable
             return false;
 
         var alias = CleanPreferenceAlias(match.Groups["alias"].Value);
-        if (string.IsNullOrWhiteSpace(alias)
-            || Regex.IsMatch(
-                alias,
-                @"\b(?:app|application|website|web|browser|this\s+time|just\s+once|for\s+now)\b",
-                RegexOptions.IgnoreCase))
-        {
-            // An explicit current target choice outranks a durable preference.
+        if (string.IsNullOrWhiteSpace(alias))
             return false;
-        }
 
         // Learned mappings may intentionally use either the named object
         // ("portal") or the complete spoken trigger ("open portal"). Resolve
@@ -2264,9 +2244,7 @@ public sealed class JarvisAutomationService : IDisposable
     {
         url = "";
         var clean = CleanPreferenceAlias(alias);
-        if (Uri.TryCreate(clean, UriKind.Absolute, out var absolute)
-            && (string.Equals(absolute.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(absolute.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+        if (BrowserLauncherService.TryNormalizeUrl(clean, out var absolute))
         {
             url = absolute.AbsoluteUri;
             return true;
@@ -2280,11 +2258,6 @@ public sealed class JarvisAutomationService : IDisposable
         if (normalized == "discord")
         {
             url = "https://discord.com/app";
-            return true;
-        }
-        if (Regex.IsMatch(clean, @"^[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+(?:/.*)?$"))
-        {
-            url = NormalizeUrl(clean);
             return true;
         }
         return false;

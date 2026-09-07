@@ -38,7 +38,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         public bool CurrentPageIntent { get; init; }
         public int InitialTabId { get; set; }
         public bool InitialTabWasProtectedOrBlank { get; set; }
-        public bool BootstrapNavigationStabilized { get; set; }
+        public bool FirstNavigationStabilized { get; set; }
         public bool InitialTabIsEditableDestination { get; set; }
         public bool DestinationTabOpened { get; set; }
         public BrowserTaskState State { get; set; } = BrowserTaskState.Queued;
@@ -1361,7 +1361,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     continue;
                 }
                 var actionSafety = _safety.EvaluateAction(
-                    runtime.Request,
+                    BuildUserConstraintContext(runtime),
                     lastDecision.Action);
                 if (!actionSafety.MayStart)
                 {
@@ -1570,13 +1570,12 @@ public sealed class BrowserAutomationCoordinator : IDisposable
 
                 token.ThrowIfCancellationRequested();
                 SetState(runtime, BrowserTaskState.WaitingForPage, "Reading the updated page");
-                if (ShouldStabilizeProtectedBootstrapNavigation(
-                    runtime.InitialTabWasProtectedOrBlank,
-                    runtime.BootstrapNavigationStabilized,
+                if (ShouldStabilizeFirstNavigation(
+                    runtime.FirstNavigationStabilized,
                     lastDecision.Action.Type,
                     receipt))
                 {
-                    runtime.BootstrapNavigationStabilized = true;
+                    runtime.FirstNavigationStabilized = true;
                     SetState(
                         runtime,
                         BrowserTaskState.WaitingForPage,
@@ -3117,13 +3116,12 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             return false;
         }
         runtime.Receipts.Add(receipt);
-        if (ShouldStabilizeProtectedBootstrapNavigation(
-                runtime.InitialTabWasProtectedOrBlank,
-                runtime.BootstrapNavigationStabilized,
+        if (ShouldStabilizeFirstNavigation(
+                runtime.FirstNavigationStabilized,
                 action.Type,
                 receipt))
         {
-            runtime.BootstrapNavigationStabilized = true;
+            runtime.FirstNavigationStabilized = true;
             SetState(runtime, BrowserTaskState.WaitingForPage, "Waiting for the requested website to become ready");
             await Task.Delay(TimeSpan.FromSeconds(2), token);
         }
@@ -3535,13 +3533,11 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps);
     }
 
-    internal static bool ShouldStabilizeProtectedBootstrapNavigation(
-        bool initialTabWasProtectedOrBlank,
+    internal static bool ShouldStabilizeFirstNavigation(
         bool alreadyStabilized,
         string actionType,
         BrowserActionReceipt receipt) =>
-        initialTabWasProtectedOrBlank
-        && !alreadyStabilized
+        !alreadyStabilized
         && string.Equals(actionType, "navigate", StringComparison.Ordinal)
         && receipt?.Ok == true
         && receipt.Navigation;

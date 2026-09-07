@@ -116,6 +116,29 @@ public sealed class JarvisServerEventOrderingTests
         Assert.True(run.Session.IsCancellationRequested);
     }
 
+    [Fact]
+    public async Task Dedicated_end_tool_is_a_safe_fallback_when_no_input_transcription_arrives()
+    {
+        await using var run = new MessageRun();
+        run.Push(EndCall("end-without-transcript"));
+
+        await run.Ended.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.True(run.Session.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task Dedicated_end_tool_cannot_override_contradictory_user_transcription()
+    {
+        await using var run = new MessageRun();
+        run.Push("""{"serverContent":{"inputTranscription":{"text":"Close the current browser tab."}}}""");
+        await run.UserObserved.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        run.Push(EndCall("incorrect-end"));
+
+        await Task.Delay(TimeSpan.FromMilliseconds(1200));
+        Assert.False(run.LocalTerminationRequested());
+        Assert.False(run.Session.IsCancellationRequested);
+    }
+
     private static string ToolCall(string id) => JsonSerializer.Serialize(new
     {
         toolCall = new { functionCalls = new[] { new { id, name = "test_pending_action", args = new { } } } },
