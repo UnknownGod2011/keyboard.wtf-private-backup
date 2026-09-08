@@ -1,6 +1,6 @@
 # keyboard.wtf 1.4.19 stabilization contract
 
-Installed checkpoint: source `171662e3cd28c5f17f1c8851db9314842c0218d7`; installer `7A732BD8984459D744ACB525782C04B7BF3192B3AB9D09D722E5A2B56EC56B14` (84,264,285 bytes); Helper 2.1.26 / protocol 2.1.21. Human evidence overrides internal evidence.
+Installed checkpoint: source `933c194ead8098b28dd974859510de6e5bb6d825`; installer `08B6D16DE3B64BB5CA0E5D9832243529B1C076E85777515EF1F8816BD942E326` (84,292,428 bytes); Helper 2.1.26 / protocol 2.1.21. Human evidence overrides internal evidence.
 
 ## P01 — Startup consistency
 Status: FIXING
@@ -205,10 +205,10 @@ Protect: Existing writing quality.
 ## P21 — Learned mappings and workflows
 Status: FIXED-SOURCE
 Expected: A selected URL or valid hostname plus a custom trigger stores one durable Link that executes after conversation/app restart and outranks generic lookup.
-Latest evidence: Exact installed `171662e3...` selected a bare hostname, accepted the custom-trigger request, but left the previous Link unchanged and persisted nothing new.
-Root cause: Live instructions allow selection fallback, but the advertised `remember_link_alias` schema still requires `url`; workflow pre-route cannot own the selected-target form.
-Fix: Make the existing Link tool's URL optional as documented so its sole local owner captures, validates and persists the current selection.
-Evidence: Session `2db82030...` proves the failure; 47 focused mapping/routing, 940 desktop, 262 backend and 12 Firestore tests now pass with the real Live schema and existing selection fallback aligned.
+Latest evidence: Exact installed `933c194...` again stopped after the workflow pre-route skip; no Link tool call or persistence event occurred and the old Gmail Link remained.
+Root cause: The selected/deictic Link form still depends on optional model tool selection; unlike explicit-URL mappings, it has no deterministic local pre-route owner.
+Fix: Route only an explicit single selected-Link mapping grammar through the existing Link tool owner, which captures, validates, normalizes and read-backs the selection once.
+Evidence: Sessions `2db82030...` and `54e586...` prove the installed failures; 56 focused, 949 desktop and 262 backend tests plus release/security/Helper gates pass; installed acceptance remains pending.
 Touches: Learned mapping parser/store/route.
 Protect: Workflow/tombstone behavior.
 

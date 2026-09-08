@@ -522,6 +522,28 @@ public sealed class RoutineMemoryTests : IDisposable
         Assert.Equal("auto", arguments.GetProperty("target_kind").GetString());
     }
 
+    [Theory]
+    [InlineData("Remember to open this whenever I say open my website.", "open my website")]
+    [InlineData("Save the selected link under the phrase launch team portal", "launch team portal")]
+    [InlineData("Remember this mapping: when I say company dashboard, visit this URL", "company dashboard")]
+    [InlineData("Create an alias whenever I say open reports: go to the selected website", "open reports")]
+    public void SelectedLinkPreferenceExtractsOneDurableTrigger(string request, string expectedAlias)
+    {
+        Assert.True(JarvisAutomationService.TryParseSelectedLinkPreference(request, out var alias));
+        Assert.Equal(expectedAlias, alias);
+    }
+
+    [Theory]
+    [InlineData("Open this when I say open my website")]
+    [InlineData("Remember to open this just once when I say open my website")]
+    [InlineData("Remember this selected paragraph")]
+    [InlineData("Whenever I say morning setup, open this and then launch Notepad")]
+    [InlineData("Remember to open https://example.com whenever I say open my website")]
+    public void SelectedLinkPreferenceDoesNotStealConversationWorkflowOrExplicitUrlOwnership(string request)
+    {
+        Assert.False(JarvisAutomationService.TryParseSelectedLinkPreference(request, out _));
+    }
+
     [Fact]
     public void TriggerFirstDurableLinkParserLeavesMultiActionRoutineToWorkflowOwnership()
     {

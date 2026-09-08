@@ -2086,6 +2086,59 @@ public sealed class JarvisAutomationService : IDisposable
         return true;
     }
 
+    internal static bool TryParseSelectedLinkPreference(string text, out string alias)
+    {
+        alias = "";
+        var request = Regex.Replace((text ?? "").Trim(), @"\s+", " ")
+            .Trim(' ', '.', '!', '?');
+        if (request.Length == 0
+            || Regex.IsMatch(
+                request,
+                @"\b(?:this\s+time|just\s+(?:this\s+)?once|for\s+now|temporarily|only\s+today)\b",
+                RegexOptions.IgnoreCase)
+            || !Regex.IsMatch(
+                request,
+                @"(?:\b(?:remember|save|persist)\b|\b(?:create|add|set)\s+(?:(?:a|an)\s+)?(?:mapping|alias|preference)\b)",
+                RegexOptions.IgnoreCase))
+        {
+            return false;
+        }
+
+        const string Selection =
+            @"(?:(?:this|that)(?:\s+(?:selected\s+)?(?:link|url|website|site|destination|text))?|(?:the\s+)?selected\s+(?:link|url|website|site|destination|text))";
+        var targetFirst = Regex.Match(
+            request,
+            @"^(?:please\s+)?(?:remember|save|persist)(?:\s+that|\s+to)?\s+"
+            + @"(?:(?:open|use|launch|visit|go\s+to|navigate\s+to)\s+)?"
+            + Selection
+            + @"\s+(?:(?:whenever|when)\s+i\s+say|(?:under|as|for)\s+(?:the\s+)?(?:phrase|trigger|alias))\s+(?<alias>.+?)$",
+            RegexOptions.IgnoreCase);
+        var triggerFirst = targetFirst.Success
+            ? Match.Empty
+            : Regex.Match(
+                request,
+                @"^(?:(?:please\s+)?(?:remember|save|persist)|(?:please\s+)?(?:create|add|set)\s+(?:(?:a|an)\s+)?(?:mapping|alias|preference))"
+                + @"(?:\s+(?:this|that)(?:\s+(?:mapping|alias|preference))?)?\s*[:,-]?\s*"
+                + @"(?:whenever|when)\s+i\s+say\s+(?<alias>.+?)[,;:]\s*"
+                + @"(?:please\s+)?(?:open|use|launch|visit|go\s+to|navigate\s+to)\s+"
+                + Selection
+                + @"$",
+                RegexOptions.IgnoreCase);
+        var match = targetFirst.Success ? targetFirst : triggerFirst;
+        if (!match.Success)
+            return false;
+
+        alias = CleanPreferenceAlias(match.Groups["alias"].Value);
+        if (string.IsNullOrWhiteSpace(alias)
+            || alias.Length > 160
+            || Regex.IsMatch(alias, @"https?://", RegexOptions.IgnoreCase))
+        {
+            alias = "";
+            return false;
+        }
+        return true;
+    }
+
     internal bool TryResolveDurableOpenPreference(
         string text,
         out string toolName,

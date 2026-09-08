@@ -258,6 +258,24 @@ public sealed class CommandRegistry
             return true;
         }
 
+        // A selected Link mapping has enough local structure to be owned
+        // deterministically: an explicit persistence request, one selected web
+        // destination, and one exact future trigger. Keep the existing Link
+        // tool as the sole capture/validation/persistence owner instead of
+        // relying on optional model tool selection or treating it as a Workflow.
+        if (_automation != null
+            && JarvisAutomationService.TryParseSelectedLinkPreference(userTurn, out var selectedLinkAlias))
+        {
+            var selectedLinkResult = RememberLinkAliasAsync(
+                    JsonSerializer.SerializeToElement(new { alias = selectedLinkAlias }),
+                    token)
+                .GetAwaiter()
+                .GetResult();
+            RecordAuthoritativePreRoute(userTurn, "remember_link_alias", selectedLinkResult);
+            AppLog.Info($"Selected Link pre-route: ok={ToolSucceeded(selectedLinkResult)}");
+            return true;
+        }
+
         // Explicit persistence requests must reach the workflow tool as one
         // complete user turn. In particular, an early "open Gmail" fragment
         // must not start Browser Automation before "remember this" arrives.
