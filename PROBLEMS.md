@@ -15,10 +15,10 @@ Protect: 2.37–3s happy path, microphone readiness, reliable connection.
 ## P02 — Exactly-once completion and action ownership
 Status: FIXED-SOURCE
 Expected: One logical request may execute several actions but produces one coherent completion and no repeated mutation.
-Latest evidence: Human heard duplicate Explorer completion; logs show FIBO opened at 09:04:40 and again at 09:04:48, while close-all executed once.
-Root cause: A semantically duplicate provider retry received a normal second tool response; raw argument JSON ordering could also evade the turn guard.
-Fix: Canonicalize tool arguments and mark required duplicate acknowledgements `SILENT`; retain one combined response per real batch.
-Evidence: Latest human/action history plus 87 focused Live/order/UI tests.
+Latest evidence: Exact installed `2b4eba3...` resolved `open my website` locally, then recorded a second identical `open_url` 1.15s later and opened two tabs.
+Root cause: An authoritative pre-route receipt was deleted after the first provider acknowledgement, allowing another tool call from the same logical turn to regain mutation ownership.
+Fix: Keep the turn receipt authoritative until the next user turn; only its first acknowledgement carries the result and all later calls receive one silent suppression receipt.
+Evidence: Action history entries `be932...` and `9e6c...` prove the failure; 69 focused, 950 desktop and 262 backend tests plus release/security/Helper gates pass; installed retest pending.
 Touches: Transcript pre-routing; tool dispatch/result publication; action dedupe.
 Protect: Clarification/barge-in and multi-action batching.
 
@@ -205,10 +205,10 @@ Protect: Existing writing quality.
 ## P21 — Learned mappings and workflows
 Status: FIXED-SOURCE
 Expected: A selected URL or valid hostname plus a custom trigger stores one durable Link that executes after conversation/app restart and outranks generic lookup.
-Latest evidence: Exact installed `933c194...` again stopped after the workflow pre-route skip; no Link tool call or persistence event occurred and the old Gmail Link remained.
+Latest evidence: Exact installed `2b4eba3...` captured the foreground bare hostname, stored/read back one correct Link and no Workflow; first trigger execution exposed P02's second mutation owner.
 Root cause: The selected/deictic Link form still depends on optional model tool selection; unlike explicit-URL mappings, it has no deterministic local pre-route owner.
 Fix: Route only an explicit single selected-Link mapping grammar through the existing Link tool owner, which captures, validates, normalizes and read-backs the selection once.
-Evidence: Sessions `2db82030...` and `54e586...` prove the installed failures; 56 focused, 949 desktop and 262 backend tests plus release/security/Helper gates pass; installed acceptance remains pending.
+Evidence: Session `199dcd...`, persisted Link read-back and action history prove source behavior; 69 focused, 950 desktop and 262 backend tests pass; restart/execution retest remains.
 Touches: Learned mapping parser/store/route.
 Protect: Workflow/tombstone behavior.
 

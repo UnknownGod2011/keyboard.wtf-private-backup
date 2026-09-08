@@ -10,6 +10,7 @@ using System.Text.RegularExpressions;
 internal sealed class BrowserPreRouteReceipt
 {
     private static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(12);
+    private int _acknowledged;
 
     public string UserTurn { get; init; } = "";
     public string ToolName { get; init; } = "";
@@ -20,6 +21,9 @@ internal sealed class BrowserPreRouteReceipt
     public Dictionary<string, object> Result { get; init; }
     public bool Authoritative { get; init; }
     public DateTime CreatedUtc { get; init; } = DateTime.UtcNow;
+
+    public bool TryAcknowledgeOnce() =>
+        Interlocked.CompareExchange(ref _acknowledged, 1, 0) == 0;
 
     public bool IsFresh(DateTime utcNow) => utcNow - CreatedUtc <=
         (string.Equals(ToolName, "run_workflow", StringComparison.Ordinal)

@@ -179,6 +179,30 @@ public sealed class JarvisRoutingAndTtsRegressionTests
     }
 
     [Fact]
+    public void Authoritative_pre_route_receipt_has_one_completion_owner_for_the_whole_turn()
+    {
+        var receipt = new BrowserPreRouteReceipt
+        {
+            UserTurn = "Open my website",
+            ToolName = "open_app",
+            Ok = true,
+            Message = "Opened the saved website.",
+            Result = new Dictionary<string, object>
+            {
+                ["ok"] = true,
+                ["message"] = "Opened the saved website.",
+            },
+            Authoritative = true,
+        };
+
+        Assert.True(receipt.TryAcknowledgeOnce());
+        Assert.False(receipt.TryAcknowledgeOnce());
+        Assert.True(receipt.BlocksCompetingTool(
+            "open_url",
+            receipt.CreatedUtc.AddSeconds(1)));
+    }
+
+    [Fact]
     public void Stale_receipt_cannot_contaminate_the_next_turn()
     {
         var receipt = new BrowserPreRouteReceipt

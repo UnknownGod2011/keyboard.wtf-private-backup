@@ -1999,9 +1999,9 @@ public sealed class CommandRegistry
 
             if (receipt.Result != null)
             {
-                result = new Dictionary<string, object>(receipt.Result);
-                _browserPreRouteReceipt = null;
-                _browserPreRouteOwnsCurrentTurn = false;
+                result = receipt.TryAcknowledgeOnce()
+                    ? new Dictionary<string, object>(receipt.Result)
+                    : SuppressedPreRouteResult(receipt);
                 return true;
             }
 
@@ -2046,6 +2046,11 @@ public sealed class CommandRegistry
                 result = null;
                 return false;
             }
+            if (!receipt.TryAcknowledgeOnce())
+            {
+                result = SuppressedPreRouteResult(receipt);
+                return true;
+            }
             result = new Dictionary<string, object>(receipt.Result)
             {
                 ["routing_note"] = string.Equals(receipt.ToolName, "run_workflow", StringComparison.Ordinal)
@@ -2054,11 +2059,19 @@ public sealed class CommandRegistry
                         ? "The explicit durable change was persisted and read back locally; no alternate planner action was run."
                         : "The authoritative local capability completed this turn; no alternate planner action was run.",
             };
-            _browserPreRouteReceipt = null;
-            _browserPreRouteOwnsCurrentTurn = false;
             return true;
         }
     }
+
+    private static Dictionary<string, object> SuppressedPreRouteResult(BrowserPreRouteReceipt receipt) =>
+        new()
+        {
+            ["ok"] = receipt?.Ok == true,
+            ["supported"] = true,
+            ["duplicate_suppressed"] = true,
+            ["scheduling"] = "SILENT",
+            ["message"] = "",
+        };
 
     private void RecordAuthoritativePreRoute(
         string userTurn,
