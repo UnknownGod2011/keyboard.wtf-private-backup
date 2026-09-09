@@ -20,6 +20,20 @@ public sealed class BrowserAutomationTaskClassifier
         @"^\s*(?:must|should|is|stays?|remains?)?\s*(?:not|off|disabled|cancelled|canceled|stopped|paused)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex OutcomeDiagnosticQuestion = new(
+        @"^\s*(?:please\s+)?(?:"
+        + @"what\s+(?:happened|went\s+wrong|failed|was\s+(?:the\s+)?(?:issue|problem|error|failure))"
+        + @"|what(?:'s|\s+is|\s+was)\s+(?:the\s+)?(?:issue|problem|error|failure|reason)"
+        + @"|why\b.{0,180}\b(?:fail(?:ed|ure)?|stop(?:ped)?|error|problem|work(?:ed|ing)?|complete(?:d)?)\b"
+        + @"|(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:explain|tell\s+me)\s+(?:what\s+happened|what\s+went\s+wrong|why\b))",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex OutcomeDiagnosticFollowUpAction = new(
+        @"(?:\b(?:and|then|also)\b|[?!.])\s*(?:please\s+)?"
+        + @"(?:use\s+browser\s+automation\s+to\s+)?"
+        + @"(?:retry|try\s+again|rerun|run\s+again|resume|continue|restart|start|fix|repeat|do\s+it\s+again)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     // A browser action described as dependent on a future user-controlled
     // transition is not authorized yet. This models temporal intent rather
     // than any destination or example phrase.
@@ -139,6 +153,13 @@ public sealed class BrowserAutomationTaskClassifier
             return Result(
                 BrowserAutomationDecision.SimpleTool,
                 "Timers, alarms, and reminders are handled by normal Jarvis rather than webpage automation.");
+        }
+
+        if (IsOutcomeDiagnosticQuestion(text))
+        {
+            return Result(
+                BrowserAutomationDecision.SimpleTool,
+                "A retrospective task question is read-only diagnostic context, not permission to start browser automation.");
         }
 
         var explicitAutomationRequested = HasExplicitAutomationRequest(text);
@@ -379,6 +400,8 @@ public sealed class BrowserAutomationTaskClassifier
     internal static bool HasExplicitAutomationRequest(string text)
     {
         text ??= "";
+        if (IsOutcomeDiagnosticQuestion(text))
+            return false;
         foreach (Match match in ExplicitAutomation.Matches(text))
         {
             var beforeStart = Math.Max(0, match.Index - 48);
@@ -395,5 +418,12 @@ public sealed class BrowserAutomationTaskClassifier
         }
 
         return false;
+    }
+
+    internal static bool IsOutcomeDiagnosticQuestion(string text)
+    {
+        var value = (text ?? "").Trim();
+        return OutcomeDiagnosticQuestion.IsMatch(value)
+            && !OutcomeDiagnosticFollowUpAction.IsMatch(value);
     }
 }

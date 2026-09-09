@@ -10,6 +10,36 @@ using Xunit;
 public sealed class VoiceOverlayFormTests
 {
     [Fact]
+    public void Reconnect_ui_revision_restores_only_when_no_newer_ui_owns_the_overlay()
+    {
+        var reconnectRevision = KeyboardWtfState.SetUi(
+            VoiceUiPhase.Thinking,
+            "Reconnecting",
+            "Refreshing the secure Live connection...");
+
+        Assert.True(KeyboardWtfState.TrySetUiIfRevision(
+            reconnectRevision,
+            VoiceUiPhase.Listening,
+            "Jarvis",
+            "Listening for your next request..."));
+        Assert.Equal(VoiceUiPhase.Listening, KeyboardWtfState.UiPhase);
+
+        reconnectRevision = KeyboardWtfState.SetUi(
+            VoiceUiPhase.Thinking,
+            "Reconnecting",
+            "Refreshing the secure Live connection...");
+        KeyboardWtfState.SetUi(VoiceUiPhase.Speaking, "Jarvis", "Speaking...");
+
+        Assert.False(KeyboardWtfState.TrySetUiIfRevision(
+            reconnectRevision,
+            VoiceUiPhase.Listening,
+            "Jarvis",
+            "Listening for your next request..."));
+        Assert.Equal(VoiceUiPhase.Speaking, KeyboardWtfState.UiPhase);
+        KeyboardWtfState.SetUi(VoiceUiPhase.Idle, "keyboard.wtf", "Ready");
+    }
+
+    [Fact]
     public void BackgroundStatusUpdatesReuseTheUiThreadWindowHandle()
     {
         Exception failure = null;

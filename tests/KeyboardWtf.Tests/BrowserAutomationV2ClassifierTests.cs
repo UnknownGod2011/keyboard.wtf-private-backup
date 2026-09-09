@@ -68,6 +68,45 @@ public sealed class BrowserAutomationV2ClassifierTests
     }
 
     [Theory]
+    [InlineData("What happened to the Browser Automation task that failed just before the successful one?")]
+    [InlineData("What went wrong with browser automation?")]
+    [InlineData("Why did that browser task fail?")]
+    [InlineData("Could you explain what happened to the automation task?")]
+    public void Outcome_diagnostics_do_not_authorize_a_new_browser_task(string request)
+    {
+        Assert.True(BrowserAutomationTaskClassifier.IsOutcomeDiagnosticQuestion(request));
+        Assert.False(BrowserAutomationTaskClassifier.HasExplicitAutomationRequest(request));
+        Assert.Equal(
+            BrowserAutomationDecision.SimpleTool,
+            _classifier.Classify(request).Decision);
+    }
+
+    [Fact]
+    public void Explicit_investigation_task_remains_an_affirmative_automation_request()
+    {
+        const string request =
+            "Use Browser Automation to investigate why this page failed to load.";
+
+        Assert.False(BrowserAutomationTaskClassifier.IsOutcomeDiagnosticQuestion(request));
+        Assert.True(BrowserAutomationTaskClassifier.HasExplicitAutomationRequest(request));
+        Assert.Equal(
+            BrowserAutomationDecision.BrowserAutomation,
+            _classifier.Classify(request).Decision);
+    }
+
+    [Theory]
+    [InlineData("What happened to the Browser Automation task, and retry it now.")]
+    [InlineData("Why did it fail? Use Browser Automation to try again.")]
+    public void Diagnostic_followed_by_an_explicit_action_remains_actionable(string request)
+    {
+        Assert.False(BrowserAutomationTaskClassifier.IsOutcomeDiagnosticQuestion(request));
+        Assert.True(BrowserAutomationTaskClassifier.HasExplicitAutomationRequest(request));
+        Assert.Equal(
+            BrowserAutomationDecision.BrowserAutomation,
+            _classifier.Classify(request).Decision);
+    }
+
+    [Theory]
     [InlineData("Summarize this page and copy it to clipboard")]
     [InlineData("Fill this Google Form")]
     [InlineData("Click Oldest on this page")]

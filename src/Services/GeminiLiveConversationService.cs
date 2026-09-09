@@ -69,6 +69,7 @@ public sealed class GeminiLiveConversationService : IDisposable
     private int _providerSocketSequence;
     private int _intentionalRolloverSocketSequence;
     private string _sessionResumptionHandle = "";
+    private long _reconnectUiRevision;
 
     public GeminiLiveConversationService(
         NotificationService notifications,
@@ -782,6 +783,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             _paidSoftRolloverTask = Task.CompletedTask;
             _sessionResumptionHandle = "";
             _intentionalRolloverSocketSequence = 0;
+            Interlocked.Exchange(ref _reconnectUiRevision, 0);
         }
         _toolCalls = null;
     }
@@ -1158,13 +1160,18 @@ public sealed class GeminiLiveConversationService : IDisposable
                     && !expectedSession.IsCancellationRequested
                     && !IsProviderConnected)
                 {
-                    KeyboardWtfState.SetUi(
+                    var revision = KeyboardWtfState.SetUi(
                         VoiceUiPhase.Thinking,
                         "Reconnecting",
                         "Refreshing the secure Live connection...");
+                    Interlocked.Exchange(ref _reconnectUiRevision, revision);
                     AppLog.Info(
                         $"Jarvis reconnect UI shown after noticeable delay: logicalSession={_logicalSessionId} " +
                         $"endedPhysicalSocket={endedSocketSequence}");
+                    // The new provider setup can finish between the connectivity
+                    // check above and this UI publication. Whichever side wins
+                    // the race restores only this exact reconnect revision.
+                    RestoreConversationUiAfterReconnect(expectedSession);
                 }
             }
             catch (OperationCanceledException)
@@ -1215,6 +1222,7 @@ public sealed class GeminiLiveConversationService : IDisposable
                 }
                 AppLog.Info(
                     $"Jarvis Live transport recovered: logicalSession={_logicalSessionId} retry={attempt}");
+                RestoreConversationUiAfterReconnect(expectedSession);
                 if (_paidAccount?.Enabled == true)
                     _ = RefreshAccountAfterProviderSessionAsync();
                 return;
@@ -1243,6 +1251,29 @@ public sealed class GeminiLiveConversationService : IDisposable
         _notifications.Error(
             "Jarvis temporarily unavailable",
             "The live connection could not be restored. Press the Jarvis shortcut to try again.");
+    }
+
+    private void RestoreConversationUiAfterReconnect(
+        CancellationTokenSource expectedSession)
+    {
+        if (!ReferenceEquals(_sessionCts, expectedSession)
+            || expectedSession.IsCancellationRequested
+            || !IsProviderConnected)
+            return;
+
+        var reconnectRevision = Interlocked.Exchange(ref _reconnectUiRevision, 0);
+        if (reconnectRevision == 0)
+            return;
+
+        if (KeyboardWtfState.TrySetUiIfRevision(
+                reconnectRevision,
+                VoiceUiPhase.Listening,
+                AssistantName(),
+                "Listening for your next request..."))
+        {
+            AppLog.Info(
+                $"Jarvis reconnect UI cleared after transport recovery: logicalSession={_logicalSessionId}");
+        }
     }
 
     private void ResetFailedPaidConnection()

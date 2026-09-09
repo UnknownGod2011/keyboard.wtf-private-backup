@@ -33,12 +33,12 @@ Touches: `VoiceOverlayForm` window lifecycle.
 Protect: No-focus-steal interaction and active-app typing.
 
 ## P04 — First-utterance farewell
-Status: OPEN
+Status: FIXED-SOURCE
 Expected: A clear recognized farewell ends locally before tools, Browser Automation or model speech.
-Latest evidence: Human `goodbye` failed again while a visible Jarvis process was active; that process may have been intermediate TEST/production, so exact process/transcript ownership must be proven before source changes.
-Root cause: The local path was reliable only when input transcription arrived; a dedicated provider end tool was rejected when that independent transcript was absent.
-Fix: Keep transcript-first local authority; after its bounded wait, accept the dedicated end tool only if no contradictory transcript exists.
-Evidence: Human report, current TEST physical shutdown, and focused ordering tests for transcript-first, absent-transcript fallback and contradictory-transcript rejection; final repeated production microphone proof pending.
+Latest evidence: A late-session TEST `goodbye` ended the active logical session once, but exposed a Browser Partial-task cancellation announcement attempting local speech after Live shutdown.
+Root cause: The end tool lacked an absent-transcript fallback, and conversation shutdown reused the user-visible Browser cancellation path.
+Fix: Keep transcript-first local authority with the bounded end-tool fallback, and make conversation-owned Browser cleanup silent.
+Evidence: 473 focused tests plus rebuilt TEST session `ebcaa5...`: one socket shutdown, empty context, cancelled Browser state, and no model/local/TTS response; final production microphone proof pending.
 Touches: Live transcription/event ordering; session stop.
 Protect: Audio/VAD/barge-in and immediate local shutdown.
 
@@ -315,10 +315,10 @@ Protect: Deterministic native Explorer close and general Gemini reasoning.
 ## P32 — Silence must preserve the logical Jarvis session
 Status: FIXED-SOURCE
 Expected: Silence alone never dismisses Jarvis or loses context; provider rollover/recovery stays internal until explicit exit.
-Latest evidence: run16 kept one logical session through provider GoAway: socket 1 closed safely at 9m01s, socket 2 connected in 1.1s with the same logical ID and `resumed=True`, a later turn was accepted, and local goodbye closed it once.
-Root cause: Provider-close continuation and buffered reconnect were gated to paid transport even though direct TEST has the same physical socket limit.
-Fix: Keep logical-session authority provider-independent while leaving paid lease/account refresh behavior paid-only.
-Evidence: 561 focused tests preserve paid rollover; run16 transport `9b02ac...` proves sequential recovery. A fully input-silent >10-minute final-installed run remains pending.
+Latest evidence: Human saw Reconnecting for roughly 130s; rebuilt TEST recovered the same logical session in 1.70s, cleared Reconnecting immediately, and recalled pre-rollover context.
+Root cause: Sequential transport recovery restored socket/session ownership but did not clear the reconnect UI revision.
+Fix: Keep provider-independent logical recovery and restore Listening only when the reconnect revision still owns the overlay; never overwrite newer speech/tool UI.
+Evidence: Rebuilt TEST session `1df62f...` logged UI clear 2ms after recovery and retained the pre-rollover codeword; revision-race tests pass. Final production-installed proof pending.
 Touches: Logical session/provider-close UI boundary.
 Protect: 720s lease, 120s grace, paid sequential resumption, audio/VAD.
 
@@ -335,10 +335,10 @@ Protect: All production hotkey values and unrelated user settings.
 ## P34 — Active Browser task guidance and failure context
 Status: FIXED-SOURCE
 Expected: Only relevant answers/corrections/guidance reach the same live task; terminal tasks lose routing authority, while concise diagnostic context still explains the latest failure.
-Latest evidence: Isolated TEST Jarvis accepted an unasked correction during ReadingPage on the same task; an unrelated time question left its request unchanged, and terminal guidance did not resurrect a Partial task.
-Root cause: The single task guard recognized paused answers and destination corrections but not task-directed or live-control-grounded corrections.
-Fix: Extend that guard with task-directed and live-control-grounded semantic shapes; retain terminal rejection, revision invalidation and diagnostic-only status.
-Evidence: 469 focused and 1,004 full desktop tests pass; backend 274, Firestore 12 and clean Release build pass. Real Store Helper task `b7b87cf…` visibly wrote the corrected value and retained the second requested write; exact production-install acceptance remains pending.
+Latest evidence: Rebuilt TEST accurately explained the latest real Helper task failure without creating, reviving or mutating a Browser task.
+Root cause: A retrospective Browser Automation mention was treated as explicit start, and the task owner retained only the newest terminal snapshot.
+Fix: Route outcome questions to read-only status, retain four concise terminal outcomes in the existing owner, clear them at conversation end, and keep terminal guidance rejection.
+Evidence: Real task `2c8f97...` stayed Partial with zero actions while its follow-up explained the missing exact control; 473 focused tests pass. Final production-installed proof pending.
 Touches: Browser coordinator guidance guard; Live tool instructions.
 Protect: Unrelated Jarvis turns, direct browser actions, cancellation and dead-task cleanup.
 

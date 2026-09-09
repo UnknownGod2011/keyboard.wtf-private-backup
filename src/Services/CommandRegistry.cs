@@ -163,7 +163,16 @@ public sealed class CommandRegistry
         }
         _automation?.ResetConversationTransientContext();
         if (_browserAutomation != null)
-            await _browserAutomation.CancelAsync("Jarvis conversation ended");
+        {
+            // Conversation shutdown owns the user-visible terminal outcome.
+            // Browser cleanup must therefore be silent: otherwise a Partial
+            // task can publish a late local "Cancelled" response after the
+            // Live socket has already closed (including after a farewell).
+            await _browserAutomation.CancelAsync(
+                "Jarvis conversation ended",
+                announceOutcome: false);
+            _browserAutomation.ClearRecentTerminalOutcomes();
+        }
     }
 
     private bool StopLiveBeforeAnotherVoiceMode(string requestedMode)
@@ -553,6 +562,18 @@ public sealed class CommandRegistry
         // In particular, normal Chrome/desktop commands must remain normal
         // commands rather than being injected into the controlled webpage.
         var active = _browserAutomation.Snapshot();
+        if (_browserAutomation.RecentTerminalOutcomes().Count > 0
+            && BrowserAutomationTaskClassifier.IsOutcomeDiagnosticQuestion(userTurn))
+        {
+            var statusResult = BrowserAutomationStatus();
+            RecordAuthoritativePreRoute(
+                userTurn,
+                "browser_automation_status",
+                statusResult);
+            AppLog.Info(
+                "Browser outcome diagnostic pre-route retained read-only status and did not start or revive a task.");
+            return true;
+        }
         if (active.CanCancel)
         {
             if (TryParseExplicitBrowserTaskStopOrPause(
@@ -2312,6 +2333,18 @@ public sealed class CommandRegistry
             return ToolResult(false, "Browser Automation is unavailable.", supported: false);
 
         var status = _browserAutomation.Snapshot();
+        var recentOutcomes = _browserAutomation.RecentTerminalOutcomes()
+            .Select(outcome => new Dictionary<string, object>
+            {
+                ["task_id"] = outcome.TaskId,
+                ["state"] = NormalizeBrowserTaskState(outcome),
+                ["detail_state"] = outcome.State.ToString(),
+                ["request"] = BrowserAutomationText.Truncate(outcome.Request, 500),
+                ["result"] = BrowserAutomationText.Truncate(outcome.ResultSummary, 700),
+                ["last_error"] = BrowserAutomationText.Truncate(outcome.LastError, 700),
+                ["updated_utc"] = outcome.UpdatedUtc,
+            })
+            .ToArray();
         var helper = _browserAutomation.HelperStatus;
         return new Dictionary<string, object>
         {
@@ -2337,6 +2370,7 @@ public sealed class CommandRegistry
             ["intervention_can_skip"] = status.Intervention?.CanSkip ?? false,
             ["result"] = status.ResultSummary,
             ["last_error"] = status.LastError,
+            ["recent_outcomes"] = recentOutcomes,
             ["helper_connected"] = helper.CommandChannelReady,
         };
     }

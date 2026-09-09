@@ -854,6 +854,31 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public async Task Jarvis_session_shutdown_silently_cleans_a_partial_browser_task()
+    {
+        var coordinator = new BrowserAutomationCoordinator(null, null, null, null);
+        var runtimeType = typeof(BrowserAutomationCoordinator).GetNestedType(
+            "Runtime", System.Reflection.BindingFlags.NonPublic)!;
+        var runtime = Activator.CreateInstance(runtimeType, nonPublic: true)!;
+        runtimeType.GetProperty("State")!.SetValue(runtime, BrowserTaskState.Partial);
+        typeof(BrowserAutomationCoordinator).GetField(
+            "_active", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(coordinator, runtime);
+        var announcements = 0;
+        coordinator.AnnouncementRequested += _ => announcements++;
+
+        var commands = new CommandRegistry(
+            null, null, null, null, null,
+            browserAutomation: coordinator);
+        await commands.HandleJarvisSessionEndingAsync();
+
+        Assert.Equal(BrowserTaskState.Cancelled, coordinator.Snapshot().State);
+        Assert.Empty(coordinator.RecentTerminalOutcomes());
+        Assert.Equal(0, announcements);
+        ((CancellationTokenSource)runtimeType.GetProperty("Cancellation")!.GetValue(runtime)!).Dispose();
+    }
+
+    [Fact]
     public void Superseded_runtime_cannot_overwrite_the_active_task_status()
     {
         var coordinator = new BrowserAutomationCoordinator(null, null, null, null);
@@ -2852,6 +2877,40 @@ public sealed class BrowserAutomationProtocolTests
             0,
             (int)runtimeType.GetField("GuidanceRevision")!.GetValue(runtime)!);
         ((CancellationTokenSource)runtimeType.GetProperty("Cancellation")!.GetValue(runtime)!).Dispose();
+    }
+
+    [Fact]
+    public void Task_owner_retains_only_bounded_deduplicated_terminal_diagnostics()
+    {
+        using var bridge = new BrowserHelperBridge();
+        var coordinator = new BrowserAutomationCoordinator(null, null, bridge, null);
+        var runtimeType = typeof(BrowserAutomationCoordinator).GetNestedType(
+            "Runtime", System.Reflection.BindingFlags.NonPublic)!;
+        var publish = typeof(BrowserAutomationCoordinator).GetMethod(
+            "Publish", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var active = typeof(BrowserAutomationCoordinator).GetField(
+            "_active", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+        for (var index = 0; index < 6; index++)
+        {
+            var runtime = Activator.CreateInstance(runtimeType, nonPublic: true)!;
+            runtimeType.GetProperty("TaskId")!.SetValue(runtime, $"task-{index}");
+            runtimeType.GetProperty("Request")!.SetValue(runtime, $"Request {index}");
+            runtimeType.GetProperty("State")!.SetValue(runtime, BrowserTaskState.Failed);
+            runtimeType.GetProperty("LastError")!.SetValue(runtime, $"Failure {index}");
+            active.SetValue(coordinator, runtime);
+            publish.Invoke(coordinator, [runtime]);
+            publish.Invoke(coordinator, [runtime]);
+            ((CancellationTokenSource)runtimeType.GetProperty("Cancellation")!.GetValue(runtime)!).Dispose();
+        }
+
+        var outcomes = coordinator.RecentTerminalOutcomes();
+        Assert.Equal(4, outcomes.Count);
+        Assert.Equal(["task-5", "task-4", "task-3", "task-2"], outcomes.Select(item => item.TaskId));
+        Assert.Equal("Failure 5", outcomes[0].LastError);
+
+        coordinator.ClearRecentTerminalOutcomes();
+        Assert.Empty(coordinator.RecentTerminalOutcomes());
     }
 
     [Theory]

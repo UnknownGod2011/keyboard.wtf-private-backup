@@ -19,6 +19,7 @@ public sealed class BrowserAutomationStartResult
 public sealed class BrowserAutomationCoordinator : IDisposable
 {
     private static readonly TimeSpan MaximumTaskRuntime = TimeSpan.FromMinutes(5);
+    private const int MaximumRecentTerminalOutcomes = 4;
 
     private sealed class Runtime
     {
@@ -85,6 +86,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
     private readonly object _sync = new();
     private Runtime _active;
     private BrowserAutomationSnapshot _last = new();
+    private readonly List<BrowserAutomationSnapshot> _recentTerminalOutcomes = new();
     private DateTime _lastConsentPromptUtc;
     private bool _disposed;
     private readonly PaidAccountService _paidAccount;
@@ -447,6 +449,18 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         if (cleanupRequired)
             await CompleteCancellationAsync(runtime);
         return true;
+    }
+
+    public IReadOnlyList<BrowserAutomationSnapshot> RecentTerminalOutcomes()
+    {
+        lock (_sync)
+            return _recentTerminalOutcomes.ToArray();
+    }
+
+    public void ClearRecentTerminalOutcomes()
+    {
+        lock (_sync)
+            _recentTerminalOutcomes.Clear();
     }
 
     public bool RequestCancel(
@@ -5824,6 +5838,21 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 return;
             }
             _last = snapshot;
+            if (IsTerminal(snapshot.State))
+            {
+                _recentTerminalOutcomes.RemoveAll(
+                    outcome => string.Equals(
+                        outcome.TaskId,
+                        snapshot.TaskId,
+                        StringComparison.Ordinal));
+                _recentTerminalOutcomes.Insert(0, BuildTerminalDiagnostic(snapshot));
+                if (_recentTerminalOutcomes.Count > MaximumRecentTerminalOutcomes)
+                {
+                    _recentTerminalOutcomes.RemoveRange(
+                        MaximumRecentTerminalOutcomes,
+                        _recentTerminalOutcomes.Count - MaximumRecentTerminalOutcomes);
+                }
+            }
             // Keep status ordering atomic with _active replacement. The only
             // UI subscriber marshals asynchronously, so this does not block on
             // rendering and a newer runtime is always enqueued afterward.
@@ -5867,6 +5896,19 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             ResultSummary = runtime.ResultSummary,
         };
     }
+
+    private static BrowserAutomationSnapshot BuildTerminalDiagnostic(
+        BrowserAutomationSnapshot snapshot) => new()
+    {
+        TaskId = snapshot.TaskId,
+        Request = BrowserAutomationText.Truncate(snapshot.Request, 500),
+        State = snapshot.State,
+        StartedUtc = snapshot.StartedUtc,
+        UpdatedUtc = snapshot.UpdatedUtc,
+        LastError = BrowserAutomationText.Truncate(snapshot.LastError, 700),
+        Outcome = snapshot.Outcome,
+        ResultSummary = BrowserAutomationText.Truncate(snapshot.ResultSummary, 700),
+    };
 
     private static bool IsTerminal(BrowserTaskState state) =>
         state is BrowserTaskState.Completed

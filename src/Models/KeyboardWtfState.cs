@@ -77,6 +77,8 @@ public class ChatMessage
 // Central runtime state shared by the tray app, hotkeys, capture pipeline, and settings service.
 public static class KeyboardWtfState
 {
+    private static readonly object UiStateLock = new();
+    private static long _uiRevision;
     public static SpeechEngine SelectedEngine { get; set; } = SpeechEngine.Whisper;
     public static string SelectedLanguage { get; set; } = "auto";
     public static int SelectedMicrophoneIndex { get; set; } = -1; // -1 = system default
@@ -154,14 +156,41 @@ public static class KeyboardWtfState
     public static AssistantTone AssistantTone { get; set; } = AssistantTone.Balanced;
     public static string GeminiVoice { get; set; } = "Kore";
 
-    public static void SetUi(VoiceUiPhase phase, string title, string detail)
+    public static long SetUi(VoiceUiPhase phase, string title, string detail)
     {
-        UiPhase = phase;
-        UiTitle = title ?? "keyboard.wtf";
-        UiDetail = detail ?? "";
-        UiPhaseStartedUtc = DateTime.UtcNow;
+        long revision;
+        lock (UiStateLock)
+        {
+            UiPhase = phase;
+            UiTitle = title ?? "keyboard.wtf";
+            UiDetail = detail ?? "";
+            UiPhaseStartedUtc = DateTime.UtcNow;
+            revision = ++_uiRevision;
+        }
         try { UiChanged?.Invoke(); }
         catch { /* UI feedback must never break the active operation. */ }
+        return revision;
+    }
+
+    public static bool TrySetUiIfRevision(
+        long expectedRevision,
+        VoiceUiPhase phase,
+        string title,
+        string detail)
+    {
+        lock (UiStateLock)
+        {
+            if (_uiRevision != expectedRevision)
+                return false;
+            UiPhase = phase;
+            UiTitle = title ?? "keyboard.wtf";
+            UiDetail = detail ?? "";
+            UiPhaseStartedUtc = DateTime.UtcNow;
+            _uiRevision++;
+        }
+        try { UiChanged?.Invoke(); }
+        catch { /* UI feedback must never break the active operation. */ }
+        return true;
     }
 
     // Noise gate: silence frames below -38 dBFS before sending to speech engines
