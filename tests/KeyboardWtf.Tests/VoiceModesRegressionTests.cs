@@ -114,6 +114,20 @@ public sealed class VoiceModesRegressionTests
     }
 
     [Theory]
+    [InlineData(7, 7, true)]
+    [InlineData(7, 8, false)]
+    [InlineData(8, 7, false)]
+    public void Microphone_start_can_commit_only_while_it_owns_the_operation_generation(
+        int startGeneration,
+        int currentGeneration,
+        bool expected) =>
+        Assert.Equal(
+            expected,
+            VoiceCaptureService.RecordingStartStillOwnsOperation(
+                startGeneration,
+                currentGeneration));
+
+    [Theory]
     [InlineData(0, 0)]
     [InlineData(4, 5)]
     [InlineData(600, 600)]

@@ -73,14 +73,14 @@ Touches: Trusted keyboard/input boundary.
 Protect: Fast explicit direct actions.
 
 ## P08 — Cancellation and stale-runtime safety
-Status: VERIFIED-INSTALLED
-Expected: Cancelled work cannot later post native close, send keys, publish results or overwrite a newer task.
-Latest evidence: Exact build contains final pre-mutation/pre-publication cancellation checks and passed focused/full gates.
-Root cause: Cancellation could arrive during window validation or socket wait, after an earlier check.
-Fix: Propagate one cancellation token through mutation and Live publication boundaries.
-Evidence: 922 desktop tests; private CI; 1,500 race repetitions.
-Touches: Native close; trusted input; Live dispatcher.
-Protect: Non-blocking Live control events.
+Status: FIXED-SOURCE
+Expected: Cancelled work cannot later open the microphone, post native input, publish results or overwrite a newer task.
+Latest evidence: Exact installed `c3b3cbd...` received cancel during microphone startup, then began Dictation 1.07s later.
+Root cause: Capture ownership was published only after blocking microphone startup, so cancel could not invalidate the in-flight start.
+Fix: Make microphone startup hold the existing operation generation and discard/close any start that loses it.
+Evidence: Installed trace at 23:37:47–23:37:55 plus 74 focused lifecycle/input tests; exact installed race retest pending.
+Touches: Voice capture operation ownership.
+Protect: Native/input/Live cancellation checks and fast voice-mode startup.
 
 ## P09 — Loud/full-scale PCM processing
 Status: VERIFIED-INSTALLED

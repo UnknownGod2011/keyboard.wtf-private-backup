@@ -26,6 +26,8 @@ public sealed class VoiceCaptureService
     private string _lastPreview = "";
     private int _autoCompleteInProgress;
     private int _operationId;
+    private readonly object _recordingStartGate = new();
+    private bool _recordingStartInProgress;
     private TextInsertionTarget _deliveryTarget;
 
     internal TextInsertionTarget CurrentDeliveryTarget => _deliveryTarget;
@@ -55,9 +57,6 @@ public sealed class VoiceCaptureService
             return false;
         }
 
-        if (KeyboardWtfState.IsRecording)
-            return false;
-
         if (!IsMicrophoneAvailable(out var reason))
         {
             KeyboardWtfState.LastSendResult = "No mic";
@@ -65,70 +64,120 @@ public sealed class VoiceCaptureService
             return false;
         }
 
-        _deliveryTarget = TextInsertionTarget.Capture();
-        KeyboardWtfState.SetUi(
-            VoiceUiPhase.Listening,
-            ModeTitle(mode),
-            "Starting microphone...");
-        StartLivePreview();
+        int startOperationId;
+        lock (_recordingStartGate)
+        {
+            if (KeyboardWtfState.IsRecording || _recordingStartInProgress)
+                return false;
+
+            _recordingStartInProgress = true;
+            startOperationId = Interlocked.Increment(ref _operationId);
+        }
+
         var microphoneStarted = Stopwatch.GetTimestamp();
         try
         {
+            _deliveryTarget = TextInsertionTarget.Capture();
+            KeyboardWtfState.SetUi(
+                VoiceUiPhase.Listening,
+                ModeTitle(mode),
+                "Starting microphone...");
+            StartLivePreview();
             _audioRecorder.StartRecording();
         }
         catch (Exception ex)
         {
             StopLivePreview();
-            _deliveryTarget = null;
-            KeyboardWtfState.IsRecording = false;
-            KeyboardWtfState.CurrentRecordingMode = RecordingMode.None;
-            KeyboardWtfState.LastSendResult = "Microphone unavailable";
-            KeyboardWtfState.SetUi(
-                VoiceUiPhase.Error,
-                "Microphone unavailable",
-                "Microphone access is required. Check Windows privacy settings and the selected input device.");
+            bool stillOwned;
+            lock (_recordingStartGate)
+            {
+                stillOwned = RecordingStartStillOwnsOperation(startOperationId, _operationId);
+                _recordingStartInProgress = false;
+                _deliveryTarget = null;
+                if (stillOwned)
+                {
+                    KeyboardWtfState.IsRecording = false;
+                    KeyboardWtfState.CurrentRecordingMode = RecordingMode.None;
+                    KeyboardWtfState.LastSendResult = "Microphone unavailable";
+                    KeyboardWtfState.SetUi(
+                        VoiceUiPhase.Error,
+                        "Microphone unavailable",
+                        "Microphone access is required. Check Windows privacy settings and the selected input device.");
+                }
+            }
+
+            if (!stillOwned)
+            {
+                AppLog.Info("Microphone startup ended after cancellation; no recording was retained.");
+                return false;
+            }
+
             _notifications.Error(
                 "Microphone unavailable",
                 "Microphone access is required. Check Windows privacy settings and the selected input device.");
             AppLog.Warning(ex, "Microphone recording could not start");
             return false;
         }
-        AppLog.Info(
-            $"Microphone capture started: mode={mode} startupMs=" +
-            $"{(long)Stopwatch.GetElapsedTime(microphoneStarted).TotalMilliseconds}");
-        KeyboardWtfState.IsRecording = true;
-        KeyboardWtfState.CurrentRecordingMode = mode;
-        KeyboardWtfState.ActiveQuickSendTarget = quickTarget;
-        if (!KeyboardWtfState.AppendMode && mode != RecordingMode.Command)
-            KeyboardWtfState.CurrentTranscript = string.Empty;
-        KeyboardWtfState.FormattedOutputs.Clear();
-        KeyboardWtfState.LastSendResult = null;
-        _recordingStartUtc = DateTime.UtcNow;
-        KeyboardWtfState.SetUi(
-            VoiceUiPhase.Listening,
-            ModeTitle(mode),
-            "Speak now. Press the same shortcut to finish.");
 
-        _autoStopCts?.Cancel();
-        _autoStopCts = null;
-        if (ShouldScheduleAutoStop(mode, KeyboardWtfState.MaxRecordingSeconds))
+        lock (_recordingStartGate)
         {
-            _autoStopCts = new CancellationTokenSource();
-            _ = AutoStopAfterLimitAsync(
-                mode,
-                KeyboardWtfState.MaxRecordingSeconds,
-                _autoStopCts.Token);
-        }
-        // Smart Writing still supports explicit toggle-to-finish, but a long
-        // final silence should also complete the normal hands-free path. Eight
-        // seconds preserves natural thinking pauses without leaving a finished
-        // recording alive indefinitely.
-        if (UsesSilenceAutoStop(mode))
-            StartSilenceWatcher(mode);
+            if (!RecordingStartStillOwnsOperation(startOperationId, _operationId))
+            {
+                if (_audioRecorder.IsRecording)
+                    _audioRecorder.StopRecording();
+                StopLivePreview();
+                _deliveryTarget = null;
+                _recordingStartInProgress = false;
+                KeyboardWtfState.IsRecording = false;
+                KeyboardWtfState.CurrentRecordingMode = RecordingMode.None;
+                KeyboardWtfState.ActiveQuickSendTarget = null;
+                KeyboardWtfState.SetUi(
+                    VoiceUiPhase.Cancelled,
+                    "Cancelled",
+                    "Nothing was typed or executed.");
+                AppLog.Info("Microphone startup discarded because cancellation owns the operation.");
+                return false;
+            }
 
-        _notifications.Info(ModeTitle(mode), "Listening");
+            AppLog.Info(
+                $"Microphone capture started: mode={mode} startupMs=" +
+                $"{(long)Stopwatch.GetElapsedTime(microphoneStarted).TotalMilliseconds}");
+            KeyboardWtfState.IsRecording = true;
+            KeyboardWtfState.CurrentRecordingMode = mode;
+            KeyboardWtfState.ActiveQuickSendTarget = quickTarget;
+            if (!KeyboardWtfState.AppendMode && mode != RecordingMode.Command)
+                KeyboardWtfState.CurrentTranscript = string.Empty;
+            KeyboardWtfState.FormattedOutputs.Clear();
+            KeyboardWtfState.LastSendResult = null;
+            _recordingStartUtc = DateTime.UtcNow;
+            KeyboardWtfState.SetUi(
+                VoiceUiPhase.Listening,
+                ModeTitle(mode),
+                "Speak now. Press the same shortcut to finish.");
+
+            _autoStopCts?.Cancel();
+            _autoStopCts = null;
+            if (ShouldScheduleAutoStop(mode, KeyboardWtfState.MaxRecordingSeconds))
+            {
+                _autoStopCts = new CancellationTokenSource();
+                _ = AutoStopAfterLimitAsync(
+                    mode,
+                    KeyboardWtfState.MaxRecordingSeconds,
+                    _autoStopCts.Token);
+            }
+            if (UsesSilenceAutoStop(mode))
+                StartSilenceWatcher(mode);
+
+            _recordingStartInProgress = false;
+            _notifications.Info(ModeTitle(mode), "Listening");
+        }
         return true;
     }
+
+    internal static bool RecordingStartStillOwnsOperation(
+        int startOperationId,
+        int currentOperationId) =>
+        startOperationId == currentOperationId;
 
     public async Task<string> StopAndTranscribeAsync(
         bool updateTranscript = true,
@@ -269,25 +318,28 @@ public sealed class VoiceCaptureService
 
     public void Cancel()
     {
-        Interlocked.Increment(ref _operationId);
-        _autoStopCts?.Cancel();
-        _silenceCts?.Cancel();
-        _processingCts?.Cancel();
-        if (KeyboardWtfState.IsRecording)
+        bool stopRecording;
+        lock (_recordingStartGate)
         {
-            _audioRecorder.StopRecording();
-            StopLivePreview();
+            Interlocked.Increment(ref _operationId);
+            _autoStopCts?.Cancel();
+            _silenceCts?.Cancel();
+            _processingCts?.Cancel();
+            stopRecording = KeyboardWtfState.IsRecording;
             KeyboardWtfState.IsRecording = false;
+            KeyboardWtfState.CurrentRecordingMode = RecordingMode.None;
+            KeyboardWtfState.IsProcessing = false;
+            KeyboardWtfState.IsProcessingAi = false;
+            _completionHandler = null;
+            _audioCompletionHandler = null;
+            _deliveryTarget = null;
+            KeyboardWtfState.LastSendResult = "Cancelled";
+            KeyboardWtfState.SetUi(VoiceUiPhase.Cancelled, "Cancelled", "Nothing was typed or executed.");
         }
 
-        KeyboardWtfState.CurrentRecordingMode = RecordingMode.None;
-        KeyboardWtfState.IsProcessing = false;
-        KeyboardWtfState.IsProcessingAi = false;
-        _completionHandler = null;
-        _audioCompletionHandler = null;
-        _deliveryTarget = null;
-        KeyboardWtfState.LastSendResult = "Cancelled";
-        KeyboardWtfState.SetUi(VoiceUiPhase.Cancelled, "Cancelled", "Nothing was typed or executed.");
+        if (stopRecording)
+            _audioRecorder.StopRecording();
+        StopLivePreview();
         _notifications.Info("Cancelled", "Current voice operation cancelled.");
     }
 
