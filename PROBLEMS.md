@@ -125,10 +125,10 @@ Protect: Do not submit test forms.
 ## P13 — NeedsUserAction bridge
 Status: FIXED-SOURCE
 Expected: Ask only for genuinely missing required data; relevant natural answer resumes the same task; optional skip works; unrelated talk is isolated.
-Latest evidence: TEST task `3419b6...` exposed a second scope defect: after a one-field edit it asked for an unrelated required form field.
-Root cause: Required-field planner/verifier rules treated any field edit that mentioned a form as whole-form completion.
-Fix: Preserve requested scope; require every required question only for explicit whole-form completion, while exact intervention matching still prevents answered source controls impersonating missing targets.
-Evidence: Task `88267a...` changed only Full name, completed without asking for Email or submitting, and matched the visible page; 460 focused tests pass. Final installed verification pending.
+Latest evidence: Real Helper task `02f3e726...` asked once for an optional field, accepted the internal skip on the same task, executed zero browser actions and completed with the live field still blank.
+Root cause: Planner-required labels were not reconciled with exact live optional metadata, and a repeated skipped intervention could loop because a no-mutation outcome had no terminal receipt.
+Fix: Reconcile exact field metadata and let the task owner verify a single-field authorized no-op only when that field remains unchanged on the same tab with zero action receipts.
+Evidence: 284 focused tests plus TEST Gemini/Store Helper/Chrome task `02f3e726...`; AX read-back proved blank field and no submit. Final production-installed acceptance pending.
 Touches: Jarvis/Browser intervention bridge.
 Protect: Normal conversation while paused.
 

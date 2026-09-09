@@ -142,6 +142,244 @@ public sealed class BrowserAutomationProtocolTests
         Assert.Equal("captcha_required", intervention.Kind);
     }
 
+    [Fact]
+    public void Explicit_skip_may_override_a_planner_label_only_for_the_exact_live_optional_field()
+    {
+        var intervention = new BrowserUserIntervention
+        {
+            Missing = "Provide text for the field: Was any relevant action missing from the plugin feature list?",
+            Explanation = "The requested value was not supplied.",
+            Required = true,
+            CanSkip = false,
+        };
+        var optionalPage = new BrowserPageSnapshot
+        {
+            Controls =
+            [
+                new BrowserControl
+                {
+                    Visible = true,
+                    Enabled = true,
+                    FieldId = "project-note",
+                    FieldLabel = "Was any relevant action missing from the plugin's feature list? If so, please describe what it is",
+                    FieldRequired = false,
+                },
+                new BrowserControl
+                {
+                    Visible = true,
+                    Enabled = true,
+                    FieldId = "action-rating",
+                    FieldLabel = "Were the plugin action names clear?",
+                    FieldRequired = true,
+                },
+            ],
+        };
+        var requiredPage = new BrowserPageSnapshot
+        {
+            Controls =
+            [
+                new BrowserControl
+                {
+                    Visible = true,
+                    Enabled = true,
+                    FieldId = "project-note",
+                    FieldLabel = "Was any relevant action missing from the plugin's feature list? If so, please describe what it is",
+                    FieldRequired = true,
+                },
+            ],
+        };
+
+        Assert.True(BrowserAutomationCoordinator.IsInterventionForKnownOptionalPageField(
+            intervention,
+            optionalPage));
+        var reconciled = BrowserAutomationCoordinator.ReconcileInterventionWithPageMetadata(
+            intervention,
+            optionalPage);
+        Assert.False(reconciled.Required);
+        Assert.True(reconciled.CanSkip);
+        var skipped = new HashSet<string>(StringComparer.Ordinal)
+        {
+            BrowserAutomationCoordinator.InterventionFingerprint(reconciled),
+        };
+        Assert.True(BrowserAutomationCoordinator.ShouldSkipIntervention(
+            skipUnavailableOptionalInputs: false,
+            skipped,
+            BrowserAutomationCoordinator.ReconcileInterventionWithPageMetadata(
+                intervention,
+                optionalPage)));
+        Assert.False(BrowserAutomationCoordinator.IsInterventionForKnownOptionalPageField(
+            intervention,
+            requiredPage));
+        Assert.False(BrowserAutomationCoordinator.IsInterventionForKnownOptionalPageField(
+            new BrowserUserIntervention
+            {
+                Missing = "Provide the account email.",
+                Required = true,
+            },
+            optionalPage));
+    }
+
+    [Fact]
+    public void Paused_task_accepts_skip_when_exact_live_field_is_known_optional()
+    {
+        using var bridge = new BrowserHelperBridge();
+        var coordinator = new BrowserAutomationCoordinator(null, null, bridge, null);
+        var runtimeType = typeof(BrowserAutomationCoordinator).GetNestedType(
+            "Runtime", System.Reflection.BindingFlags.NonPublic)!;
+        var runtime = Activator.CreateInstance(runtimeType, nonPublic: true)!;
+        runtimeType.GetProperty("State")!.SetValue(runtime, BrowserTaskState.NeedsUserAction);
+        runtimeType.GetProperty("Intervention")!.SetValue(runtime, new BrowserUserIntervention
+        {
+            Missing = "Provide text for the field: Was any relevant action missing from the plugin feature list?",
+            Explanation = "The requested value was not supplied.",
+            Required = true,
+            CanSkip = false,
+        });
+        runtimeType.GetProperty("Page")!.SetValue(runtime, new BrowserPageSnapshot
+        {
+            Controls =
+            [
+                new BrowserControl
+                {
+                    Visible = true,
+                    Enabled = true,
+                    FieldId = "project-note",
+                    FieldLabel = "Was any relevant action missing from the plugin's feature list? If so, please describe what it is",
+                    FieldRequired = false,
+                },
+            ],
+        });
+        typeof(BrowserAutomationCoordinator).GetField(
+            "_active", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(coordinator, runtime);
+
+        Assert.True(coordinator.TryAddTaskGuidance(
+            "Skip that optional field and continue.",
+            out _));
+        Assert.Equal(BrowserTaskState.ReadingPage, coordinator.Snapshot().State);
+        ((CancellationTokenSource)runtimeType.GetProperty("Cancellation")!.GetValue(runtime)!).Dispose();
+    }
+
+    [Fact]
+    public void Authorized_optional_skip_is_terminal_evidence_only_for_an_unchanged_no_mutation_task()
+    {
+        var page = new BrowserPageSnapshot
+        {
+            TabId = 42,
+            Url = "https://example.test/form",
+            Controls =
+            [
+                new BrowserControl
+                {
+                    Id = "optional-input",
+                    FieldId = "optional-note",
+                    FieldLabel = "Optional installation note (plugin + extension)",
+                    FieldRequired = false,
+                    FieldAnswered = false,
+                    Visible = true,
+                    Enabled = true,
+                    Value = "",
+                },
+            ],
+        };
+        var checkpoints = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [BrowserAutomationCoordinator.SkippedFieldCheckpointKey(
+                page.TabId,
+                "optional-note")] = BrowserAutomationCoordinator.SkippedFieldState(
+                    page,
+                    "optional-note"),
+        };
+        var rejected = new BrowserVerificationResult
+        {
+            Error = "No current-task evidence proves the requested outcome.",
+        };
+
+        var verified = BrowserAutomationCoordinator.VerifyAuthorizedNoMutationCompletion(
+            "Fill the optional field 'Optional installation note (plugin plus extension)'. Ask me for the value to put in this field.",
+            new BrowserPlannerDecision { Done = true },
+            page,
+            Array.Empty<BrowserActionReceipt>(),
+            checkpoints,
+            rejected);
+
+        Assert.True(verified.Verified);
+        Assert.Contains("remained unchanged", verified.Evidence);
+
+        page.Controls[0].Value = "unexpected write";
+        page.Controls[0].FieldAnswered = true;
+        Assert.Same(
+            rejected,
+            BrowserAutomationCoordinator.VerifyAuthorizedNoMutationCompletion(
+                "Ask me for the value to put in the optional installation note.",
+                new BrowserPlannerDecision { Done = true },
+                page,
+                Array.Empty<BrowserActionReceipt>(),
+                checkpoints,
+                rejected));
+    }
+
+    [Fact]
+    public void Authorized_optional_skip_never_bypasses_mutation_or_page_evidence()
+    {
+        var page = new BrowserPageSnapshot
+        {
+            TabId = 42,
+            Url = "https://example.test/form",
+            Controls =
+            [
+                new BrowserControl
+                {
+                    Id = "optional-input",
+                    FieldId = "optional-note",
+                    FieldRequired = false,
+                    Visible = true,
+                    Enabled = true,
+                },
+            ],
+        };
+        var checkpoints = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [BrowserAutomationCoordinator.SkippedFieldCheckpointKey(
+                page.TabId,
+                "optional-note")] = BrowserAutomationCoordinator.SkippedFieldState(
+                    page,
+                    "optional-note"),
+        };
+        var rejected = new BrowserVerificationResult { Error = "rejected" };
+        var receipt = new BrowserActionReceipt { Ok = true, Action = "type" };
+
+        Assert.Same(
+            rejected,
+            BrowserAutomationCoordinator.VerifyAuthorizedNoMutationCompletion(
+                "Fill this form and skip the optional note.",
+                new BrowserPlannerDecision { Done = true },
+                page,
+                Array.Empty<BrowserActionReceipt>(),
+                checkpoints,
+                rejected));
+        Assert.Same(
+            rejected,
+            BrowserAutomationCoordinator.VerifyAuthorizedNoMutationCompletion(
+                "Ask me for the optional note.",
+                new BrowserPlannerDecision { Done = true },
+                page,
+                new[] { receipt },
+                checkpoints,
+                rejected));
+
+        page.TabId = 99;
+        Assert.Same(
+            rejected,
+            BrowserAutomationCoordinator.VerifyAuthorizedNoMutationCompletion(
+                "Ask me for the optional note.",
+                new BrowserPlannerDecision { Done = true },
+                page,
+                Array.Empty<BrowserActionReceipt>(),
+                checkpoints,
+                rejected));
+    }
+
     [Theory]
     [InlineData("Fill what is known and skip unavailable optional fields.", true)]
     [InlineData("Leave any unknown optional values blank.", true)]

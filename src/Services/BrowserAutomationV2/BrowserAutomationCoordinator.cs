@@ -58,6 +58,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         public BrowserUserIntervention Intervention { get; set; }
         public bool SkipUnavailableOptionalInputs { get; set; }
         public HashSet<string> SkippedInterventions { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, string> AuthorizedSkippedFieldStates { get; } = new(StringComparer.Ordinal);
         public string CancellationReason { get; set; } = "";
         public BrowserTaskState? LastAnnouncedState { get; set; }
         public bool SuppressCancellationAnnouncement { get; set; }
@@ -169,15 +170,20 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 guidance);
             var skipRequest = _active.State == BrowserTaskState.NeedsUserAction
                 && IsSkipInterventionGuidance(guidance);
+            var activeIntervention = skipRequest
+                ? ReconcileInterventionWithPageMetadata(
+                    _active.Intervention,
+                    _active.Page)
+                : _active.Intervention;
             var adoptFreshActiveTab = CanAcceptAuthorizedPageHandoff(_active.State)
                 && ShouldAdoptFreshActiveTabForGuidance(
-                    _active.Intervention,
+                    activeIntervention,
                     guidance,
                     _active.Page,
                     _bridge.Status);
-            if (skipRequest && _active.Intervention?.CanSkip != true)
+            if (skipRequest && activeIntervention?.CanSkip != true)
             {
-                reason = BuildRequiredInterventionResponse(_active.Intervention);
+                reason = BuildRequiredInterventionResponse(activeIntervention);
                 return false;
             }
 
@@ -198,14 +204,17 @@ public sealed class BrowserAutomationCoordinator : IDisposable
 
             _active.PendingGuidance.Enqueue(
                 skipRequest
-                    ? BuildSkippedInterventionGuidance(_active.Intervention, guidance)
+                    ? BuildSkippedInterventionGuidance(activeIntervention, guidance)
                     : explicitCorrection
                     ? $"Latest explicit user correction: {guidance.Trim()}"
                     : $"User guidance: {guidance.Trim()}");
             if (skipRequest)
             {
                 _active.SkippedInterventions.Add(
-                    InterventionFingerprint(_active.Intervention));
+                    InterventionFingerprint(activeIntervention));
+                CaptureAuthorizedOptionalSkip(
+                    _active,
+                    activeIntervention);
                 if (AllowsSkippingUnavailableOptionalInputs(guidance))
                     _active.SkipUnavailableOptionalInputs = true;
             }
@@ -819,7 +828,29 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 if (lastDecision.NeedsUserAction
                     || lastDecision.Action.Type == "needs_user_action")
                 {
-                    var intervention = BuildPlannerIntervention(lastDecision);
+                    var intervention = ReconcileInterventionWithPageMetadata(
+                        BuildPlannerIntervention(lastDecision),
+                        runtime.Page);
+                    var skippedTerminal = VerifyAuthorizedNoMutationCompletion(
+                        runtime.Request,
+                        new BrowserPlannerDecision { Done = true },
+                        runtime.Page,
+                        runtime.Receipts,
+                        runtime.AuthorizedSkippedFieldStates,
+                        new BrowserVerificationResult());
+                    if (ShouldSkipIntervention(
+                            runtime.SkipUnavailableOptionalInputs,
+                            runtime.SkippedInterventions,
+                            intervention)
+                        && skippedTerminal.Verified)
+                    {
+                        Complete(
+                            runtime,
+                            BrowserAutomationOutcome.Completed,
+                            "The optional item was left unchanged as requested.",
+                            skippedTerminal.Evidence);
+                        return;
+                    }
                     if (IsRequestedInterventionAlreadySatisfied(
                             intervention,
                             runtime.Page))
@@ -869,6 +900,16 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         runtime.Page,
                         runtime.Receipts,
                         runtime.OrderedSourceCollectionVerified);
+                    if (!terminal.Verified)
+                    {
+                        terminal = VerifyAuthorizedNoMutationCompletion(
+                            runtime.Request,
+                            lastDecision,
+                            runtime.Page,
+                            runtime.Receipts,
+                            runtime.AuthorizedSkippedFieldStates,
+                            terminal);
+                    }
                     if (terminal.Verified)
                     {
                         Complete(
@@ -3192,12 +3233,16 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         string resumedHistory,
         CancellationToken token)
     {
+        intervention = ReconcileInterventionWithPageMetadata(
+            intervention,
+            runtime.Page);
         if (ShouldSkipIntervention(
                 runtime.SkipUnavailableOptionalInputs,
                 runtime.SkippedInterventions,
                 intervention))
         {
             runtime.SkippedInterventions.Add(InterventionFingerprint(intervention));
+            CaptureAuthorizedOptionalSkip(runtime, intervention);
             runtime.History.Add(BuildSkippedInterventionGuidance(
                 intervention,
                 "The user authorized unavailable optional information to be skipped."));
@@ -3364,6 +3409,239 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             CanSkip = canSkip,
         };
     }
+
+    internal static bool IsInterventionForKnownOptionalPageField(
+        BrowserUserIntervention intervention,
+        BrowserPageSnapshot page) =>
+        FindInterventionPageField(intervention, page)?.FieldRequired == false;
+
+    internal static BrowserControl FindInterventionPageField(
+        BrowserUserIntervention intervention,
+        BrowserPageSnapshot page)
+    {
+        if (intervention == null
+            || page?.Controls == null
+            || IsProtectedIntervention(intervention.Missing, intervention.Explanation))
+        {
+            return null;
+        }
+
+        var request = NormalizeControlText(string.Join(
+            " ",
+            intervention.Missing,
+            intervention.Explanation));
+        if (request.Length == 0)
+            return null;
+
+        var fields = page.Controls
+            .Where(control => control is
+            {
+                Visible: true,
+                Enabled: true,
+            }
+                && !string.IsNullOrWhiteSpace(control.FieldId)
+                && !string.IsNullOrWhiteSpace(control.FieldLabel)
+                && control.FieldRequired.HasValue)
+            .GroupBy(control => control.FieldId, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToArray();
+        var matchedFields = fields
+            .Where(control => FieldIdentityAppearsInIntervention(
+                request,
+                control.FieldLabel))
+            .ToArray();
+        if (matchedFields.Length == 1)
+            return matchedFields[0];
+        if (matchedFields.Length > 1)
+            return null;
+
+        var requestTerms = MeaningfulControlTerms(request);
+        var ranked = fields
+            .Select(control => new
+            {
+                Control = control,
+                Score = MeaningfulControlTerms(control.FieldLabel)
+                    .Count(requestTerms.Contains),
+            })
+            .OrderByDescending(candidate => candidate.Score)
+            .ToArray();
+        return ranked.Length > 0
+            && ranked[0].Score >= 3
+            && (ranked.Length == 1 || ranked[0].Score >= ranked[1].Score + 2)
+                ? ranked[0].Control
+                : null;
+    }
+
+    private static void CaptureAuthorizedOptionalSkip(
+        Runtime runtime,
+        BrowserUserIntervention intervention)
+    {
+        var field = FindInterventionPageField(intervention, runtime.Page);
+        if (field?.FieldRequired != false)
+            return;
+
+        var key = SkippedFieldCheckpointKey(runtime.Page.TabId, field.FieldId);
+        runtime.AuthorizedSkippedFieldStates[key] = SkippedFieldState(
+            runtime.Page,
+            field.FieldId);
+    }
+
+    internal static BrowserVerificationResult VerifyAuthorizedNoMutationCompletion(
+        string request,
+        BrowserPlannerDecision decision,
+        BrowserPageSnapshot page,
+        IReadOnlyList<BrowserActionReceipt> receipts,
+        IReadOnlyDictionary<string, string> skippedFieldStates,
+        BrowserVerificationResult fallback)
+    {
+        if (decision == null
+            || (!decision.Done && decision.Action?.Type != "done")
+            || page == null
+            || (receipts?.Count ?? 0) != 0
+            || skippedFieldStates?.Count is not > 0
+            || !IsSingleFieldSkipCompletionRequest(
+                request,
+                page,
+                skippedFieldStates.Keys))
+        {
+            return fallback;
+        }
+
+        var stillUnchanged = skippedFieldStates.All(checkpoint =>
+        {
+            var prefix = $"{page.TabId}:";
+            if (!checkpoint.Key.StartsWith(prefix, StringComparison.Ordinal))
+                return false;
+            var fieldId = checkpoint.Key[prefix.Length..];
+            return fieldId.Length > 0
+                && string.Equals(
+                    checkpoint.Value,
+                    SkippedFieldState(page, fieldId),
+                    StringComparison.Ordinal);
+        });
+        return stillUnchanged
+            ? new BrowserVerificationResult
+            {
+                Verified = true,
+                Evidence = "The user-authorized optional field remained unchanged on the same live page, and no browser mutation was executed.",
+            }
+            : fallback;
+    }
+
+    internal static string SkippedFieldCheckpointKey(int tabId, string fieldId) =>
+        $"{tabId}:{fieldId?.Trim()}";
+
+    internal static bool IsSingleFieldSkipCompletionRequest(
+        string request,
+        BrowserPageSnapshot page,
+        IEnumerable<string> checkpointKeys)
+    {
+        var text = NormalizeControlText(request);
+        if (page == null
+            || checkpointKeys == null
+            || BrowserAutomationVerifier.CountRequestedMutationSteps(text) > 1
+            || Regex.IsMatch(
+                text,
+                @"\b(?:fill(?:\s+(?:out|in))?|complete|answer)\s+(?:(?:the|this|current|that|my|a)\s+)?(?:form|quiz|survey|questionnaire)\b"
+                + @"|\b(?:all|every)\s+(?:required\s+)?(?:form\s+)?(?:field|question)s?\b",
+                RegexOptions.IgnoreCase))
+        {
+            return false;
+        }
+
+        var prefix = $"{page.TabId}:";
+        var fieldIds = checkpointKeys
+            .Where(key => key?.StartsWith(prefix, StringComparison.Ordinal) == true)
+            .Select(key => key[prefix.Length..])
+            .Where(fieldId => fieldId.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (fieldIds.Length != 1)
+            return false;
+
+        var fieldLabel = (page.Controls ?? Array.Empty<BrowserControl>())
+            .FirstOrDefault(control => string.Equals(
+                control.FieldId,
+                fieldIds[0],
+                StringComparison.Ordinal))
+            ?.FieldLabel;
+        if (string.IsNullOrWhiteSpace(fieldLabel))
+            return false;
+        if (FieldIdentityAppearsInIntervention(text, fieldLabel))
+            return true;
+
+        var fieldTerms = MeaningfulControlTerms(fieldLabel);
+        var requestTerms = MeaningfulControlTerms(text);
+        var sharedTerms = fieldTerms.Count(requestTerms.Contains);
+        return fieldTerms.Count >= 3
+            && sharedTerms >= 3
+            && sharedTerms * 4 >= fieldTerms.Count * 3;
+    }
+
+    internal static string SkippedFieldState(
+        BrowserPageSnapshot page,
+        string fieldId)
+    {
+        if (page == null || string.IsNullOrWhiteSpace(fieldId))
+            return "";
+
+        var controls = (page.Controls ?? Array.Empty<BrowserControl>())
+            .Where(control => string.Equals(
+                control.FieldId,
+                fieldId,
+                StringComparison.Ordinal))
+            .OrderBy(control => control.Role, StringComparer.Ordinal)
+            .ThenBy(control => control.AccessibleName, StringComparer.Ordinal)
+            .ThenBy(control => control.Text, StringComparer.Ordinal)
+            .Select(control => string.Join(
+                "|",
+                control.Role,
+                control.AccessibleName,
+                control.Text,
+                control.Value,
+                control.Selected,
+                control.Checked,
+                control.FieldAnswered));
+        return $"{NormalizeControlText(page.Url)}\n{string.Join("\n", controls)}";
+    }
+
+    internal static BrowserUserIntervention ReconcileInterventionWithPageMetadata(
+        BrowserUserIntervention intervention,
+        BrowserPageSnapshot page) =>
+        IsInterventionForKnownOptionalPageField(intervention, page)
+            ? MakeInterventionSkippable(intervention)
+            : intervention;
+
+    private static bool FieldIdentityAppearsInIntervention(
+        string normalizedIntervention,
+        string fieldLabel)
+    {
+        var label = NormalizeControlText(fieldLabel);
+        if (label.Length < 3)
+            return false;
+        if (normalizedIntervention.Contains(label, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var sentenceEnd = label.IndexOfAny(['?', '!', '.']);
+        var leadingClause = sentenceEnd >= 0
+            ? label[..(sentenceEnd + 1)].Trim()
+            : label;
+        return leadingClause.Length >= 8
+            && normalizedIntervention.Contains(
+                leadingClause,
+                StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static BrowserUserIntervention MakeInterventionSkippable(
+        BrowserUserIntervention intervention) =>
+        new()
+        {
+            Kind = intervention?.Kind ?? "manual_step",
+            Missing = intervention?.Missing ?? "",
+            Explanation = intervention?.Explanation ?? "",
+            Required = false,
+            CanSkip = true,
+        };
 
     internal static BrowserUserIntervention BuildRequiredIntervention(
         string missing,
@@ -5398,6 +5676,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         runtime.SemanticActionAttempts.Clear();
         runtime.NoProgressActionStates.Clear();
         runtime.SkippedInterventions.Clear();
+        runtime.AuthorizedSkippedFieldStates.Clear();
         while (runtime.PendingGuidance.TryDequeue(out _)) { }
         runtime.Receipts.Clear();
         if (runtime.Page != null)
