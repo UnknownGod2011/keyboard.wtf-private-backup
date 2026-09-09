@@ -2765,6 +2765,8 @@ public sealed class BrowserAutomationProtocolTests
 
     [Theory]
     [InlineData("Okay, cancel browser automation and try again.", true)]
+    [InlineData("Cancel Browser Automation now.", true)]
+    [InlineData("Please stop the browser task immediately.", true)]
     [InlineData("Could you please stop the browser task?", true)]
     [InlineData("Don't cancel browser automation.", false)]
     [InlineData("I wonder whether we should cancel browser automation.", false)]
@@ -2832,6 +2834,7 @@ public sealed class BrowserAutomationProtocolTests
     [InlineData("pause", "Explain why this field is required.", false)]
     [InlineData("cancel", "stop", false)]
     [InlineData("cancel", "cancel browser automation", true)]
+    [InlineData("cancel", "Cancel Browser Automation now.", true)]
     [InlineData("pause", "please pause the browser task", true)]
     [InlineData("pause", "cancel browser automation", false)]
     public void Model_cannot_mutate_a_browser_task_without_matching_explicit_user_authority(

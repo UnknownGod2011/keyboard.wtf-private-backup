@@ -3,7 +3,7 @@
 Installed checkpoint: source `d278766a7cda4f7babdd3bea5673cdc780946bc5`; installer `5479458E2D27EB579FE5DB8E48AD1B600A0574D237F84DFC253B10961644BAB4` (84,283,278 bytes); installed executable `1B217B33A4AE6FBE3F4CC9D1303D015B9946C449720DFC6F4A055A9B0D1644C0` (314,744,270 bytes); Helper 2.1.26 / protocol 2.1.21. Human evidence overrides internal evidence.
 
 ## P01 — Startup consistency
-Status: FIXING
+Status: FIXED-SOURCE
 Expected: Jarvis normally reaches Listening near 2.5–3s, with reliable cold/warm/restart behavior and no unexplained failures.
 Latest evidence: Human runs were ~6–7s and 3s; logs measured 6.979s and 2.505s.
 Root cause: Slow sample occurred after the app idled past access-token expiry, adding a 2.936s refresh to the normal backend/provider handshake.
@@ -135,10 +135,10 @@ Protect: Normal conversation while paused.
 ## P14 — Browser cancellation in every state
 Status: FIXED-SOURCE
 Expected: Planning/Running/Waiting/NeedsUserAction/Partial cancel once, clear UI/task/intervention, and execute nothing stale.
-Latest evidence: run6 real-Helper tasks cancelled cleanly during Reading, Planning, Executing, WaitingForPage and NeedsUserAction; only already-completed mutations remained and no delayed mutation/intervention survived. Terminal Partial cancellation remains covered deterministically for final installed verification.
-Root cause: Late mutation/result boundaries could outlive cancellation.
-Fix: Single task cancellation authority propagated to executor, input and publication.
-Evidence: 1,500 race repetitions/full gates at `7824b192...`; run6 tasks `1c32a8...`, `333b2a...`, `c66ca8...`, `2ec162...`, `861691...` and `32b6cd...` covered active cancellation and precise intervention cleanup.
+Latest evidence: Rebuilt TEST task `85894bf…` reached Partial, accepted "Cancel Browser Automation now" locally, cleared intervention/cancel authority and remained Cancelled after a delayed check.
+Root cause: Late mutation/result boundaries could outlive cancellation; additionally, the locally authoritative parser rejected ordinary urgency modifiers after an explicit Browser-task target.
+Fix: Keep one cancellation authority through executor/input/publication and accept ordinary urgency modifiers in the existing explicit task-control grammar.
+Evidence: 1,500 race repetitions/full gates at `7824b192...`; run6 covers active states; 280 protocol tests and real Store-Helper Partial cancellation task `85894bf…` pass. Exact production-install verification pending.
 Touches: Browser coordinator/executor; Live/input boundary.
 Protect: Jarvis remains usable after cancel.
 
@@ -335,10 +335,10 @@ Protect: All production hotkey values and unrelated user settings.
 ## P34 — Active Browser task guidance and failure context
 Status: FIXED-SOURCE
 Expected: Only relevant answers/corrections/guidance reach the same live task; terminal tasks lose routing authority, while concise diagnostic context still explains the latest failure.
-Latest evidence: Explicit arbitrary field corrections during Running could be rejected unless they matched the older destination/paused-answer grammar.
+Latest evidence: Isolated TEST Jarvis accepted an unasked correction during ReadingPage on the same task; an unrelated time question left its request unchanged, and terminal guidance did not resurrect a Partial task.
 Root cause: The single task guard recognized paused answers and destination corrections but not task-directed or live-control-grounded corrections.
 Fix: Extend that guard with task-directed and live-control-grounded semantic shapes; retain terminal rejection, revision invalidation and diagnostic-only status.
-Evidence: 469 focused and 1,004 full desktop tests pass; backend 274, Firestore 12 and clean Release build pass. Installed real-Helper acceptance pending.
+Evidence: 469 focused and 1,004 full desktop tests pass; backend 274, Firestore 12 and clean Release build pass. Real Store Helper task `b7b87cf…` visibly wrote the corrected value and retained the second requested write; exact production-install acceptance remains pending.
 Touches: Browser coordinator guidance guard; Live tool instructions.
 Protect: Unrelated Jarvis turns, direct browser actions, cancellation and dead-task cleanup.
 

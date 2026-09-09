@@ -707,6 +707,7 @@ public sealed class CommandRegistry
             + @"(?:(?:please\s+)|(?:(?:can|could|would|will)\s+you\s+)|(?:i\s+(?:want|need|would\s+like)\s+you\s+to\s+))*"
             + @"(?<action>pause|cancel|stop)"
             + @"(?<target>\s+(?:the\s+)?(?:browser\s+automation|browser\s+task|automation\s+task|task))?"
+            + @"(?:\s+(?:(?:right\s+)?now|immediately))?"
             + @"(?:\s*(?:[,;:.!?]|\band\b|\bthen\b).*)?$",
             RegexOptions.IgnoreCase);
         if (!match.Success)
