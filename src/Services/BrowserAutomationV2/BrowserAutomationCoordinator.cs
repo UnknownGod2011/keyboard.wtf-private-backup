@@ -157,7 +157,16 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 return false;
             }
 
-            var explicitCorrection = IsExplicitTaskCorrection(guidance);
+            var explicitlyTaskDirected = IsExplicitTaskDirectedGuidance(guidance);
+            var explicitCorrection = IsExplicitTaskCorrection(guidance)
+                || IsCorrectionGroundedInActiveTask(
+                    _active.Intervention,
+                    _active.Page,
+                    guidance);
+            var groundedTaskValue = IsValueGuidanceGroundedInActiveTask(
+                _active.Intervention,
+                _active.Page,
+                guidance);
             var skipRequest = _active.State == BrowserTaskState.NeedsUserAction
                 && IsSkipInterventionGuidance(guidance);
             var adoptFreshActiveTab = CanAcceptAuthorizedPageHandoff(_active.State)
@@ -173,6 +182,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             }
 
             if (!IsClearlyTaskRelevantGuidance(guidance)
+                && !explicitlyTaskDirected
+                && !groundedTaskValue
                 && !skipRequest
                 && !adoptFreshActiveTab
                 && !(_active.State == BrowserTaskState.NeedsUserAction
@@ -4097,6 +4108,134 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             RegexOptions.IgnoreCase);
     }
 
+    internal static bool IsExplicitTaskDirectedGuidance(string guidance)
+    {
+        var text = NormalizeControlText(guidance);
+        if (text.Length == 0
+            || Regex.IsMatch(
+                text,
+                @"^(?:what|why|when|where|who|how|is|are|was|were|did|does|can|could|would|should)\b",
+                RegexOptions.IgnoreCase))
+        {
+            return false;
+        }
+
+        const string taskOwner =
+            @"(?:browser\s+automation|browser\s+task|automation\s+task|active\s+task|current\s+task|that\s+task)";
+        return Regex.IsMatch(
+                text,
+                $@"\b(?:tell|ask|instruct|inform|notify|guide|update|correct|pass|send|give)\s+(?:jarvis\s+)?(?:the\s+)?{taskOwner}\b",
+                RegexOptions.IgnoreCase)
+            || Regex.IsMatch(
+                text,
+                $@"^(?:jarvis\s*[,;:]?\s*)?(?:for|to)\s+(?:the\s+)?{taskOwner}\s*[,;:]",
+                RegexOptions.IgnoreCase)
+            || Regex.IsMatch(
+                text,
+                $@"^(?:jarvis\s*[,;:]?\s*)?(?:the\s+)?{taskOwner}\s*[,;:]\s*\S",
+                RegexOptions.IgnoreCase);
+    }
+
+    private static bool HasTaskCorrectionSignal(string guidance)
+    {
+        var text = NormalizeControlText(guidance);
+        return Regex.IsMatch(
+            text,
+            @"^(?:no\b|actually\b|wrong\b|not\s+(?:that|this)\b|i\s+meant\b)|\b(?:instead|rather\s+than|incorrect|mistaken|outdated)\b|^(?:do\s+not|don't)\b|\b(?:change|correct|update|replace|revise)\b.{0,100}\b(?:to|with)\b|\b(?:should|must|needs?\s+to)\s+be\b|\b(?:is|are|was|were)\s+actually\b",
+            RegexOptions.IgnoreCase);
+    }
+
+    internal static bool IsCorrectionGroundedInActiveTask(
+        BrowserUserIntervention intervention,
+        BrowserPageSnapshot page,
+        string guidance)
+    {
+        if (!HasTaskCorrectionSignal(guidance))
+            return false;
+        if (IsExplicitTaskDirectedGuidance(guidance)
+            || IsExplicitTaskCorrection(guidance))
+        {
+            return true;
+        }
+
+        var taskTargets = new List<string>
+        {
+            intervention?.Missing ?? "",
+            intervention?.Explanation ?? "",
+        };
+        if (page?.Controls != null)
+        {
+            taskTargets.AddRange(page.Controls
+                .Where(control => control is { Visible: true, Enabled: true })
+                .SelectMany(control => new[]
+                {
+                    control.FieldLabel,
+                    control.NearbyLabel,
+                    control.AccessibleName,
+                    control.AriaLabel,
+                    control.Placeholder,
+                }));
+        }
+
+        // The live control/intervention identity is authoritative. The broad
+        // page text is deliberately excluded so an unrelated conversation
+        // that happens to reuse a page word cannot mutate the task.
+        return taskTargets.Any(target =>
+            !string.IsNullOrWhiteSpace(target)
+            && TextSharesMeaning(guidance, target));
+    }
+
+    internal static bool IsValueGuidanceGroundedInActiveTask(
+        BrowserUserIntervention intervention,
+        BrowserPageSnapshot page,
+        string guidance)
+    {
+        var text = NormalizeControlText(guidance);
+        if (text.Length == 0
+            || text.Contains('?')
+            || GeminiLiveConversationService.ShouldAutoEnd(guidance)
+            || CommandRegistry.IsExplicitBrowserTaskStopOrPause(guidance)
+            || Regex.IsMatch(
+                text,
+                @"^(?:open|launch|start|close|quit|exit|search|find|show|play)\b",
+                RegexOptions.IgnoreCase))
+        {
+            return false;
+        }
+
+        if (IsExplicitTaskDirectedGuidance(guidance))
+            return true;
+
+        var hasValueShape = Regex.IsMatch(
+            text,
+            @"\b[\p{L}\p{N}][\p{L}\p{N} _./()-]{1,80}?\s*(?:is|are|:|=)\s*\S|\b(?:use|enter|type|set|change|update|replace|choose|select)\b.{1,180}\b(?:for|in|on|to|with)\b",
+            RegexOptions.IgnoreCase);
+        if (!hasValueShape)
+            return false;
+
+        var targets = new List<string>
+        {
+            intervention?.Missing ?? "",
+            intervention?.Explanation ?? "",
+        };
+        if (page?.Controls != null)
+        {
+            targets.AddRange(page.Controls
+                .Where(control => control is { Visible: true, Enabled: true })
+                .SelectMany(control => new[]
+                {
+                    control.FieldLabel,
+                    control.NearbyLabel,
+                    control.AccessibleName,
+                    control.AriaLabel,
+                    control.Placeholder,
+                }));
+        }
+        return targets.Any(target =>
+            !string.IsNullOrWhiteSpace(target)
+            && TextSharesMeaning(guidance, target));
+    }
+
     internal static bool TryResolveExplicitDestination(
         string request,
         out string label,
@@ -4136,12 +4275,12 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         if (text.Length == 0)
             return false;
 
-        var correctionSignal = Regex.IsMatch(
-            text,
-            @"^(?:no\b|actually\b|wrong\b|not\s+(?:that|this)\b|i\s+meant\b)|\b(?:instead|rather\s+than)\b|^(?:do\s+not|don't)\b",
-            RegexOptions.IgnoreCase);
+        var correctionSignal = HasTaskCorrectionSignal(text);
         if (!correctionSignal)
             return false;
+
+        if (IsExplicitTaskDirectedGuidance(text))
+            return true;
 
         var taskReference = Regex.IsMatch(
             text,

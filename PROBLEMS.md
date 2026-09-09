@@ -331,3 +331,23 @@ Fix: Apply the same compile-time TEST allow-list at the single hotkey replacemen
 Evidence: TEST log `02:15:48` shows only Ctrl+Alt+Shift+X; production settings SHA stayed `8506D843...`; the replayed reset could not take any production binding or mutate production/candidate profiles.
 Touches: `HotkeyService` TEST seam and focused tests.
 Protect: All production hotkey values and unrelated user settings.
+
+## P34 — Active Browser task guidance and failure context
+Status: FIXED-SOURCE
+Expected: Only relevant answers/corrections/guidance reach the same live task; terminal tasks lose routing authority, while concise diagnostic context still explains the latest failure.
+Latest evidence: Explicit arbitrary field corrections during Running could be rejected unless they matched the older destination/paused-answer grammar.
+Root cause: The single task guard recognized paused answers and destination corrections but not task-directed or live-control-grounded corrections.
+Fix: Extend that guard with task-directed and live-control-grounded semantic shapes; retain terminal rejection, revision invalidation and diagnostic-only status.
+Evidence: 469 focused and 1,004 full desktop tests pass; backend 274, Firestore 12 and clean Release build pass. Installed real-Helper acceptance pending.
+Touches: Browser coordinator guidance guard; Live tool instructions.
+Protect: Unrelated Jarvis turns, direct browser actions, cancellation and dead-task cleanup.
+
+## P35 — Bounded personal memory
+Status: OPEN
+Expected: After stabilization, store only explicit/useful concise non-sensitive facts and retrieve a small relevant subset; expose view/delete/clear/disable without mixing mappings or workflows.
+Latest evidence: Existing intent memory already persists explicit entries and appears in Settings; product-level relevance, dedupe, privacy and latency acceptance remain unverified.
+Root cause:
+Fix: Verify the existing owner first; implement only if a small safe gap remains after every release blocker closes.
+Evidence: Deferred until all stability acceptance is complete.
+Touches: Existing intent memory and Settings only.
+Protect: Startup latency, selected-text privacy, mappings/workflows and prompt bounds.

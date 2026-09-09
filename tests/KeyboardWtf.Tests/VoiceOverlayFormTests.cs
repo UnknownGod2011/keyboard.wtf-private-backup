@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Xunit;
 
+[Collection("Live event integration")]
 public sealed class VoiceOverlayFormTests
 {
     [Fact]

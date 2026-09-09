@@ -2430,6 +2430,193 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Theory]
+    [InlineData("Jarvis, tell Browser Automation the email is incorrect; it is actually xyz@gmail.com.", true)]
+    [InlineData("Tell the browser task to use the second shipping address.", true)]
+    [InlineData("For the current task: keep the optional notes empty.", true)]
+    [InlineData("What is Browser Automation doing?", false)]
+    [InlineData("Why did the browser task fail?", false)]
+    [InlineData("Open Spotify.", false)]
+    public void Explicit_task_direction_is_distinct_from_status_and_unrelated_turns(
+        string utterance,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            BrowserAutomationCoordinator.IsExplicitTaskDirectedGuidance(utterance));
+    }
+
+    [Theory]
+    [InlineData("The email is incorrect; it is actually xyz@gmail.com.", true)]
+    [InlineData("Change the graduation year to 2027.", true)]
+    [InlineData("Actually, I prefer jazz music.", false)]
+    [InlineData("The weather is incorrect.", false)]
+    public void Natural_corrections_require_live_task_identity(
+        string utterance,
+        bool expected)
+    {
+        var page = new BrowserPageSnapshot
+        {
+            Controls =
+            [
+                new BrowserControl
+                {
+                    Visible = true,
+                    Enabled = true,
+                    FieldLabel = "Email address",
+                    InputType = "email",
+                },
+                new BrowserControl
+                {
+                    Visible = true,
+                    Enabled = true,
+                    FieldLabel = "Graduation year",
+                },
+            ],
+        };
+
+        Assert.Equal(
+            expected,
+            BrowserAutomationCoordinator.IsCorrectionGroundedInActiveTask(
+                null,
+                page,
+                utterance));
+    }
+
+    [Theory]
+    [InlineData("Email address: xyz@gmail.com", true)]
+    [InlineData("Use 2027 for the graduation year.", true)]
+    [InlineData("Open Spotify.", false)]
+    [InlineData("What is the email address field?", false)]
+    [InlineData("I like electronic music.", false)]
+    public void Natural_value_guidance_must_be_grounded_in_a_live_control(
+        string utterance,
+        bool expected)
+    {
+        var page = new BrowserPageSnapshot
+        {
+            Controls =
+            [
+                new BrowserControl
+                {
+                    Visible = true,
+                    Enabled = true,
+                    FieldLabel = "Email address",
+                },
+                new BrowserControl
+                {
+                    Visible = true,
+                    Enabled = true,
+                    FieldLabel = "Graduation year",
+                },
+            ],
+        };
+
+        Assert.Equal(
+            expected,
+            BrowserAutomationCoordinator.IsValueGuidanceGroundedInActiveTask(
+                null,
+                page,
+                utterance));
+    }
+
+    [Fact]
+    public void Running_task_accepts_a_grounded_field_correction_and_supersedes_old_work()
+    {
+        using var bridge = new BrowserHelperBridge();
+        var coordinator = new BrowserAutomationCoordinator(null, null, bridge, null);
+        var runtimeType = typeof(BrowserAutomationCoordinator).GetNestedType(
+            "Runtime", System.Reflection.BindingFlags.NonPublic)!;
+        var runtime = Activator.CreateInstance(runtimeType, nonPublic: true)!;
+        runtimeType.GetProperty("State")!.SetValue(runtime, BrowserTaskState.Executing);
+        runtimeType.GetProperty("Request")!.SetValue(runtime, "Fill the current application form.");
+        runtimeType.GetProperty("Page")!.SetValue(runtime, new BrowserPageSnapshot
+        {
+            Controls =
+            [
+                new BrowserControl
+                {
+                    Visible = true,
+                    Enabled = true,
+                    FieldLabel = "Email address",
+                },
+            ],
+        });
+        typeof(BrowserAutomationCoordinator).GetField(
+            "_active", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(coordinator, runtime);
+
+        Assert.True(coordinator.TryAddTaskGuidance(
+            "The email is incorrect; it is actually xyz@gmail.com.",
+            out _));
+        Assert.Contains("xyz@gmail.com", coordinator.Snapshot().Request, StringComparison.Ordinal);
+        Assert.Equal(
+            1,
+            (int)runtimeType.GetField("CorrectionRevision")!.GetValue(runtime)!);
+        ((CancellationTokenSource)runtimeType.GetProperty("Cancellation")!.GetValue(runtime)!).Dispose();
+    }
+
+    [Fact]
+    public void Unrelated_direct_request_is_not_swallowed_by_a_running_task()
+    {
+        using var bridge = new BrowserHelperBridge();
+        var coordinator = new BrowserAutomationCoordinator(null, null, bridge, null);
+        var runtimeType = typeof(BrowserAutomationCoordinator).GetNestedType(
+            "Runtime", System.Reflection.BindingFlags.NonPublic)!;
+        var runtime = Activator.CreateInstance(runtimeType, nonPublic: true)!;
+        runtimeType.GetProperty("State")!.SetValue(runtime, BrowserTaskState.Executing);
+        runtimeType.GetProperty("Request")!.SetValue(runtime, "Fill the current application form.");
+        runtimeType.GetProperty("Page")!.SetValue(runtime, new BrowserPageSnapshot
+        {
+            Controls =
+            [
+                new BrowserControl
+                {
+                    Visible = true,
+                    Enabled = true,
+                    FieldLabel = "Email address",
+                },
+            ],
+        });
+        typeof(BrowserAutomationCoordinator).GetField(
+            "_active", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(coordinator, runtime);
+
+        Assert.False(coordinator.TryAddTaskGuidance("Open Spotify.", out _));
+        Assert.Equal(BrowserTaskState.Executing, coordinator.Snapshot().State);
+        Assert.Equal(
+            0,
+            (int)runtimeType.GetField("GuidanceRevision")!.GetValue(runtime)!);
+        ((CancellationTokenSource)runtimeType.GetProperty("Cancellation")!.GetValue(runtime)!).Dispose();
+    }
+
+    [Theory]
+    [InlineData(BrowserTaskState.Completed)]
+    [InlineData(BrowserTaskState.Cancelled)]
+    [InlineData(BrowserTaskState.Failed)]
+    public void Terminal_task_never_regains_guidance_authority(BrowserTaskState terminalState)
+    {
+        var coordinator = new BrowserAutomationCoordinator(null, null, null, null);
+        var runtimeType = typeof(BrowserAutomationCoordinator).GetNestedType(
+            "Runtime", System.Reflection.BindingFlags.NonPublic)!;
+        var runtime = Activator.CreateInstance(runtimeType, nonPublic: true)!;
+        runtimeType.GetProperty("State")!.SetValue(runtime, terminalState);
+        runtimeType.GetProperty("LastError")!.SetValue(runtime, "Planner transport failed.");
+        typeof(BrowserAutomationCoordinator).GetField(
+            "_active", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(coordinator, runtime);
+
+        Assert.False(coordinator.TryAddTaskGuidance(
+            "Tell Browser Automation to continue with the corrected value.",
+            out _));
+        Assert.Equal(terminalState, coordinator.Snapshot().State);
+        Assert.Equal("Planner transport failed.", coordinator.Snapshot().LastError);
+        Assert.Equal(
+            0,
+            (int)runtimeType.GetField("GuidanceRevision")!.GetValue(runtime)!);
+        ((CancellationTokenSource)runtimeType.GetProperty("Cancellation")!.GetValue(runtime)!).Dispose();
+    }
+
+    [Theory]
     [InlineData("Use Browser Automation, go to Devpost and search RevenueCat", "devpost.com")]
     [InlineData("Navigate to Google Drive, then open the shared folder", "drive.google.com")]
     [InlineData("Visit https://example.org and inspect the first link", "example.org")]
