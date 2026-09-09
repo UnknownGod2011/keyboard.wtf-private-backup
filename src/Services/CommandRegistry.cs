@@ -9,10 +9,12 @@ using KeyboardWtf.Models;
 using System.Windows.Forms;
 using KeyboardWtf.Services.Ai;
 using KeyboardWtf.Services.BrowserAutomationV2;
+using NAudio.Wave;
 
 public sealed class CommandRegistry
 {
     internal static readonly TimeSpan SmartWritingTimeout = TimeSpan.FromSeconds(40);
+    internal const int SmartWritingProviderSegmentSeconds = 240;
     internal const string SmartWritingSystemInstruction =
         "You are a high-quality speech-to-writing editor. Listen carefully to the attached speech and return " +
         "only the polished text the user intends to type. Perform a real editorial cleanup rather than a " +
@@ -764,7 +766,7 @@ public sealed class CommandRegistry
             }
 
             if (toolName == "browser_automation")
-                return StartBrowserAutomation(args);
+                return await StartBrowserAutomationAsync(args, token);
             if (toolName == "browser_automation_status")
                 return BrowserAutomationStatus();
             if (toolName == "browser_automation_control")
@@ -969,15 +971,13 @@ public sealed class CommandRegistry
 
         ResetActionCancellation();
         var actionToken = _actionCts.Token;
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(actionToken);
-        var timeoutLimit = SmartWritingTimeoutFor(capture.RecordingDurationMs);
-        timeout.CancelAfter(timeoutLimit);
-        var token = timeout.Token;
         var ownedOperationId = Interlocked.Increment(ref _smartWritingOperationId);
         var operation = Guid.NewGuid().ToString("N")[..12];
         var operationStarted = Stopwatch.GetTimestamp();
         long polishMs = 0;
         long insertionMs = 0;
+        var usedLocalRecovery = false;
+        var partialRecovery = false;
         try
         {
             KeyboardWtfState.IsProcessingAi = true;
@@ -988,23 +988,117 @@ public sealed class CommandRegistry
             AppLog.Info(
                 $"Smart Writing stage: operation={operation} stage=audio_ready recordingMs={capture.RecordingDurationMs} bytes={capture.WavData.Length}");
             var polishStarted = Stopwatch.GetTimestamp();
-            var result = await paidProvider.ReformatAudioAsync(
-                capture.WavData,
-                SmartWritingSystemInstruction,
-                KeyboardWtfState.SelectedLanguage,
-                token);
+            var segments = SplitSmartWritingAudio(capture.WavData);
+            var polishedSegments = new List<string>(segments.Count);
+            Exception providerFailure = null;
+            for (var index = 0; index < segments.Count; index++)
+            {
+                actionToken.ThrowIfCancellationRequested();
+                ThrowIfSmartWritingOperationWasReplaced(ownedOperationId, actionToken);
+                var segment = segments[index];
+                var timeoutLimit = SmartWritingTimeoutFor(segment.RecordingDurationMs);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(actionToken);
+                timeout.CancelAfter(timeoutLimit);
+                try
+                {
+                    var segmentResult = await paidProvider.ReformatAudioAsync(
+                        segment.WavData,
+                        SmartWritingSystemInstruction,
+                        KeyboardWtfState.SelectedLanguage,
+                        timeout.Token);
+                    timeout.Token.ThrowIfCancellationRequested();
+                    ThrowIfSmartWritingOperationWasReplaced(ownedOperationId, actionToken);
+                    segmentResult = FinalizeSmartWritingText(segmentResult);
+                    if (string.IsNullOrWhiteSpace(segmentResult))
+                        throw new InvalidOperationException("Gemini returned no text for an audio segment.");
+                    polishedSegments.Add(segmentResult);
+                    AppLog.Info(
+                        $"Smart Writing stage: operation={operation} stage=segment_completed " +
+                        $"segment={index + 1}/{segments.Count} recordingMs={segment.RecordingDurationMs} " +
+                        $"characters={segmentResult.Length}");
+                }
+                catch (OperationCanceledException) when (
+                    actionToken.IsCancellationRequested || !IsCurrentSmartWritingOperation(ownedOperationId))
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    providerFailure = ex;
+                    AppLog.Warning(
+                        ex,
+                        $"Smart Writing provider segment failed: operation={operation} " +
+                        $"segment={index + 1}/{segments.Count} limitMs={(long)timeoutLimit.TotalMilliseconds}");
+                    break;
+                }
+            }
+
+            string result;
+            if (providerFailure is null)
+            {
+                result = JoinSmartWritingSegments(polishedSegments);
+            }
+            else
+            {
+                KeyboardWtfState.SetUi(
+                    VoiceUiPhase.Transcribing,
+                    "Preserving your speech",
+                    "The cloud polish stopped; recovering the complete recording locally.");
+                string localTranscript = "";
+                try
+                {
+                    localTranscript = await _capture.TranscribeCapturedAudioAsync(
+                        capture.WavData,
+                        preferFast: false,
+                        actionToken,
+                        allowAiTranslation: false);
+                }
+                catch (OperationCanceledException) when (actionToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Warning(ex, $"Smart Writing local recovery failed: operation={operation}");
+                }
+
+                result = ResolveSmartWritingRecoveryText(
+                    localTranscript,
+                    polishedSegments,
+                    out partialRecovery);
+                usedLocalRecovery = !string.IsNullOrWhiteSpace(localTranscript);
+                if (string.IsNullOrWhiteSpace(result))
+                    throw new InvalidOperationException(
+                        "Smart Writing could not recover usable text from the captured audio.",
+                        providerFailure);
+            }
+
             polishMs = (long)Stopwatch.GetElapsedTime(polishStarted).TotalMilliseconds;
             AppLog.Info(
-                $"Smart Writing stage: operation={operation} stage=audio_polish_completed elapsedMs={polishMs} characters={result?.Length ?? 0}");
-            token.ThrowIfCancellationRequested();
-            ThrowIfSmartWritingOperationWasReplaced(ownedOperationId, token);
+                $"Smart Writing stage: operation={operation} stage=audio_polish_completed " +
+                $"elapsedMs={polishMs} characters={result?.Length ?? 0} segments={segments.Count} " +
+                $"localRecovery={usedLocalRecovery} partialRecovery={partialRecovery}");
+            actionToken.ThrowIfCancellationRequested();
+            ThrowIfSmartWritingOperationWasReplaced(ownedOperationId, actionToken);
             result = FinalizeSmartWritingText(result);
             if (string.IsNullOrWhiteSpace(result))
                 throw new InvalidOperationException("Gemini returned no text to insert.");
             KeyboardWtfState.SetTranscript(result);
             var insertionStarted = Stopwatch.GetTimestamp();
-            await DeliverTextAsync(result, token, retainFinalTextOnClipboard: true);
+            await DeliverTextAsync(result, actionToken, retainFinalTextOnClipboard: true);
             insertionMs = (long)Stopwatch.GetElapsedTime(insertionStarted).TotalMilliseconds;
+            if (partialRecovery)
+            {
+                _notifications.Warning(
+                    "Smart Writing partially recovered",
+                    "Inserted the usable completed portion. The unprocessed tail remains unavailable.");
+            }
+            else if (usedLocalRecovery)
+            {
+                _notifications.Warning(
+                    "Smart Writing recovered",
+                    "Cloud polishing stopped, so the complete captured speech was transcribed locally and inserted.");
+            }
             AppLog.Info(
                 $"Smart Writing audio timing: operation={operation} recordingMs={capture.RecordingDurationMs} " +
                 $"polishMs={polishMs} insertionMs={insertionMs} totalAfterRecordingMs=" +
@@ -1016,21 +1110,6 @@ public sealed class CommandRegistry
             AppLog.Info($"Smart Writing stage: operation={operation} stage=cancelled");
             if (IsCurrentSmartWritingOperation(ownedOperationId))
                 KeyboardWtfState.SetUi(VoiceUiPhase.Cancelled, "Cancelled", "Smart writing was stopped.");
-        }
-        catch (OperationCanceledException)
-        {
-            AppLog.Warning(
-                $"Smart Writing stage: operation={operation} stage=timeout limitMs={(long)timeoutLimit.TotalMilliseconds}");
-            if (IsCurrentSmartWritingOperation(ownedOperationId))
-            {
-                KeyboardWtfState.SetUi(
-                    VoiceUiPhase.Error,
-                    "Smart Writing timed out",
-                    "The request took too long and was stopped. Please try again.");
-                _notifications.Warning(
-                    "Smart Writing timed out",
-                    "The request took too long and was stopped. Please try again.");
-            }
         }
         catch (Exception ex)
         {
@@ -1061,6 +1140,85 @@ public sealed class CommandRegistry
     internal static TimeSpan SmartWritingTimeoutFor(long recordingDurationMs) =>
         TimeSpan.FromSeconds(Math.Clamp(40d + recordingDurationMs / 20_000d, 40d, 55d));
 
+    internal static IReadOnlyList<SmartWritingAudioCapture> SplitSmartWritingAudio(byte[] wavData)
+    {
+        if (wavData is null || wavData.Length < 44)
+            throw new ArgumentException("Smart Writing audio is empty.", nameof(wavData));
+
+        using var input = new MemoryStream(wavData, writable: false);
+        using var reader = new WaveFileReader(input);
+        var format = reader.WaveFormat;
+        if (format.Encoding != WaveFormatEncoding.Pcm
+            || format.SampleRate != 16_000
+            || format.Channels != 1
+            || format.BitsPerSample != 16)
+        {
+            throw new InvalidDataException("Smart Writing audio must be 16 kHz mono 16-bit PCM WAV.");
+        }
+
+        var maximumPcmBytes = checked(format.AverageBytesPerSecond * SmartWritingProviderSegmentSeconds);
+        maximumPcmBytes -= maximumPcmBytes % format.BlockAlign;
+        var copyBuffer = new byte[64 * 1024];
+        var segments = new List<SmartWritingAudioCapture>();
+        while (true)
+        {
+            var written = 0;
+            byte[] segmentBytes;
+            using (var output = new MemoryStream())
+            {
+                using (var writer = new WaveFileWriter(output, format))
+                {
+                    while (written < maximumPcmBytes)
+                    {
+                        var requested = Math.Min(copyBuffer.Length, maximumPcmBytes - written);
+                        requested -= requested % format.BlockAlign;
+                        var read = reader.Read(copyBuffer, 0, requested);
+                        if (read <= 0)
+                            break;
+                        writer.Write(copyBuffer, 0, read);
+                        written += read;
+                    }
+                }
+                segmentBytes = output.ToArray();
+            }
+
+            if (written == 0)
+                break;
+            var durationMs = Math.Max(
+                1,
+                (long)Math.Round(written * 1000d / format.AverageBytesPerSecond));
+            segments.Add(new SmartWritingAudioCapture(segmentBytes, durationMs));
+        }
+
+        if (segments.Count == 0)
+            throw new InvalidDataException("Smart Writing audio contains no PCM samples.");
+        return segments;
+    }
+
+    internal static string JoinSmartWritingSegments(IEnumerable<string> segments) =>
+        string.Join(
+            Environment.NewLine + Environment.NewLine,
+            (segments ?? Array.Empty<string>())
+                .Select(FinalizeSmartWritingText)
+                .Where(value => !string.IsNullOrWhiteSpace(value)));
+
+    internal static string ResolveSmartWritingRecoveryText(
+        string localTranscript,
+        IReadOnlyList<string> completedSegments,
+        out bool partial)
+    {
+        var local = FinalizeSmartWritingText(localTranscript);
+        if (!string.IsNullOrWhiteSpace(local))
+        {
+            partial = false;
+            return local;
+        }
+
+        var completed = JoinSmartWritingSegments(completedSegments);
+        partial = !string.IsNullOrWhiteSpace(completed);
+        return completed;
+    }
+
     internal static string FinalizeSmartWritingText(string value) =>
         SmartWritingFinalEditor.Clean(value);
 
@@ -1076,6 +1234,7 @@ public sealed class CommandRegistry
         var operationStarted = Stopwatch.GetTimestamp();
         long polishMs = 0;
         long insertionMs = 0;
+        var deliveryStarted = false;
         try
         {
             AppLog.Info($"Smart Writing stage: operation={operation} stage=transcript_ready");
@@ -1096,9 +1255,10 @@ public sealed class CommandRegistry
                 string.IsNullOrWhiteSpace(result) ? transcript : result);
             var insertionStarted = Stopwatch.GetTimestamp();
             AppLog.Info($"Smart Writing stage: operation={operation} stage=insertion_started");
+            deliveryStarted = true;
             await DeliverTextAsync(
                 deliveryText,
-                token,
+                actionToken,
                 retainFinalTextOnClipboard: true);
             insertionMs = (long)Stopwatch.GetElapsedTime(insertionStarted).TotalMilliseconds;
             AppLog.Info(
@@ -1118,35 +1278,36 @@ public sealed class CommandRegistry
         {
             AppLog.Warning(
                 $"Smart Writing stage: operation={operation} stage=timeout limitMs={(long)SmartWritingTimeout.TotalMilliseconds}");
-            if (IsCurrentSmartWritingOperation(ownedOperationId))
-            {
-                KeyboardWtfState.SetUi(
-                    VoiceUiPhase.Error,
+            if (!deliveryStarted)
+                await DeliverSmartWritingTranscriptRecoveryAsync(
+                    transcript,
+                    ownedOperationId,
+                    actionToken,
                     "Smart Writing timed out",
-                    "The request took too long and was stopped. Please try again.");
-                _notifications.Warning(
-                    "Smart Writing timed out",
-                    "The request took too long and was stopped. Please try again.");
-            }
+                    "Polishing took too long, so keyboard.wtf preserved and delivered the captured transcript without the final AI edit.");
         }
         catch (Exception ex)
         {
-            if (AiProviderRegistry.Current is PaidCloudAiProvider)
+            AppLog.Warning(ex, "Smart Writing failed");
+            if (!deliveryStarted)
             {
-                AppLog.Warning(ex, "Paid Smart Writing failed; no text was inserted");
-                if (IsCurrentSmartWritingOperation(ownedOperationId))
-                {
-                    KeyboardWtfState.SetUi(
-                        VoiceUiPhase.Error,
-                        "Smart Writing unavailable",
-                        ex.Message);
-                    _notifications.Warning("Smart Writing unavailable", ex.Message);
-                }
-                return;
+                await DeliverSmartWritingTranscriptRecoveryAsync(
+                    transcript,
+                    ownedOperationId,
+                    actionToken,
+                    "AI polish unavailable",
+                    "keyboard.wtf preserved and delivered the captured transcript without the final AI edit.");
             }
-            AppLog.Warning(ex, "Smart writing AI failed; delivering raw transcript");
-            _notifications.Warning("AI unavailable", "Typed the raw transcript instead.");
-            await DeliverTextAsync(transcript, token, retainFinalTextOnClipboard: true);
+            else if (IsCurrentSmartWritingOperation(ownedOperationId))
+            {
+                KeyboardWtfState.SetUi(
+                    VoiceUiPhase.Error,
+                    "Smart Writing delivery failed",
+                    "The final text remains available in keyboard.wtf and on the clipboard when Windows allowed it.");
+                _notifications.Warning(
+                    "Smart Writing delivery failed",
+                    "The final text remains available in keyboard.wtf and on the clipboard when Windows allowed it.");
+            }
         }
         finally
         {
@@ -1168,44 +1329,29 @@ public sealed class CommandRegistry
         }
     }
 
-#if KEYBOARD_WTF_PAID_PRODUCTION_CANDIDATE
-    internal async Task<object> RunSmartWritingAudioDiagnosticAsync(byte[] wavData)
+    private async Task DeliverSmartWritingTranscriptRecoveryAsync(
+        string transcript,
+        int ownedOperationId,
+        CancellationToken actionToken,
+        string title,
+        string message)
     {
-        if (wavData is null || wavData.Length is < 44 or > 10 * 1024 * 1024)
-            throw new ArgumentException("The diagnostic WAV is empty or too large.", nameof(wavData));
-        var durationMs = Math.Max(1, (long)((wavData.Length - 44L) * 1000d / 32_000d));
-        var started = Stopwatch.GetTimestamp();
-        await HandleSmartWritingAsync(new SmartWritingAudioCapture(wavData, durationMs));
-        return new
-        {
-            phase = KeyboardWtfState.UiPhase.ToString(),
-            title = KeyboardWtfState.UiTitle,
-            terminal = !NeedsSmartWritingTerminalCleanup(
-                KeyboardWtfState.UiPhase,
-                KeyboardWtfState.UiTitle),
-            elapsedMs = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
-        };
+        actionToken.ThrowIfCancellationRequested();
+        ThrowIfSmartWritingOperationWasReplaced(ownedOperationId, actionToken);
+        var recovery = ResolveSmartWritingTranscriptRecovery(transcript);
+        if (string.IsNullOrWhiteSpace(recovery))
+            throw new InvalidOperationException("No captured transcript was available to recover.");
+
+        KeyboardWtfState.SetTranscript(recovery);
+        await DeliverTextAsync(
+            recovery,
+            actionToken,
+            retainFinalTextOnClipboard: true);
+        _notifications.Warning(title, message);
     }
 
-    internal async Task<object> RunSmartWritingDiagnosticAsync(string transcript)
-    {
-        transcript = (transcript ?? "").Trim();
-        if (transcript.Length is < 1 or > 1000)
-            throw new ArgumentException("The diagnostic transcript must contain 1 to 1000 characters.", nameof(transcript));
-
-        var started = Stopwatch.GetTimestamp();
-        await HandleSmartWritingTranscriptAsync(transcript);
-        return new
-        {
-            phase = KeyboardWtfState.UiPhase.ToString(),
-            title = KeyboardWtfState.UiTitle,
-            terminal = !NeedsSmartWritingTerminalCleanup(
-                KeyboardWtfState.UiPhase,
-                KeyboardWtfState.UiTitle),
-            elapsedMs = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
-        };
-    }
-#endif
+    internal static string ResolveSmartWritingTranscriptRecovery(string transcript) =>
+        FinalizeSmartWritingText(transcript);
 
     private async Task<Dictionary<string, object>> RememberLinkAliasAsync(
         JsonElement args,
@@ -1781,7 +1927,9 @@ public sealed class CommandRegistry
             await _liveConversation.StopAsync();
     }
 
-    private Dictionary<string, object> StartBrowserAutomation(JsonElement args)
+    private async Task<Dictionary<string, object>> StartBrowserAutomationAsync(
+        JsonElement args,
+        CancellationToken token)
     {
         if (_browserAutomation == null)
             return ToolResult(false, "Browser Automation is unavailable.", supported: false);
@@ -1789,11 +1937,6 @@ public sealed class CommandRegistry
         var request = ResolveBrowserAutomationTask(
             GetString(args, "task"),
             RecentJarvisUserTurn());
-        var attachedCapturedContext = TryAttachCapturedBrowserContext(
-            request,
-            GetBoolean(args, "use_captured_context"),
-            out var groundedRequest);
-        request = groundedRequest;
         var classification = _browserAutomation.Classify(request);
         if (classification.Decision != BrowserAutomationDecision.BrowserAutomation)
         {
@@ -1810,6 +1953,43 @@ public sealed class CommandRegistry
                 ["routing_reason"] = classification.Reason,
             };
         }
+
+        var attachedCapturedContext = TryAttachCapturedBrowserContext(
+            request,
+            GetBoolean(args, "use_captured_context"),
+            out var groundedRequest);
+        request = groundedRequest;
+
+        // Selected-context ownership cannot depend on optional model tool
+        // order. This existing task-start owner captures the explicitly named
+        // source only when no retained context already satisfies the request.
+        // A failed capture leaves Browser Automation idle instead of starting
+        // a task with silently missing or stale information.
+        if (!attachedCapturedContext
+            && BrowserAutomationTaskClassifier.RequiresFreshUserContextCapture(request))
+        {
+            var captureTool = BrowserAutomationTaskClassifier.FreshContextCaptureTool(request);
+            if (_automation == null || string.IsNullOrWhiteSpace(captureTool))
+                return BrowserContextCaptureRequired();
+
+            var capture = await _automation.ExecuteAsync(
+                captureTool,
+                JsonSerializer.SerializeToElement(new { }),
+                token);
+            token.ThrowIfCancellationRequested();
+            if (!TryGetCapturedContextText(capture, out var capturedText))
+                return BrowserContextCaptureRequired(capture);
+
+            request = BuildBrowserTaskWithCapturedContext(
+                request,
+                captureTool == "get_selected_text" ? "selected text" : "clipboard text",
+                capturedText);
+            attachedCapturedContext = true;
+            AppLog.Info(
+                $"Browser task captured fresh {captureTool} context at its authoritative start boundary; characters={capturedText.Length}");
+        }
+
+        token.ThrowIfCancellationRequested();
         var result = _browserAutomation.Start(request);
         if (result.Started && attachedCapturedContext)
             ConsumeCapturedBrowserContext();
@@ -1871,21 +2051,13 @@ public sealed class CommandRegistry
         string toolName,
         Dictionary<string, object> result)
     {
-        if (result == null
-            || !result.TryGetValue("ok", out var ok)
-            || ok is not true
-            || !result.TryGetValue("text", out var value)
-            || string.IsNullOrWhiteSpace(value?.ToString()))
-        {
+        if (!TryGetCapturedContextText(result, out var capturedText))
             return;
-        }
 
         var userTurn = RecentJarvisUserTurn();
         lock (_browserPreRouteLock)
         {
-            _capturedBrowserContextText = BrowserAutomationText.Truncate(
-                value.ToString().Trim(),
-                6000);
+            _capturedBrowserContextText = capturedText;
             _capturedBrowserContextSource = toolName == "get_selected_text"
                 ? "selected text"
                 : "clipboard text";
@@ -1921,7 +2093,10 @@ public sealed class CommandRegistry
                     capturedForCurrentTurn,
                     _capturedBrowserContextAuthorizedForLaterAction,
                     pageMutation,
-                    currentRequestUsesCapturedContext))
+                    currentRequestUsesCapturedContext)
+                || !CapturedContextSourceMatchesRequest(
+                    request,
+                    _capturedBrowserContextSource))
             {
                 return false;
             }
@@ -1947,6 +2122,22 @@ public sealed class CommandRegistry
             || currentRequestUsesCapturedContext
             || (explicitlyAuthorizedForLaterAction
                 && requestReferencesContext));
+
+    internal static bool CapturedContextSourceMatchesRequest(
+        string request,
+        string capturedSource)
+    {
+        var requiredTool = BrowserAutomationTaskClassifier.FreshContextCaptureTool(request);
+        if (string.IsNullOrWhiteSpace(requiredTool))
+            return true;
+        var requiredSource = requiredTool == "get_selected_text"
+            ? "selected text"
+            : "clipboard text";
+        return string.Equals(
+            requiredSource,
+            (capturedSource ?? "").Trim(),
+            StringComparison.OrdinalIgnoreCase);
+    }
 
     internal static string BuildBrowserTaskWithCapturedContext(
         string request,
@@ -2203,6 +2394,44 @@ public sealed class CommandRegistry
                 : "No active browser task accepted that control command.",
             ["status"] = BrowserAutomationStatus(),
         };
+    }
+
+    private static Dictionary<string, object> BrowserContextCaptureRequired(
+        Dictionary<string, object> capture = null)
+    {
+        var message = capture != null
+            && capture.TryGetValue("message", out var value)
+            && !string.IsNullOrWhiteSpace(value?.ToString())
+                ? value.ToString()
+                : "I couldn't read the selected context for this browser task. Reselect it and try once more.";
+        return new Dictionary<string, object>
+        {
+            ["ok"] = false,
+            ["started"] = false,
+            ["state"] = "idle",
+            ["supported"] = true,
+            ["needs_clarification"] = true,
+            ["message"] = message,
+            ["routing_reason"] = "The requested user-provided context was not available, so no browser task was started.",
+        };
+    }
+
+    internal static bool TryGetCapturedContextText(
+        Dictionary<string, object> result,
+        out string text)
+    {
+        text = "";
+        if (result == null
+            || !result.TryGetValue("ok", out var ok)
+            || ok is not true
+            || !result.TryGetValue("text", out var value)
+            || string.IsNullOrWhiteSpace(value?.ToString()))
+        {
+            return false;
+        }
+
+        text = BrowserAutomationText.Truncate(value.ToString().Trim(), 6000);
+        return text.Length > 0;
     }
 
     internal static bool IsModelBrowserTaskControlAuthorized(

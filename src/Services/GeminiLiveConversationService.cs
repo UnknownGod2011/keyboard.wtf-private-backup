@@ -326,8 +326,7 @@ public sealed class GeminiLiveConversationService : IDisposable
         if (!usedSessionResumption)
             await SendRolloverContextIfPresentAsync(token);
         StartPlayback();
-        if (_paidAccount?.Enabled == true)
-            SchedulePaidSoftRollover(socket, expectedSession, diagnostics);
+        ScheduleProviderSoftRollover(socket, expectedSession, diagnostics);
         AppLog.Info(
             $"Jarvis transport timing: logicalSession={_logicalSessionId} " +
             $"socketConnectedMs={socketConnectedMs} " +
@@ -596,23 +595,20 @@ public sealed class GeminiLiveConversationService : IDisposable
             var peakDb = PeakDb(bytes);
             KeyboardWtfState.InputLevelDb = peakDb;
 
-            if (_paidAccount?.Enabled == true)
+            var sendToLive = false;
+            lock (_paidActivationLock)
             {
-                var sendToLive = false;
-                lock (_paidActivationLock)
+                sendToLive = _paidLiveReady;
+                if (!sendToLive && !_suppressPaidActivationAudio)
                 {
-                    sendToLive = _paidLiveReady;
-                    if (!sendToLive && !_suppressPaidActivationAudio)
-                    {
-                        _paidActivationAudio.Enqueue(bytes);
-                        while (_paidActivationAudio.Count > PaidActivationBufferChunks)
-                            _paidActivationAudio.Dequeue();
-                    }
+                    _paidActivationAudio.Enqueue(bytes);
+                    while (_paidActivationAudio.Count > PaidActivationBufferChunks)
+                        _paidActivationAudio.Dequeue();
                 }
-
-                if (!sendToLive)
-                    return;
             }
+
+            if (!sendToLive)
+                return;
 
             if (_socket?.State == WebSocketState.Open)
                 await SendAudioChunkAsync(bytes, _sessionCts?.Token ?? CancellationToken.None);
@@ -799,7 +795,7 @@ public sealed class GeminiLiveConversationService : IDisposable
         return config;
     }
 
-    private void SchedulePaidSoftRollover(
+    private void ScheduleProviderSoftRollover(
         ClientWebSocket socket,
         CancellationTokenSource expectedSession,
         ProviderSocketDiagnostics diagnostics)
@@ -863,7 +859,7 @@ public sealed class GeminiLiveConversationService : IDisposable
                             diagnostics.ToolCalls?.PendingCount ?? 0,
                             _playbackBuffer?.BufferedBytes ?? 0))
                     {
-                        await BeginSequentialPaidRolloverAsync(
+                        await BeginSequentialProviderRolloverAsync(
                             socket,
                             expectedSession,
                             diagnostics,
@@ -907,7 +903,7 @@ public sealed class GeminiLiveConversationService : IDisposable
         return softTargetCompletedSuccessfully ? "soft_age_target" : null;
     }
 
-    private async Task BeginSequentialPaidRolloverAsync(
+    private async Task BeginSequentialProviderRolloverAsync(
         ClientWebSocket socket,
         CancellationTokenSource expectedSession,
         ProviderSocketDiagnostics diagnostics,
@@ -1081,17 +1077,16 @@ public sealed class GeminiLiveConversationService : IDisposable
                 setupReady.TrySetException(
                     endedBy ?? new WebSocketException("The Jarvis provider connection closed."));
                 if (ShouldKeepLogicalSessionAfterProviderClose(
-                        _paidAccount?.Enabled == true,
                         ReferenceEquals(_sessionCts, expectedSession) && IsActive))
                 {
                     if (setupReady.Task.IsCompletedSuccessfully)
                     {
-                        PrepareForNextPaidProviderSession(
+                        PrepareForNextProviderSession(
                             socket,
                             expectedSession,
                             diagnostics,
                             endedBy);
-                        SchedulePaidReconnect(expectedSession);
+                        ScheduleProviderReconnect(expectedSession);
                     }
                     else
                         ReleaseFailedProviderSocket(socket);
@@ -1122,11 +1117,9 @@ public sealed class GeminiLiveConversationService : IDisposable
     }
 
     internal static bool ShouldKeepLogicalSessionAfterProviderClose(
-        bool usesPaidBackend,
-        bool logicalSessionActive) =>
-        usesPaidBackend && logicalSessionActive;
+        bool logicalSessionActive) => logicalSessionActive;
 
-    private void PrepareForNextPaidProviderSession(
+    private void PrepareForNextProviderSession(
         ClientWebSocket endedSocket,
         CancellationTokenSource expectedSession,
         ProviderSocketDiagnostics diagnostics,
@@ -1180,7 +1173,7 @@ public sealed class GeminiLiveConversationService : IDisposable
         });
     }
 
-    private void SchedulePaidReconnect(CancellationTokenSource expectedSession)
+    private void ScheduleProviderReconnect(CancellationTokenSource expectedSession)
     {
         lock (_paidActivationLock)
         {
@@ -1189,12 +1182,12 @@ public sealed class GeminiLiveConversationService : IDisposable
                 || _paidReconnectTask is { IsCompleted: false })
                 return;
             _paidReconnectTask = Task.Run(
-                () => RecoverPaidTransportAsync(expectedSession),
+                () => RecoverProviderTransportAsync(expectedSession),
                 expectedSession.Token);
         }
     }
 
-    private async Task RecoverPaidTransportAsync(CancellationTokenSource expectedSession)
+    private async Task RecoverProviderTransportAsync(CancellationTokenSource expectedSession)
     {
         Exception lastError = null;
         for (var attempt = 1; attempt <= MaxPaidReconnectAttempts; attempt++)
@@ -1206,12 +1199,24 @@ public sealed class GeminiLiveConversationService : IDisposable
                 {
                     _paidActivationFailures = attempt;
                 }
-                await EnsurePaidLiveActivatedAsync(
-                    includeBufferedAudio: true,
-                    expectedSession.Token);
+                if (_paidAccount?.Enabled == true)
+                {
+                    await EnsurePaidLiveActivatedAsync(
+                        includeBufferedAudio: true,
+                        expectedSession.Token);
+                }
+                else
+                {
+                    await ActivatePaidLiveAsync(
+                        expectedSession,
+                        includeBufferedAudio: true,
+                        showReady: false,
+                        expectedSession.Token);
+                }
                 AppLog.Info(
                     $"Jarvis Live transport recovered: logicalSession={_logicalSessionId} retry={attempt}");
-                _ = RefreshAccountAfterProviderSessionAsync();
+                if (_paidAccount?.Enabled == true)
+                    _ = RefreshAccountAfterProviderSessionAsync();
                 return;
             }
             catch (OperationCanceledException) when (expectedSession.IsCancellationRequested)
@@ -1711,6 +1716,7 @@ public sealed class GeminiLiveConversationService : IDisposable
             "Use tools only for allowed actions; never claim an action finished until the tool response says it did. " +
             "For the same user request, never repeat an identical action after a deterministic failure. A transient failure may receive at most one silent identical retry. Do not narrate internal retries or repeat the same failure aloud; use one genuinely different capability if available, otherwise explain the final limitation once. " +
             "Treat successful tool receipts as authoritative. If an earlier capability fails but a later fallback succeeds for the requested outcome, report the final success and keep the superseded failure internal. Never claim success without a successful receipt. " +
+            "Resolve a referential or elliptical follow-up against the most recent successful compatible tool receipt in this logical conversation, even when the user naturally omits the repeated noun or uses a pronoun or demonstrative as the action's object. When that receipt identifies exactly one app, window, file, folder, link, or other target, carry that target into the matching tool call instead of asking the user to repeat it. For a successfully opened local folder or file, use the receipt's path basename as its native window title when calling window_action. A referential_group with multiple targets means a later singular reference is genuinely ambiguous: ask one concise clarification and never choose merely because one action executed last. Never broaden a singular reference to every matching window or silently substitute the unrelated foreground window. A newly named target always overrides the earlier referent. " +
             "App names and file names do not need to be exact. Use open_app, open_folder, open_path, or search_files with the user's natural approximate wording; the local resolver performs fuzzy matching and returns choices when confidence is low. Preserve an explicit Desktop, Documents, Downloads, or other location in the tool location field because the local resolver treats it as a strong scope. " +
             "If the local resolver returns multiple candidates, read only the short names, ask the user to choose, and then retry with the chosen name or path. Do not guess between ambiguous matches. " +
             "If the user corrects an app, file, folder, link, or browser choice only for this time, keep it temporary. If they clearly say always, from now on, going forward, or remember that, persist the correction immediately with the matching existing remember tool and use it in future conversations; never claim it was saved until local read-back succeeds. A current explicit instruction overrides a saved preference for that one turn. " +
@@ -1947,11 +1953,11 @@ public sealed class GeminiLiveConversationService : IDisposable
                     "url"),
                 FunctionDeclaration(
                     "window_action",
-                    "List or control native app windows. For closing ALL windows of a named app, send ONE close call with scope all; do not loop over guessed foreground shortcuts. This does not close individual browser tabs. In auto-execute mode normal app closes need no confirmation.",
+                    "List or control native app windows. A natural referential or elliptical follow-up is still a window action: resolve its object from the most recent successful compatible tool receipt. For an opened folder or file path, use its basename as app_name because Explorer exposes that as the native window title. If several recent targets fit, ask once rather than guessing. For closing ALL windows of a named app, send ONE close call with scope all; do not loop over guessed foreground shortcuts. This does not close individual browser tabs. In auto-execute mode normal app closes need no confirmation.",
                     new()
                     {
                         ["action"] = Schema("string", "One of: list, switch, minimize, maximize, restore, close."),
-                        ["app_name"] = Schema("string", "Optional app name or window title. Omit to act on the foreground window."),
+                        ["app_name"] = Schema("string", "Optional app name or window title. For a referential follow-up, carry the exact target from the most recent successful relevant tool receipt. Omit only when the user explicitly means the current foreground window."),
                         ["scope"] = Schema("string", "For close: one (default) or all matching windows of app_name. Use all only when the user requested all matching windows."),
                         ["window_id"] = Schema("string", "Optional exact window_id returned by list or clarification. Never invent an ID."),
                     },

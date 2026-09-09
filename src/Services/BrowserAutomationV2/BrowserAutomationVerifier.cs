@@ -166,10 +166,14 @@ public sealed class BrowserAutomationVerifier
             && Regex.IsMatch(
                 text,
                 @"\b(google docs|document|docs|doc|editor|textbox|text area)\b");
-        var formLikeMutation = !destinationEditorTransfer
-            && (Regex.IsMatch(
+        var wholeFormMutation = Regex.IsMatch(
                 text,
-                @"\b(fill|answer)\b.*\b(form|fields|quiz|survey|questionnaire)\b")
+                @"\b(?:fill(?:\s+(?:out|in))?|complete|answer)\s+(?:(?:the|this|current|that|my|a)\s+)?(?:form|quiz|survey|questionnaire)\b")
+            || Regex.IsMatch(
+                text,
+                @"\b(?:all|every)\s+(?:required\s+)?(?:form\s+)?(?:field|question)s?\b");
+        var formLikeMutation = !destinationEditorTransfer
+            && (wholeFormMutation
                 || (requestedMutationSteps > 1
                 && Regex.IsMatch(
                     text,

@@ -30,6 +30,22 @@ public sealed class NativeWindowCloserTests
     }
 
     [Fact]
+    public void Canonical_folder_path_resolves_only_its_matching_native_window_title()
+    {
+        Window[] windows =
+        [
+            Make(1, "explorer", "Stock Market - File Explorer", "CabinetWClass"),
+            Make(2, "chrome", "Stock Market"),
+            Make(3, "explorer", "Another Folder", "CabinetWClass"),
+        ];
+        var target = Path.Combine("C:\\", "Users", "Example", "Stock Market");
+
+        var selected = NativeWindowCloser.Select(windows, target, false, null, (IntPtr)2);
+
+        Assert.Equal((IntPtr)1, Assert.Single(selected).Handle);
+    }
+
+    [Fact]
     public void A_mismatched_window_id_cannot_override_the_explicit_native_app_identity()
     {
         Window[] windows = [Explorer(1), Make(2, "chrome", "Untouched")];

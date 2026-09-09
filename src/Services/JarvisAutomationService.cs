@@ -129,7 +129,70 @@ public sealed class JarvisAutomationService : IDisposable
         if (ShouldRequestPermission(toolName, args))
             return RequestRoutinePermission(toolName, args);
 
-        return await ExecuteCoreAsync(toolName, args, token);
+        var result = await ExecuteCoreAsync(toolName, args, token);
+        AttachReferentialTarget(toolName, args, result);
+        return result;
+    }
+
+    internal static void AttachReferentialTarget(
+        string toolName,
+        JsonElement args,
+        Dictionary<string, object> result)
+    {
+        if (result == null
+            || !result.TryGetValue("ok", out var okValue)
+            || okValue is not bool ok
+            || !ok)
+            return;
+
+        string kind;
+        string target;
+        switch ((toolName ?? "").Trim())
+        {
+            case "open_folder":
+                kind = "folder";
+                target = result.TryGetValue("path", out var folderPath)
+                    ? folderPath?.ToString()
+                    : GetString(args, "folder");
+                break;
+            case "open_path":
+                kind = "path";
+                target = result.TryGetValue("path", out var openedPath)
+                    ? openedPath?.ToString()
+                    : GetString(args, "path");
+                break;
+            case "open_app":
+                kind = "app";
+                target = GetString(args, "app_name");
+                break;
+            case "open_url":
+                kind = "link";
+                target = GetString(args, "url");
+                break;
+            default:
+                return;
+        }
+
+        target = (target ?? "").Trim();
+        if (target.Length == 0)
+            return;
+
+        var nativeWindowTitle = "";
+        if (kind is "folder" or "path")
+        {
+            var expanded = Environment.ExpandEnvironmentVariables(target)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            nativeWindowTitle = Path.GetFileName(expanded);
+        }
+
+        result["referential_target"] = new Dictionary<string, object>
+        {
+            ["kind"] = kind,
+            ["target"] = target,
+            ["native_window_title"] = nativeWindowTitle,
+            ["cardinality"] = "one",
+            ["instruction"] = "Use this exact target for the next compatible referential follow-up unless the user names another target.",
+        };
     }
 
     private async Task<Dictionary<string, object>> ExecuteCoreAsync(
@@ -954,7 +1017,7 @@ public sealed class JarvisAutomationService : IDisposable
 
         var numberedTab = Regex.Match(
             normalized,
-            @"^(?:(?:switch|go|change|open)\s+)?(?:to\s+)?(?:chrome(?:'s)?\s+)?(?:the\s+)?(?<tab>1|2|3|4|5|6|7|8|9|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)(?:st|nd|rd|th)?\s+tab(?:\s+using\s+(?:ctrl|control)\s*[1-9])?$",
+            @"^(?:(?:switch|go|change|open)\s+)?(?:to\s+)?(?:chrome(?:'s)?\s+)?(?:the\s+)?(?<tab>1|2|3|4|5|6|7|8|9|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)(?:st|nd|rd|th)?\s+(?:(?:chrome|browser)\s+)?tab(?:\s+using\s+(?:ctrl|control)\s*[1-9])?$",
             RegexOptions.IgnoreCase);
         if (numberedTab.Success)
         {
@@ -982,7 +1045,7 @@ public sealed class JarvisAutomationService : IDisposable
 
         if (Regex.IsMatch(
             normalized,
-            @"^(?:(?:switch|go|change|open)\s+(?:to\s+)?)?(?:the\s+)?second(?:\s+to)?\s+last\s+tab$",
+            @"^(?:(?:switch|go|change|open)\s+(?:to\s+)?)?(?:chrome(?:'s)?\s+)?(?:the\s+)?second(?:\s+to)?\s+last\s+(?:(?:chrome|browser)\s+)?tab$",
             RegexOptions.IgnoreCase))
         {
             selection = "from_end:2";
@@ -992,7 +1055,7 @@ public sealed class JarvisAutomationService : IDisposable
 
         if (Regex.IsMatch(
             normalized,
-            @"^(?:(?:switch|go|change|open)\s+(?:to\s+)?)?(?:the\s+)?last\s+tab$",
+            @"^(?:(?:switch|go|change|open)\s+(?:to\s+)?)?(?:chrome(?:'s)?\s+)?(?:the\s+)?last\s+(?:(?:chrome|browser)\s+)?tab$",
             RegexOptions.IgnoreCase))
         {
             selection = "from_end:1";

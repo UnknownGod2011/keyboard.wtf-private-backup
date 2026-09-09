@@ -17,7 +17,9 @@ public sealed class BrowserAutomationV2ClassifierTests
     [InlineData("Switch to Chrome's fourth tab using Ctrl+4")]
     [InlineData("Go to the third browser tab")]
     [InlineData("Switch to the last tab")]
+    [InlineData("Go to the last Chrome tab")]
     [InlineData("Go to the second last tab")]
+    [InlineData("Go to the second last browser tab")]
     [InlineData("Switch to the second-to-last tab")]
     [InlineData("Set a ten second timer called cancellation check.")]
     [InlineData("Cancel the active timer.")]
@@ -161,6 +163,49 @@ public sealed class BrowserAutomationV2ClassifierTests
     }
 
     [Theory]
+    [InlineData("Fill this form using my selected context.", "get_selected_text")]
+    [InlineData("Use the highlighted details to fill this page.", "get_selected_text")]
+    [InlineData("Fill the current form from the copied information.", "get_clipboard_text")]
+    [InlineData("Fill this form using the context I provided earlier.", "")]
+    [InlineData("Explain my selected text.", "")]
+    public void Fresh_context_capture_uses_only_the_source_explicitly_owned_by_the_task(
+        string request,
+        string expectedTool)
+    {
+        Assert.Equal(
+            expectedTool,
+            BrowserAutomationTaskClassifier.FreshContextCaptureTool(request));
+    }
+
+    [Fact]
+    public void Captured_context_result_requires_a_successful_nonempty_text_value()
+    {
+        Assert.True(CommandRegistry.TryGetCapturedContextText(
+            new Dictionary<string, object>
+            {
+                ["ok"] = true,
+                ["text"] = "  current selection  ",
+            },
+            out var text));
+        Assert.Equal("current selection", text);
+
+        Assert.False(CommandRegistry.TryGetCapturedContextText(
+            new Dictionary<string, object>
+            {
+                ["ok"] = false,
+                ["text"] = "stale selection",
+            },
+            out _));
+        Assert.False(CommandRegistry.TryGetCapturedContextText(
+            new Dictionary<string, object>
+            {
+                ["ok"] = true,
+                ["text"] = "   ",
+            },
+            out _));
+    }
+
+    [Theory]
     [InlineData(true, true, true, false, true, true)]
     [InlineData(true, true, false, false, true, false)]
     [InlineData(true, false, false, true, true, false)]
@@ -205,6 +250,21 @@ public sealed class BrowserAutomationV2ClassifierTests
                 requestRequiresPageMutation: pageMutation,
                 currentRequestUsesCapturedContext: semanticReference));
     }
+
+    [Theory]
+    [InlineData("Fill this form using my selected context.", "selected text", true)]
+    [InlineData("Fill this form using my selected context.", "clipboard text", false)]
+    [InlineData("Fill this form using the copied clipboard content.", "clipboard text", true)]
+    [InlineData("Fill this form using the copied clipboard content.", "selected text", false)]
+    [InlineData("Now fill the form using that retained context.", "selected text", true)]
+    [InlineData("Now fill the form using that retained context.", "clipboard text", true)]
+    public void Explicit_fresh_context_source_cannot_be_satisfied_by_another_source(
+        string request,
+        string capturedSource,
+        bool expected) =>
+        Assert.Equal(
+            expected,
+            CommandRegistry.CapturedContextSourceMatchesRequest(request, capturedSource));
 
     [Theory]
     [InlineData(true, "Fill the current form.", true)]

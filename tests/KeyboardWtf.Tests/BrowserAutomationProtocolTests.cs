@@ -450,6 +450,48 @@ public sealed class BrowserAutomationProtocolTests
             page));
     }
 
+    [Fact]
+    public void Answered_source_editor_cannot_suppress_an_unanswered_target_field_intervention()
+    {
+        var page = new BrowserPageSnapshot
+        {
+            Controls =
+            [
+                new BrowserControl
+                {
+                    Id = "source-context",
+                    FieldId = "source-context",
+                    FieldLabel = "Selected task context Full name Test User Email address unavailable Optional note skip it",
+                    FieldAnswered = true,
+                    FieldRequired = false,
+                    Role = "textbox",
+                    Visible = true,
+                    Enabled = true,
+                },
+                new BrowserControl
+                {
+                    Id = "email",
+                    FieldId = "email",
+                    FieldLabel = "Email address",
+                    FieldAnswered = false,
+                    FieldRequired = true,
+                    Role = "textbox",
+                    Visible = true,
+                    Enabled = true,
+                },
+            ],
+        };
+
+        Assert.False(BrowserAutomationCoordinator.IsRequestedInterventionAlreadySatisfied(
+            new BrowserUserIntervention
+            {
+                Missing = "Please provide a valid email address.",
+                Explanation = "The Email address field is required.",
+                Required = true,
+            },
+            page));
+    }
+
     [Theory]
     [InlineData(BrowserTaskState.Planning)]
     [InlineData(BrowserTaskState.ReadingPage)]

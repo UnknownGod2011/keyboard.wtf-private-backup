@@ -154,6 +154,7 @@ internal sealed class LiveToolCallDispatcher : IDisposable
             // Keep completed calls cancellable until the batch is published:
             // cancellation arriving during another action must suppress them too.
             _lifetime.Token.ThrowIfCancellationRequested();
+            AnnotateReferentialGroup(results.Select(result => result.Response));
             // Materialize only once the transport owns its send lock. A result
             // cancelled while waiting for audio/socket output must not survive
             // in an already-created message; unrelated results still publish.
@@ -183,6 +184,28 @@ internal sealed class LiveToolCallDispatcher : IDisposable
                     call.Cancellation.Dispose();
                 }
             }
+        }
+    }
+
+    internal static void AnnotateReferentialGroup(
+        IEnumerable<Dictionary<string, object>> responses)
+    {
+        var targets = (responses ?? [])
+            .Where(response => response != null
+                && response.TryGetValue("referential_target", out var value)
+                && value != null)
+            .ToArray();
+        if (targets.Length <= 1)
+            return;
+
+        foreach (var response in targets)
+        {
+            response["referential_group"] = new Dictionary<string, object>
+            {
+                ["cardinality"] = "multiple",
+                ["target_count"] = targets.Length,
+                ["instruction"] = "A later singular reference is ambiguous; ask the user to choose one target instead of selecting by execution order.",
+            };
         }
     }
 

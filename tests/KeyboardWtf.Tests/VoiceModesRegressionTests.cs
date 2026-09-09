@@ -4,6 +4,7 @@ using KeyboardWtf.Destinations;
 using KeyboardWtf.Helpers;
 using KeyboardWtf.Models;
 using KeyboardWtf.Services;
+using NAudio.Wave;
 using Xunit;
 
 public sealed class VoiceModesRegressionTests
@@ -87,7 +88,7 @@ public sealed class VoiceModesRegressionTests
     public void Paid_transport_envelope_cannot_expire_before_the_owned_smart_writing_budget()
     {
         var longestOwnedOperation = CommandRegistry.SmartWritingTimeoutFor(
-            SmartWritingAudioCapture.MaximumSeconds * 1000L);
+            CommandRegistry.SmartWritingProviderSegmentSeconds * 1000L);
 
         Assert.True(
             KeyboardWtf.Services.PaidStaging.PaidAccountService.TransportTimeout
@@ -99,8 +100,103 @@ public sealed class VoiceModesRegressionTests
     }
 
     [Fact]
-    public void Smart_writing_audio_capture_is_bounded_to_five_minutes() =>
-        Assert.Equal(300, SmartWritingAudioCapture.MaximumSeconds);
+    public void Smart_writing_has_no_duration_auto_stop_and_raw_dictation_can_be_manual()
+    {
+        Assert.False(VoiceCaptureService.ShouldScheduleAutoStop(
+            RecordingMode.VoiceAssistant,
+            configuredSeconds: 30));
+        Assert.False(VoiceCaptureService.ShouldScheduleAutoStop(
+            RecordingMode.Dictate,
+            configuredSeconds: 0));
+        Assert.True(VoiceCaptureService.ShouldScheduleAutoStop(
+            RecordingMode.Dictate,
+            configuredSeconds: 600));
+    }
+
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(4, 5)]
+    [InlineData(600, 600)]
+    [InlineData(7200, 3600)]
+    public void Recording_duration_supports_manual_and_long_bounded_raw_dictation(
+        int requested,
+        int expected) =>
+        Assert.Equal(expected, SettingsService.NormalizeMaxRecordingSeconds(requested));
+
+    [Fact]
+    public void Ten_minute_smart_writing_audio_is_split_into_backend_safe_ordered_segments()
+    {
+        var wav = CreatePcmWave(TimeSpan.FromMinutes(10));
+
+        var segments = CommandRegistry.SplitSmartWritingAudio(wav);
+
+        Assert.Equal(3, segments.Count);
+        Assert.All(segments, segment =>
+        {
+            Assert.InRange(
+                segment.RecordingDurationMs,
+                1,
+                CommandRegistry.SmartWritingProviderSegmentSeconds * 1000L);
+            Assert.InRange(segment.WavData.Length, 44, 10 * 1024 * 1024);
+        });
+        Assert.InRange(
+            segments.Sum(segment => segment.RecordingDurationMs),
+            TimeSpan.FromMinutes(10).TotalMilliseconds - 5,
+            TimeSpan.FromMinutes(10).TotalMilliseconds + 5);
+    }
+
+    [Fact]
+    public void Smart_writing_failure_prefers_the_complete_local_recovery_over_partial_cloud_segments()
+    {
+        var result = CommandRegistry.ResolveSmartWritingRecoveryText(
+            "Complete locally recovered transcript.",
+            ["Only the first cloud segment."],
+            out var partial);
+
+        Assert.False(partial);
+        Assert.Equal("Complete locally recovered transcript.", result);
+    }
+
+    [Fact]
+    public void Smart_writing_failure_retains_completed_segments_when_local_recovery_is_unavailable()
+    {
+        var result = CommandRegistry.ResolveSmartWritingRecoveryText(
+            "",
+            ["First segment.", "Second segment."],
+            out var partial);
+
+        Assert.True(partial);
+        Assert.Equal(
+            $"First segment.{Environment.NewLine}{Environment.NewLine}Second segment.",
+            result);
+    }
+
+    [Fact]
+    public void Smart_writing_provider_failure_keeps_the_already_captured_transcript()
+    {
+        var result = CommandRegistry.ResolveSmartWritingTranscriptRecovery(
+            "Um, this captured speech must survive.");
+
+        Assert.Equal("this captured speech must survive.", result);
+    }
+
+    [Theory]
+    [InlineData(RecordingMode.Dictate, 7, 7, "  first part second part  ", "first part second part")]
+    [InlineData(RecordingMode.Dictate, 7, 8, "first part", "")]
+    [InlineData(RecordingMode.Command, 7, 7, "close it", "")]
+    public void Only_the_current_raw_dictation_can_recover_its_cumulative_local_preview(
+        RecordingMode mode,
+        int operationId,
+        int currentOperationId,
+        string preview,
+        string expected) =>
+        Assert.Equal(
+            expected,
+            VoiceCaptureService.RecoverRawDictationPreview(
+                mode,
+                operationId,
+                currentOperationId,
+                preview));
 
     [Fact]
     public void Smart_writing_preserves_normal_thinking_pauses_but_has_a_bounded_final_silence()
@@ -211,6 +307,23 @@ public sealed class VoiceModesRegressionTests
             directory = directory.Parent;
         }
         throw new DirectoryNotFoundException("Could not find the keyboard.wtf repository root.");
+    }
+
+    private static byte[] CreatePcmWave(TimeSpan duration)
+    {
+        using var output = new MemoryStream();
+        using (var writer = new WaveFileWriter(output, new WaveFormat(16_000, 16, 1)))
+        {
+            var remaining = checked((long)Math.Round(duration.TotalSeconds * 32_000d));
+            var buffer = new byte[64 * 1024];
+            while (remaining > 0)
+            {
+                var count = (int)Math.Min(buffer.Length, remaining);
+                writer.Write(buffer, 0, count);
+                remaining -= count;
+            }
+        }
+        return output.ToArray();
     }
 
     [Theory]

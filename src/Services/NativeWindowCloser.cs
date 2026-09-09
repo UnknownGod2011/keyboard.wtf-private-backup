@@ -65,9 +65,23 @@ internal static class NativeWindowCloser
         if (byProcess.Length > 0)
             return ById(byProcess);
 
+        // A successful open receipt may carry the canonical local path while
+        // Explorer exposes only its basename as the native window title.
+        // Normalize that representation here; this remains title matching and
+        // never grants a path or webpage authority over a browser window.
+        var nativeTitle = (target ?? "").Trim()
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (nativeTitle.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]) >= 0)
+            nativeTitle = Path.GetFileName(nativeTitle);
+
         // A website title is not authority to close its entire browser window.
         // Resolve native titles only. Ambiguous matches are returned to the caller.
-        return ById(windows.Where(w => !w.IsBrowser && w.Title.Equals(target?.Trim(), StringComparison.OrdinalIgnoreCase)));
+        return ById(windows.Where(w => !w.IsBrowser
+            && (w.Title.Equals(nativeTitle, StringComparison.OrdinalIgnoreCase)
+                || (w.IsExplorer
+                    && w.Title.Equals(
+                        $"{nativeTitle} - File Explorer",
+                        StringComparison.OrdinalIgnoreCase)))));
     }
 
     internal static async Task<Outcome> CloseAsync(

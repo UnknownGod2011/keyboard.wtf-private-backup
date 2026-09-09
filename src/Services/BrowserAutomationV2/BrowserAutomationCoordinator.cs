@@ -3442,19 +3442,23 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             .Any(label =>
             {
                 var normalizedLabel = NormalizeControlText(label);
-                if (request.Contains(normalizedLabel, StringComparison.OrdinalIgnoreCase)
-                    || normalizedLabel.Contains(request, StringComparison.OrdinalIgnoreCase))
+                if (request.Contains(normalizedLabel, StringComparison.OrdinalIgnoreCase))
                 {
                     return true;
                 }
 
                 var labelTerms = MeaningfulControlTerms(normalizedLabel);
-                return labelTerms.Any(term =>
-                        requestTerms.Contains(term)
-                        && termFrequency.TryGetValue(term, out var count)
-                        && count == 1)
-                    || (fieldLabels.Length == 1
-                        && labelTerms.Overlaps(requestTerms));
+                // This check may suppress a real NeedsUserAction request, so
+                // uncertainty must keep the task paused. A broad source/editor
+                // label can contain the text of nested controls (and therefore
+                // one target-field word) without being that field. Require the
+                // complete field identity, with at least one page-unique term,
+                // instead of accepting any overlapping word.
+                return labelTerms.Count > 0
+                    && labelTerms.IsSubsetOf(requestTerms)
+                    && labelTerms.Any(term =>
+                        termFrequency.TryGetValue(term, out var count)
+                        && count == 1);
             });
     }
 

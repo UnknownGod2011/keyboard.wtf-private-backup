@@ -45,10 +45,6 @@ public sealed class BrowserAutomationTaskClassifier
         @"^\s*(?:please\s+)?(?:(?:(?:can|could|would|will)\s+you|i\s+(?:need|want|would\s+like)\s+you\s+to|let(?:'s|\s+us))\s+(?:please\s+)?)?(?:open|go\s+to|navigate\s+to|visit|search|find|look\s+for|locate|click|press|choose|select|unselect|check|uncheck|fill|answer|solve|type|enter|paste|copy|read|inspect|summari[sz]e|scroll|dismiss|reload|refresh|send|post|publish|delete|add|play|upload|download|compare|show)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    private static readonly Regex BrowserTabSelection = new(
-        @"\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last|next|previous|second[- ]to[- ]last|second\s+last|\d+(?:st|nd|rd|th)?)\s+(?:browser\s+)?tab\b|\btab\s+\d+\b",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
     // A page-related noun or an interactive-sounding verb inside an idea is
     // not itself an instruction to operate the browser. This is intentionally
     // narrow: clear imperative/polite action requests still win below.
@@ -155,7 +151,7 @@ public sealed class BrowserAutomationTaskClassifier
                 "A deterministic draft/message capability should prepare this for review without starting browser automation.");
         }
 
-        if (BrowserTabSelection.IsMatch(text))
+        if (JarvisAutomationService.IsDirectBrowserShortcutRequest(text))
         {
             return Result(
                 BrowserAutomationDecision.SimpleTool,
@@ -358,6 +354,18 @@ public sealed class BrowserAutomationTaskClassifier
         && (RequiresPageMutation(text)
             || HasExplicitAutomationRequest(text)
             || IsDeferredInteractionRequest(text));
+
+    internal static string FreshContextCaptureTool(string text)
+    {
+        text ??= "";
+        if (!RequiresFreshUserContextCapture(text))
+            return "";
+        if (ExplicitSelectedContext.IsMatch(text))
+            return "get_selected_text";
+        if (Regex.IsMatch(text, @"\b(?:copied|clipboard)\b", RegexOptions.IgnoreCase))
+            return "get_clipboard_text";
+        return "";
+    }
 
     // Live input transcription is incremental. Until an answer/explain-style
     // utterance is complete, it may still resolve to selected-text context.

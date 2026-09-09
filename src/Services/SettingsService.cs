@@ -294,7 +294,7 @@ public sealed class SettingsService
         KeyboardWtfState.SelectedEngine = Current.SpeechEngine;
         KeyboardWtfState.SelectedLanguage = Current.Language ?? "auto";
         KeyboardWtfState.SelectedMicrophoneIndex = Current.MicrophoneDevice;
-        KeyboardWtfState.MaxRecordingSeconds = Math.Clamp(Current.MaxRecordingSeconds, 5, 300);
+        KeyboardWtfState.MaxRecordingSeconds = NormalizeMaxRecordingSeconds(Current.MaxRecordingSeconds);
         KeyboardWtfState.SelectedWhisperModel = Current.WhisperModelSize;
         KeyboardWtfState.SelectedAiProvider = Current.AiProvider;
         KeyboardWtfState.ClaudeApiKey = UnprotectAndMigrate(Current.ClaudeApiKey, value => Current.ClaudeApiKey = value);
@@ -333,7 +333,10 @@ public sealed class SettingsService
     public void SaveSpeechEngine(SpeechEngine value) { Current.SpeechEngine = value; KeyboardWtfState.SelectedEngine = value; Save(); }
     public void SaveLanguage(string value) { Current.Language = value ?? "auto"; KeyboardWtfState.SelectedLanguage = Current.Language; Save(); }
     public void SaveMicrophoneDevice(int value) { Current.MicrophoneDevice = value; KeyboardWtfState.SelectedMicrophoneIndex = value; Save(); }
-    public void SaveMaxRecordingSeconds(int value) { Current.MaxRecordingSeconds = Math.Clamp(value, 5, 300); KeyboardWtfState.MaxRecordingSeconds = Current.MaxRecordingSeconds; Save(); }
+    public void SaveMaxRecordingSeconds(int value) { Current.MaxRecordingSeconds = NormalizeMaxRecordingSeconds(value); KeyboardWtfState.MaxRecordingSeconds = Current.MaxRecordingSeconds; Save(); }
+
+    internal static int NormalizeMaxRecordingSeconds(int value) =>
+        value == 0 ? 0 : Math.Clamp(value, 5, 3600);
     public void SaveWhisperModelSize(WhisperModelSize value) { Current.WhisperModelSize = value; KeyboardWtfState.SelectedWhisperModel = value; Save(); }
     public void SaveAiProvider(AiProvider value) { Current.AiProvider = value; KeyboardWtfState.SelectedAiProvider = value; Save(); }
     public void SaveClaudeApiKey(string value) { Current.ClaudeApiKey = SecureStore.Protect(value); KeyboardWtfState.ClaudeApiKey = value; Save(); }

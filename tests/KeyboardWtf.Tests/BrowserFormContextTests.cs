@@ -73,4 +73,37 @@ public sealed class BrowserFormContextTests
         Assert.Contains("field=\"Quality\" required=True answered=False", prompt);
         Assert.Contains("action.targetFieldId", prompt);
     }
+
+    [Fact]
+    public void Targeted_field_edit_does_not_expand_into_whole_form_completion()
+    {
+        var requested = Choice("name", "name-field", "Full name", true);
+        requested.Role = "textbox";
+        requested.AccessibleName = "Full name";
+        var unrelatedRequired = Choice("email", "email-field", "Email address", false);
+        unrelatedRequired.Role = "textbox";
+        unrelatedRequired.AccessibleName = "Email address";
+        var page = new BrowserPageSnapshot { Controls = [requested, unrelatedRequired] };
+        var receipt = new BrowserActionReceipt
+        {
+            Ok = true,
+            Action = "type",
+            TargetName = "Full name",
+            TargetRole = "textbox",
+            TargetFieldId = "name-field",
+            ValueMatches = true,
+        };
+
+        var result = new BrowserAutomationVerifier().VerifyTerminal(
+            "Fill the Full name field with Handoff User on the current form.",
+            new BrowserPlannerDecision { Done = true },
+            page,
+            [receipt]);
+
+        Assert.True(result.Verified);
+        var prompt = BrowserAutomationPlanner.BuildPrompt(
+            "Fill the Full name field with Handoff User on the current form.",
+            new(), [], [requested, unrelatedRequired]);
+        Assert.Contains("editing one named field does not authorize completing the whole form", prompt);
+    }
 }

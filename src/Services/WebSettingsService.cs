@@ -300,18 +300,6 @@ public sealed class WebSettingsService : IDisposable
                 }
                 await SendJarvisTextTurn(req, resp);
             }
-#if KEYBOARD_WTF_PAID_PRODUCTION_CANDIDATE
-            else if (path == "/api/diagnostics/smart-writing" && method == "POST")
-            {
-                if (!HasSettingsActionHeader(req))
-                {
-                    resp.StatusCode = 403;
-                    await WriteJson(resp, new { ok = false, error = "Settings action header required." });
-                    return;
-                }
-                await RunSmartWritingDiagnostic(req, resp);
-            }
-#endif
             else if (path == "/api/browser-automation/status" && method == "GET")
             {
                 await ServeBrowserAutomationStatus(resp);
@@ -652,7 +640,7 @@ public sealed class WebSettingsService : IDisposable
         if (root.TryGetProperty("maxRecordingSeconds", out var maxRecEl))
         {
             var maxRec = maxRecEl.GetInt32();
-            if (maxRec is >= 5 and <= 300)
+            if (maxRec == 0 || maxRec is >= 5 and <= 3600)
                 _settings?.SaveMaxRecordingSeconds(maxRec);
         }
 
@@ -1648,40 +1636,6 @@ public sealed class WebSettingsService : IDisposable
             });
         }
     }
-
-#if KEYBOARD_WTF_PAID_PRODUCTION_CANDIDATE
-    private async Task RunSmartWritingDiagnostic(
-        HttpListenerRequest req,
-        HttpListenerResponse resp)
-    {
-        try
-        {
-            using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
-            using var document = JsonDocument.Parse(await reader.ReadToEndAsync());
-            var audioBase64 = GetJsonString(document.RootElement, "audioBase64");
-            object result;
-            if (!string.IsNullOrWhiteSpace(audioBase64))
-            {
-                var wavData = Convert.FromBase64String(audioBase64);
-                result = await (_app?.Commands.RunSmartWritingAudioDiagnosticAsync(wavData)
-                    ?? Task.FromException<object>(new InvalidOperationException("Smart Writing is unavailable.")));
-            }
-            else
-            {
-                var transcript = GetJsonString(document.RootElement, "transcript");
-                result = await (_app?.Commands.RunSmartWritingDiagnosticAsync(transcript)
-                    ?? Task.FromException<object>(new InvalidOperationException("Smart Writing is unavailable.")));
-            }
-            await WriteJson(resp, new { ok = true, result });
-        }
-        catch (Exception ex)
-        {
-            AppLog.Warning(ex, "Smart Writing candidate diagnostic failed");
-            resp.StatusCode = 400;
-            await WriteJson(resp, new { ok = false, error = ex.Message });
-        }
-    }
-#endif
 
     private async Task ServeBrowserAutomationStatus(HttpListenerResponse resp) =>
         await WriteJson(resp, BrowserAutomationSettingsSnapshot());

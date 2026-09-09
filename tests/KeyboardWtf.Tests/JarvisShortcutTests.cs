@@ -1,10 +1,65 @@
 namespace KeyboardWtf.Tests;
 
+using System.Text.Json;
 using KeyboardWtf.Services;
 using Xunit;
 
 public sealed class JarvisShortcutTests
 {
+    [Fact]
+    public void Successful_open_receipt_exposes_one_exact_referential_target()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "Example Folder");
+        var args = JsonSerializer.SerializeToElement(new { folder = "Example Folder" });
+        var result = new Dictionary<string, object>
+        {
+            ["ok"] = true,
+            ["path"] = path,
+            ["message"] = "Opened Example Folder.",
+        };
+
+        JarvisAutomationService.AttachReferentialTarget("open_folder", args, result);
+
+        var reference = Assert.IsType<Dictionary<string, object>>(result["referential_target"]);
+        Assert.Equal("folder", reference["kind"]);
+        Assert.Equal(path, reference["target"]);
+        Assert.Equal("Example Folder", reference["native_window_title"]);
+        Assert.Equal("one", reference["cardinality"]);
+    }
+
+    [Fact]
+    public void Opened_file_receipt_uses_the_file_name_as_its_native_title()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "Release Notes.txt");
+        var args = JsonSerializer.SerializeToElement(new { path });
+        var result = new Dictionary<string, object>
+        {
+            ["ok"] = true,
+            ["path"] = path,
+        };
+
+        JarvisAutomationService.AttachReferentialTarget("open_path", args, result);
+
+        var reference = Assert.IsType<Dictionary<string, object>>(result["referential_target"]);
+        Assert.Equal("path", reference["kind"]);
+        Assert.Equal(path, reference["target"]);
+        Assert.Equal("Release Notes.txt", reference["native_window_title"]);
+    }
+
+    [Fact]
+    public void Failed_or_non_open_receipt_cannot_become_a_referential_target()
+    {
+        var args = JsonSerializer.SerializeToElement(new { folder = "Missing" });
+        var failed = new Dictionary<string, object> { ["ok"] = false };
+        var unrelated = new Dictionary<string, object> { ["ok"] = true };
+
+        JarvisAutomationService.AttachReferentialTarget("open_folder", args, failed);
+        JarvisAutomationService.AttachReferentialTarget("system_control", args, unrelated);
+
+        Assert.DoesNotContain("referential_target", failed.Keys);
+        Assert.DoesNotContain("referential_target", unrelated.Keys);
+    }
+
     [Theory]
     [InlineData("ChatGPT", "ChatGPT", "https://chatgpt.com/", true)]
     [InlineData("Gmail", "Inbox - Gmail", "https://mail.google.com/", true)]
@@ -47,7 +102,9 @@ public sealed class JarvisShortcutTests
     [InlineData("go to the 7th tab", "index:7")]
     [InlineData("switch to last tab", "from_end:1")]
     [InlineData("Switch to the last tab.", "from_end:1")]
+    [InlineData("Go to the last Chrome tab.", "from_end:1")]
     [InlineData("go to the second last tab", "from_end:2")]
+    [InlineData("go to the second last browser tab", "from_end:2")]
     [InlineData("switch to second-to-last tab", "from_end:2")]
     [InlineData("go to the next tab", "next")]
     [InlineData("go to the previous tab", "previous")]

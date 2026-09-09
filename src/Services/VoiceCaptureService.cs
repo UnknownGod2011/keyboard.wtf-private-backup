@@ -110,8 +110,15 @@ public sealed class VoiceCaptureService
             "Speak now. Press the same shortcut to finish.");
 
         _autoStopCts?.Cancel();
-        _autoStopCts = new CancellationTokenSource();
-        _ = AutoStopAfterLimitAsync(mode, _autoStopCts.Token);
+        _autoStopCts = null;
+        if (ShouldScheduleAutoStop(mode, KeyboardWtfState.MaxRecordingSeconds))
+        {
+            _autoStopCts = new CancellationTokenSource();
+            _ = AutoStopAfterLimitAsync(
+                mode,
+                KeyboardWtfState.MaxRecordingSeconds,
+                _autoStopCts.Token);
+        }
         // Smart Writing still supports explicit toggle-to-finish, but a long
         // final silence should also complete the normal hands-free path. Eight
         // seconds preserves natural thinking pauses without leaving a finished
@@ -135,6 +142,7 @@ public sealed class VoiceCaptureService
         _silenceCts?.Cancel();
         var mode = KeyboardWtfState.CurrentRecordingMode;
         var wavData = _audioRecorder.StopRecording();
+        var capturedPreview = (_lastPreview ?? "").Trim();
         LastRecordingDurationMs = Math.Max(
             0,
             (long)(DateTime.UtcNow - _recordingStartUtc).TotalMilliseconds);
@@ -188,6 +196,26 @@ public sealed class VoiceCaptureService
         catch (Exception ex)
         {
             AppLog.Error(ex, "Transcription failed");
+            var recoveredPreview = RecoverRawDictationPreview(
+                mode,
+                operationId,
+                _operationId,
+                capturedPreview);
+            if (!string.IsNullOrWhiteSpace(recoveredPreview))
+            {
+                if (updateTranscript)
+                    KeyboardWtfState.SetTranscript(recoveredPreview);
+                KeyboardWtfState.SetUi(
+                    VoiceUiPhase.Done,
+                    "Partial dictation recovered",
+                    "Final recognition failed, so keyboard.wtf kept the speech already recognized locally.");
+                _notifications.Warning(
+                    "Partial dictation recovered",
+                    "Final recognition failed, so the speech already recognized locally was preserved.");
+                AppLog.Warning(
+                    $"Raw Dictation recovered cumulative local preview: characters={recoveredPreview.Length}");
+                return recoveredPreview;
+            }
             KeyboardWtfState.SetUi(VoiceUiPhase.Error, "Transcription failed", ex.Message);
             _notifications.Error("Transcription failed", ex.Message);
             return string.Empty;
@@ -303,7 +331,8 @@ public sealed class VoiceCaptureService
     internal async Task<string> TranscribeCapturedAudioAsync(
         byte[] wavData,
         bool preferFast,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowAiTranslation = true)
     {
         if (wavData is null || wavData.Length < 44)
             return string.Empty;
@@ -314,7 +343,7 @@ public sealed class VoiceCaptureService
             preferFast);
         transcript = await PostProcessTranscriptAsync(
             transcript,
-            allowAiTranslation: true,
+            allowAiTranslation,
             cancellationToken);
         LastTranscriptionDurationMs = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         return transcript;
@@ -322,6 +351,15 @@ public sealed class VoiceCaptureService
 
     internal static bool RecordingModeUsesAiPostProcessing(RecordingMode mode) =>
         mode != RecordingMode.Dictate;
+
+    internal static string RecoverRawDictationPreview(
+        RecordingMode mode,
+        int operationId,
+        int currentOperationId,
+        string cumulativePreview) =>
+        mode == RecordingMode.Dictate && operationId == currentOperationId
+            ? (cumulativePreview ?? "").Trim()
+            : "";
 
     internal static bool UsesSilenceAutoStop(RecordingMode mode) => true;
 
@@ -357,13 +395,16 @@ public sealed class VoiceCaptureService
         return transcript;
     }
 
-    private async Task AutoStopAfterLimitAsync(RecordingMode mode, CancellationToken token)
+    internal static bool ShouldScheduleAutoStop(RecordingMode mode, int configuredSeconds) =>
+        mode != RecordingMode.VoiceAssistant && configuredSeconds > 0;
+
+    private async Task AutoStopAfterLimitAsync(
+        RecordingMode mode,
+        int maximumSeconds,
+        CancellationToken token)
     {
         try
         {
-            var maximumSeconds = mode == RecordingMode.VoiceAssistant
-                ? SmartWritingAudioCapture.MaximumSeconds
-                : KeyboardWtfState.MaxRecordingSeconds;
             await Task.Delay(TimeSpan.FromSeconds(maximumSeconds), token);
             if (!token.IsCancellationRequested && KeyboardWtfState.IsRecording && KeyboardWtfState.CurrentRecordingMode == mode)
             {
@@ -700,7 +741,4 @@ public sealed class VoiceCaptureService
     }
 }
 
-internal sealed record SmartWritingAudioCapture(byte[] WavData, long RecordingDurationMs)
-{
-    public const int MaximumSeconds = 300;
-}
+internal sealed record SmartWritingAudioCapture(byte[] WavData, long RecordingDurationMs);

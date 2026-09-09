@@ -10,18 +10,37 @@ public sealed class PaidLiveStartupPolicyTests
         Assert.False(CommandRegistry.UsesJarvisTranscriptPreflight);
 
     [Theory]
-    [InlineData(true, true, true)]
-    [InlineData(true, false, false)]
-    [InlineData(false, true, false)]
-    public void Paid_provider_close_does_not_end_the_logical_conversation(
-        bool usesPaidBackend,
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public void Provider_close_does_not_end_an_active_logical_conversation(
         bool logicalSessionActive,
         bool expected) =>
         Assert.Equal(
             expected,
             GeminiLiveConversationService.ShouldKeepLogicalSessionAfterProviderClose(
-                usesPaidBackend,
                 logicalSessionActive));
+
+    [Fact]
+    public void Live_prompt_resolves_references_from_the_last_successful_tool_target()
+    {
+        var root = FindRepositoryRoot();
+        var source = File.ReadAllText(Path.Combine(
+            root,
+            "src",
+            "Services",
+            "GeminiLiveConversationService.cs"));
+
+        Assert.Contains(
+            "most recent successful compatible tool receipt",
+            source,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pronoun or demonstrative", source, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("path basename", source, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "Never broaden a singular reference",
+            source,
+            StringComparison.OrdinalIgnoreCase);
+    }
 
     [Theory]
     [InlineData(1, 0)]
@@ -143,5 +162,17 @@ public sealed class PaidLiveStartupPolicyTests
         Assert.DoesNotContain('\r', context);
         Assert.DoesNotContain("untrusted-role", context, StringComparison.Ordinal);
         Assert.True(context.Length <= 4000);
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "KeyboardWtf.sln")))
+                return directory.FullName;
+            directory = directory.Parent;
+        }
+        throw new DirectoryNotFoundException("Could not find the keyboard.wtf repository root.");
     }
 }

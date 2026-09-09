@@ -7,6 +7,30 @@ namespace KeyboardWtf.Tests;
 
 public sealed class LiveToolCallDispatcherTests
 {
+    [Fact]
+    public void Multi_target_batch_marks_a_later_singular_reference_ambiguous()
+    {
+        var first = new Dictionary<string, object>
+        {
+            ["ok"] = true,
+            ["referential_target"] = new { kind = "folder", target = "one" },
+        };
+        var second = new Dictionary<string, object>
+        {
+            ["ok"] = true,
+            ["referential_target"] = new { kind = "folder", target = "two" },
+        };
+
+        LiveToolCallDispatcher.AnnotateReferentialGroup([first, second]);
+
+        foreach (var response in new[] { first, second })
+        {
+            var group = Assert.IsType<Dictionary<string, object>>(response["referential_group"]);
+            Assert.Equal("multiple", group["cardinality"]);
+            Assert.Equal(2, group["target_count"]);
+        }
+    }
+
     private static readonly TimeSpan AsyncTestTimeout = TimeSpan.FromSeconds(10);
 
     [Fact]
