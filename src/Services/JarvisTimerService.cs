@@ -41,7 +41,7 @@ public sealed class JarvisTimerService : IDisposable
         NotificationService notifications,
         JarvisActionHistoryService history)
         : this(
-            (title, message) => notifications.Info(title, message),
+            (title, message) => notifications.Attention(title, message),
             // Timer lifecycle messages are deterministic English system text.
             // Do not use "auto", which can retain a previously selected SAPI
             // voice from another language.

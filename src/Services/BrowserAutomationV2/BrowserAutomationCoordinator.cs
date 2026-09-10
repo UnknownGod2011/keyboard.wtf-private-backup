@@ -5625,7 +5625,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             outcome,
             "Completed",
             finalSummary);
-        _notifications.InfoTransient("Browser automation", finalSummary);
+        _notifications.AttentionTransient("Browser automation", finalSummary);
     }
 
     private void Fail(Runtime runtime, BrowserAutomationOutcome outcome, string message)

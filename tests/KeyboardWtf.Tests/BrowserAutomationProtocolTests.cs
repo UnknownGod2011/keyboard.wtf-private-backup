@@ -1692,10 +1692,10 @@ public sealed class BrowserAutomationProtocolTests
             "Services",
             "NotificationService.cs"));
 
-        Assert.Contains("InfoTransient(\"Browser automation\", finalSummary)", coordinator);
+        Assert.Contains("AttentionTransient(\"Browser automation\", finalSummary)", coordinator);
         Assert.Contains("WarningTransient(\"Browser automation\", message)", coordinator);
-        Assert.Contains("Show(title, message, ToolTipIcon.Info, writeLog: false)", notifications);
-        Assert.Contains("Show(title, message, ToolTipIcon.Warning, writeLog: false)", notifications);
+        Assert.Contains("notifySystem: true, writeLog: false", notifications);
+        Assert.Contains("notifySystem: false, writeLog: false", notifications);
     }
 
     [Fact]

@@ -1,6 +1,6 @@
 # keyboard.wtf 1.4.19 stabilization contract
 
-Installed checkpoint: source `d278766a7cda4f7babdd3bea5673cdc780946bc5`; installer `5479458E2D27EB579FE5DB8E48AD1B600A0574D237F84DFC253B10961644BAB4` (84,283,278 bytes); installed executable `1B217B33A4AE6FBE3F4CC9D1303D015B9946C449720DFC6F4A055A9B0D1644C0` (314,744,270 bytes); Helper 2.1.26 / protocol 2.1.21. Human evidence overrides internal evidence.
+Installed checkpoint: source `821a12fdb73926d9799d07c500116d9f66aa7ede`; installer `D7A2BCADFB85DB0E1093B5902D45DC66354EBC4D8365187ACA6991B543088C68` (84,277,140 bytes); installed executable `D425DA1C157F3278D940938AA6F086FAF31FF6DAF66C04C39CCDB1121612B808` (314,781,134 bytes); Helper 2.1.26 / protocol 2.1.21. Human evidence overrides internal evidence.
 
 ## P01 — Startup consistency
 Status: FIXED-SOURCE
@@ -23,12 +23,12 @@ Touches: Transcript pre-routing; tool dispatch/result publication; action dedupe
 Protect: Clarification/barge-in and multi-action batching.
 
 ## P03 — Jarvis popup topmost
-Status: FIXED-SOURCE
+Status: VERIFIED-INSTALLED
 Expected: A visible Jarvis overlay remains above ordinary apps without stealing focus.
-Latest evidence: The current TEST overlay stayed visibly above the foreground app and its live HWND retained `WS_EX_TOPMOST | WS_EX_NOACTIVATE` through Chrome, Edge and Explorer activity.
+Latest evidence: Exact installed overlay retained `WS_EX_TOPMOST | WS_EX_NOACTIVATE` while Chrome kept foreground focus; prior TEST proof covered Chrome, Edge and Explorer transitions.
 Root cause: Topmost was only a managed property; recreated native handles did not carry the topmost extended style.
 Fix: Every overlay HWND now owns `WS_EX_TOPMOST | WS_EX_NOACTIVATE` directly.
-Evidence: Focused native-style test plus physical HWND/style and desktop screenshot proof; final production-installed multi-app acceptance pending.
+Evidence: Focused native-style test plus TEST multi-app proof and installed HWND `2296258` style verification.
 Touches: `VoiceOverlayForm` window lifecycle.
 Protect: No-focus-steal interaction and active-app typing.
 
@@ -73,12 +73,12 @@ Touches: Trusted keyboard/input boundary.
 Protect: Fast explicit direct actions.
 
 ## P08 — Cancellation and stale-runtime safety
-Status: FIXED-SOURCE
+Status: VERIFIED-INSTALLED
 Expected: Cancelled work cannot later open the microphone, post native input, publish results or overwrite a newer task.
-Latest evidence: Exact installed `c3b3cbd...` received cancel during microphone startup, then began Dictation 1.07s later.
+Latest evidence: Exact installed `821a12f...` cancelled during microphone startup, discarded the late open, emitted no Listening/recording state, and cleared the overlay.
 Root cause: Capture ownership was published only after blocking microphone startup, so cancel could not invalidate the in-flight start.
 Fix: Make microphone startup hold the existing operation generation and discard/close any start that loses it.
-Evidence: Installed trace at 23:37:47–23:37:55 plus 74 focused lifecycle/input tests; exact installed race retest pending.
+Evidence: Failing trace at 23:37:47–23:37:55; passing installed trace at 23:53:32–23:53:33; 1,024 desktop tests and prior 1,500 race repetitions.
 Touches: Voice capture operation ownership.
 Protect: Native/input/Live cancellation checks and fast voice-mode startup.
 
@@ -183,12 +183,12 @@ Touches: Compile-time TEST seam plus ignored test project only.
 Protect: Production auth, provider, Firestore and billing.
 
 ## P19 — No test provider in shipping artifacts
-Status: FIXED-SOURCE
+Status: VERIFIED-INSTALLED
 Expected: Final source/package/install/site/logs contain no test keys, hotkey, provider selector, URL or billing bypass.
-Latest evidence: The temporary compile-time provider, profile, hotkey and diagnostic seams have been removed from tracked source; all TEST processes, local server/browser and temporary encrypted-key backup are gone.
+Latest evidence: Tracked source, package, installer and exact installed executable contain no TEST symbol/provider/hotkey or supplied test-key material.
 Root cause: Preventive release requirement.
 Fix: Remove the disposable seam after acceptance and scan tracked source plus final package/install independently.
-Evidence: Tracked source scan reports no TEST symbol/provider/hotkey/diagnostic seam; final package/install scans remain pending.
+Evidence: Full secret gate plus binary/site scans at `821a12f...`; only expected public Firebase browser configuration remains on the sites.
 Touches: Packaging/release verification.
 Protect: No BYOK or hidden production bypass.
 
@@ -273,12 +273,12 @@ Touches: Whole project.
 Protect: No speculative rewrite.
 
 ## P28 — Exact current installer/install provenance
-Status: OPEN
+Status: FIXED-SOURCE
 Expected: Installed bytes derive from the frozen source and exact hashed installer.
-Latest evidence: The installed `d278766...` package remains internally matched, but the accepted source fixes are newer and invalidate it as the final candidate.
+Latest evidence: Installer `D7A2...8C68` installed source `821a12f...` byte-identically; P36 changes now require one final rebuild/install.
 Root cause: Release-integrity requirement.
-Fix: Freeze the current source, rebuild once, install exact bytes and independently verify installer/executable provenance.
-Evidence: Installed checkpoint hashes at the top of this file are retained only as the last known-good package.
+Fix: Freeze source, build once, hash, install exact bytes and independently verify provenance.
+Evidence: Prior clean-profile proof remains valid; final notification-boundary source must be packaged and installed exactly.
 Touches: Build/install/provenance.
 Protect: Do not rebuild without a source defect.
 
@@ -295,10 +295,10 @@ Protect: Ship one candidate only.
 ## P30 — Accounting and test-state cleanup
 Status: OPEN
 Expected: No active/orphan test task/session; reservations settle once or are validly reclaimable; no test secrets/config remain.
-Latest evidence: No active Live/browser/TEST process or local QA server remains; temporary encrypted-key backup was deleted; historical holds and account totals still require final read-only reconciliation.
-Root cause: Final cleanup/accounting gate.
-Fix: Reconcile without changing billing rules or balances; clean temporary test state.
-Evidence: Final backend/account report pending.
+Latest evidence: Runtime/test state is clean; seven expired Live reservations are explicitly quarantined and exactly equal the 10.7325-credit reserved balance.
+Root cause: Pre-`bd1d248` Live shutdown cancelled in-flight Firestore budget/checkpoint transactions after provider dispatch, leaving no final completion evidence.
+Fix: Preserve the deployed shutdown-safe accounting fix; resolve historical quarantines only through audited operator reconciliation with provider evidence.
+Evidence: Firestore/account totals match exactly; all seven traces show cancelled accounting RPCs, and the healthy six-hour maintenance job reports seven quarantines rather than silently releasing them.
 Touches: Test state and accounting inspection.
 Protect: Billing math, plan allowance and existing balances.
 
@@ -351,3 +351,13 @@ Fix: Verify the existing owner first; implement only if a small safe gap remains
 Evidence: Deferred until all stability acceptance is complete.
 Touches: Existing intent memory and Settings only.
 Protect: Startup latency, selected-text privacy, mappings/workflows and prompt bounds.
+
+## P36 — Routine OS notification spam
+Status: FIXED-SOURCE
+Expected: Routine success stays in Jarvis UI/speech; only attention-worthy completion, warning or failure creates an OS notification.
+Latest evidence: Human saw redundant direct-action notifications such as a successful Chrome tab switch.
+Root cause: `NotificationService.Info` and `InfoTransient` unconditionally publish a Windows balloon regardless of purpose.
+Fix: Make routine information silent at the system boundary and require explicit attention severity for useful non-error notifications.
+Evidence: 7 focused notification tests, 1,027 desktop, 274 backend and 12 Firestore tests pass; exact installed direct-action verification remains pending.
+Touches: Notification publication boundary; timer and long Browser-task completion classification.
+Protect: Jarvis status/speech, actionable NeedsUserAction/failure notices and persistent logging policy.

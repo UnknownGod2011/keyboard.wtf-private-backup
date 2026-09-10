@@ -761,7 +761,11 @@ public sealed class CommandRegistry
                     transcript,
                     _capture.CurrentDeliveryTarget,
                     _capture.CurrentOperationToken);
-                _notifications.Info(ok ? "Sent" : "Send failed", KeyboardWtfState.LastSendResult ?? destination);
+                _notifications.Outcome(
+                    ok,
+                    "Sent",
+                    "Send failed",
+                    KeyboardWtfState.LastSendResult ?? destination);
             }
         }
     }
@@ -1769,7 +1773,11 @@ public sealed class CommandRegistry
         if (!string.IsNullOrWhiteSpace(text))
             KeyboardWtfState.SetTranscript(text);
         var ok = await _router.SendAsync(destination, text);
-        _notifications.Info(ok ? "Sent" : "Send failed", KeyboardWtfState.LastSendResult ?? destination);
+        _notifications.Outcome(
+            ok,
+            "Sent",
+            "Send failed",
+            KeyboardWtfState.LastSendResult ?? destination);
     }
 
     private static string TargetText(ParsedVoiceCommand parsed) =>
@@ -1883,7 +1891,11 @@ public sealed class CommandRegistry
         }
         else
         {
-            _notifications.Info(ok ? "Done" : "Failed", KeyboardWtfState.LastSendResult ?? destination);
+            _notifications.Outcome(
+                ok,
+                "Done",
+                "Failed",
+                KeyboardWtfState.LastSendResult ?? destination);
             KeyboardWtfState.SetUi(
                 ok ? VoiceUiPhase.Done : VoiceUiPhase.Error,
                 ok ? "Done" : "Delivery failed",

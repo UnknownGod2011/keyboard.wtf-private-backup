@@ -306,7 +306,11 @@ public sealed class VoiceCaptureService
                     transcript,
                     _deliveryTarget,
                     _processingCts?.Token ?? CancellationToken.None);
-                _notifications.Info(ok ? "Sent" : "Send failed", KeyboardWtfState.LastSendResult ?? destinationName);
+                _notifications.Outcome(
+                    ok,
+                    "Sent",
+                    "Send failed",
+                    KeyboardWtfState.LastSendResult ?? destinationName);
             };
             Start(RecordingMode.QuickSend, destinationName);
             return;
