@@ -1,6 +1,6 @@
 # 1.4.17 → current stability decisions
 
-Reference: stable 1.4.17 commit `6a2c0fcbc5ade96bc6feb4717ab284e83b874d04` (source-equivalent parent `63beae98...`). Current candidate is the production-only working tree based on installed checkpoint `821a12f...`; release metadata records the exact frozen SHA. 1.4.17 is a behavior reference, not a restore target.
+Reference: stable 1.4.17 commit `6a2c0fcbc5ade96bc6feb4717ab284e83b874d04` (source-equivalent parent `63beae98...`). Current candidate is the production-only working tree based on installed checkpoint `e01f33a...`; release metadata records the exact frozen SHA. 1.4.17 is a behavior reference, not a restore target.
 
 | Area | 1.4.17 | Current | Decision | Evidence |
 |---|---|---|---|---|
@@ -9,7 +9,7 @@ Reference: stable 1.4.17 commit `6a2c0fcbc5ade96bc6feb4717ab284e83b874d04` (sour
 | Farewell path | Reliable local-feeling termination | Local transcript interception plus guarded no-transcript end-tool fallback; session-owned cleanup is silent | KEEP CURRENT | P04 ordering and rebuilt-TEST shutdown prove one terminal owner |
 | Live/tool-result dispatch | Socket handling was simple and sequential | Tool work is off the socket reader, preserving cancellation/control responsiveness | KEEP CURRENT | `655107f`, `7824b19`; focused race tests |
 | Exactly-once completion | One coherent response was the perceived norm | Same-frame calls are batched; canonical duplicate retries are acknowledged silently | KEEP CURRENT | P02 human timeline and focused dispatcher tests |
-| OS notifications | Routine feedback could surface as redundant balloons | Routine success remains in Jarvis UI/speech; only explicit attention, warning or failure reaches Windows | FIX CURRENT | P36 boundary tests; installed proof pending |
+| OS notifications | Routine feedback could surface as redundant balloons | Routine success remains in Jarvis UI/speech; only explicit attention, warning or failure reaches Windows | KEEP CURRENT | P36 boundary tests and exact installed `e01f33a...` proof |
 | Cancellation ownership | Simple conversation stop | One token now reaches Browser/native/input/result boundaries | KEEP CURRENT | P08/P14 tests; final physical Browser matrix pending |
 | Direct-action routing | Direct actions generally stayed direct | Adds learned mappings, explicit opt-out, Settings target preservation and recent-target receipts | KEEP CURRENT | P02/P16/P21/P31 |
 | Keyboard injection | Less defensive but behavior felt stable | Balanced batches, held-modifier refusal, target checks and cancellation are safer | KEEP CURRENT | P07 adversarial tests |

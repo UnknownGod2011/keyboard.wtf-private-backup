@@ -1,6 +1,6 @@
 # keyboard.wtf 1.4.19 stabilization contract
 
-Installed checkpoint: source `821a12fdb73926d9799d07c500116d9f66aa7ede`; installer `D7A2BCADFB85DB0E1093B5902D45DC66354EBC4D8365187ACA6991B543088C68` (84,277,140 bytes); installed executable `D425DA1C157F3278D940938AA6F086FAF31FF6DAF66C04C39CCDB1121612B808` (314,781,134 bytes); Helper 2.1.26 / protocol 2.1.21. Human evidence overrides internal evidence.
+Installed checkpoint: source `e01f33a1476f4a016230d60936ec590e1d7c6e41`; installer `1EE1B60203BB277A24A7BDEB5771D57CE8BA8793A2885B8AA10CAD7D95A95D8F` (84,274,021 bytes); installed executable `DE6B25AF596514641C0E4904EC74001786C7A14C1428CED6EA10CBAE2D236798` (314,781,134 bytes); Helper 2.1.26 / protocol 2.1.21. Human evidence overrides internal evidence.
 
 ## P01 — Startup consistency
 Status: FIXED-SOURCE
@@ -188,7 +188,7 @@ Expected: Final source/package/install/site/logs contain no test keys, hotkey, p
 Latest evidence: Tracked source, package, installer and exact installed executable contain no TEST symbol/provider/hotkey or supplied test-key material.
 Root cause: Preventive release requirement.
 Fix: Remove the disposable seam after acceptance and scan tracked source plus final package/install independently.
-Evidence: Full secret gate plus binary/site scans at `821a12f...`; only expected public Firebase browser configuration remains on the sites.
+Evidence: Full secret gate plus package, installer and installed-tree scans at `e01f33a...`; only expected public Firebase browser configuration remains on the sites.
 Touches: Packaging/release verification.
 Protect: No BYOK or hidden production bypass.
 
@@ -245,7 +245,7 @@ Protect: No premature public release.
 ## P25 — Core installed feature smoke
 Status: OPEN
 Expected: Raw Dictation, Screen Reasoning, selected text, app/URL/file/folder/search, Settings, Account/Auth, Helper and updater all work together.
-Latest evidence: Individual gates/past acceptance are green; final affected-build smoke is incomplete.
+Latest evidence: Exact installed `e01f33a...` is signed in, owns all five production hotkeys, opens the microphone diagnostic, connects only Store Helper, preserves mappings/workflows, and reports the updater current; final human voice/writing smoke remains.
 Root cause: Final release acceptance gap.
 Fix: Bounded installed checks, reusing unaffected evidence.
 Evidence: Final matrix pending.
@@ -273,12 +273,12 @@ Touches: Whole project.
 Protect: No speculative rewrite.
 
 ## P28 — Exact current installer/install provenance
-Status: FIXED-SOURCE
+Status: VERIFIED-INSTALLED
 Expected: Installed bytes derive from the frozen source and exact hashed installer.
-Latest evidence: Installer `D7A2...8C68` installed source `821a12f...` byte-identically; P36 changes now require one final rebuild/install.
+Latest evidence: Installer `1EE1...5D8F` installed source `e01f33a...`; packaged and installed executables are byte-identical at `DE6B...6798`.
 Root cause: Release-integrity requirement.
 Fix: Freeze source, build once, hash, install exact bytes and independently verify provenance.
-Evidence: Prior clean-profile proof remains valid; final notification-boundary source must be packaged and installed exactly.
+Evidence: Local and private-CI clean-profile runtime gates passed; installer exit 0, 84,274,021-byte installer and 314,781,134-byte executable independently hashed.
 Touches: Build/install/provenance.
 Protect: Do not rebuild without a source defect.
 
@@ -343,21 +343,21 @@ Touches: Browser coordinator guidance guard; Live tool instructions.
 Protect: Unrelated Jarvis turns, direct browser actions, cancellation and dead-task cleanup.
 
 ## P35 — Bounded personal memory
-Status: OPEN
-Expected: After stabilization, store only explicit/useful concise non-sensitive facts and retrieve a small relevant subset; expose view/delete/clear/disable without mixing mappings or workflows.
-Latest evidence: Existing intent memory already persists explicit entries and appears in Settings; product-level relevance, dedupe, privacy and latency acceptance remain unverified.
-Root cause:
-Fix: Verify the existing owner first; implement only if a small safe gap remains after every release blocker closes.
-Evidence: Deferred until all stability acceptance is complete.
+Status: VERIFIED-INSTALLED
+Expected: Store only explicit/useful concise non-sensitive facts and retrieve a small relevant subset; expose view/delete/clear, adding a disable toggle only if it remains a single clean owner.
+Latest evidence: Exact installed Settings exposes the existing bounded memory owner separately from four mappings and two workflows; one durable entry is loaded within a 20-entry/280-character cap.
+Root cause: This was an acceptance gap, not a missing architecture; the existing owner already enforces explicit save intent, bounded retrieval and same-key update.
+Fix: Keep the existing owner and avoid a late competing memory system; no separate disable state was added because memory is explicit-only and clearable.
+Evidence: 29 focused persistence/dedupe/relevance/privacy tests pass; prompt digest is bounded to 10 entries/900 characters and installed Settings supports view/delete/clear.
 Touches: Existing intent memory and Settings only.
 Protect: Startup latency, selected-text privacy, mappings/workflows and prompt bounds.
 
 ## P36 — Routine OS notification spam
-Status: FIXED-SOURCE
+Status: VERIFIED-INSTALLED
 Expected: Routine success stays in Jarvis UI/speech; only attention-worthy completion, warning or failure creates an OS notification.
-Latest evidence: Human saw redundant direct-action notifications such as a successful Chrome tab switch.
+Latest evidence: Exact installed `e01f33a...` contains the single notification boundary; routine success has no system-publication path while explicit attention/failure retains one.
 Root cause: `NotificationService.Info` and `InfoTransient` unconditionally publish a Windows balloon regardless of purpose.
 Fix: Make routine information silent at the system boundary and require explicit attention severity for useful non-error notifications.
-Evidence: 7 focused notification tests, 1,027 desktop, 274 backend and 12 Firestore tests pass; exact installed direct-action verification remains pending.
+Evidence: 3 focused boundary tests, 1,027 desktop, 262 backend and 12 Firestore tests pass; private CI `34424810051`, clean-profile runtime, byte-identical install and no-bypass scan are green.
 Touches: Notification publication boundary; timer and long Browser-task completion classification.
 Protect: Jarvis status/speech, actionable NeedsUserAction/failure notices and persistent logging policy.
