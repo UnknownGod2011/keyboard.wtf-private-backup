@@ -7,6 +7,9 @@ using System.Text.Json;
 
 public sealed class BrowserHelperBridge : IDisposable
 {
+    private const string CommandAuthorityRequiredError =
+        "Update the Chrome Helper before using browser actions; this version cannot safely cancel a pending action.";
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -222,7 +225,7 @@ public sealed class BrowserHelperBridge : IDisposable
             token.ThrowIfCancellationRequested();
             var status = Status;
             if (status.Connected && !status.CommandAuthoritySupported)
-                throw new InvalidOperationException("Update the Chrome Helper before using browser actions; this version cannot safely cancel a pending action.");
+                throw new InvalidOperationException(CommandAuthorityRequiredError);
             if (status.CommandChannelReady
                 || (serviceWorkerOnly
                     && status.Connected
@@ -317,7 +320,7 @@ public sealed class BrowserHelperBridge : IDisposable
         if (type is "hello" or "heartbeat" or "poll" or "command_result" or "command_check")
             helperMayExecute = UpdateStatus(root);
 
-        if (type == "command_result")
+        if (type == "command_result" && helperMayExecute)
         {
             var taskId = String(root, "taskId");
             var commandId = String(root, "commandId");
@@ -379,6 +382,7 @@ public sealed class BrowserHelperBridge : IDisposable
             String(helper, "lastError"),
             240);
         var reportedCommandReady = heartbeatFresh && Bool(helper, "commandChannelReady");
+        var commandAuthoritySupported = Bool(helper, "commandAuthoritySupported");
 
         BrowserHelperStatus next;
         bool multipleHelpersDetected;
@@ -406,13 +410,16 @@ public sealed class BrowserHelperBridge : IDisposable
                     helperError,
                     extensionId,
                     reportedCommandReady);
+            if (!multipleHelpersDetected && extensionIdAllowed && !commandAuthoritySupported)
+                statusError = CommandAuthorityRequiredError;
             next = new BrowserHelperStatus
             {
                 NativeHostRegistered = true,
                 Connected = true,
-                CommandAuthoritySupported = Bool(helper, "commandAuthoritySupported"),
+                CommandAuthoritySupported = commandAuthoritySupported,
                 CommandChannelReady = extensionIdAllowed
                     && !multipleHelpersDetected
+                    && commandAuthoritySupported
                     && versionsMatch
                     && reportedCommandReady,
                 ActiveTabFresh = heartbeatFresh,
@@ -437,7 +444,7 @@ public sealed class BrowserHelperBridge : IDisposable
             _status = next;
         }
         StatusChanged?.Invoke(next);
-        return extensionIdAllowed && !multipleHelpersDetected;
+        return extensionIdAllowed && !multipleHelpersDetected && commandAuthoritySupported;
     }
 
     internal static bool HasMultipleFreshExtensionIds(
@@ -464,6 +471,7 @@ public sealed class BrowserHelperBridge : IDisposable
 
     internal static bool CanBootstrapDisposableProtectedTab(BrowserHelperStatus status) =>
         status.Connected
+        && status.CommandAuthoritySupported
         && status.ActiveTabIsDisposableProtectedOrBlank
         && !status.MultipleHelpersDetected
         && BrowserHelperProtocol.IsAllowedExtensionId(status.ExtensionId)

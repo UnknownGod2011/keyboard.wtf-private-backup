@@ -5,7 +5,7 @@ Rejected human-test checkpoint: source `785a48a15c627cb3139715a56e857305769b78e8
 ## P01 — Startup consistency
 Status: OPEN
 Expected: Jarvis normally reaches Listening near 2.5–3s, with reliable cold/warm/restart behavior and no unexplained failures.
-Latest evidence: Latest human sessions measured 3.482s / 2.909s; token refresh 0ms, backend 2.225s / 2.063s. No unexplained local 3s wait in these samples; assess consistency without changing audio/VAD.
+Latest evidence: Installed b82acc7 September 12 starts measured 3.835s / 3.914s / 3.320s; auth 0–1ms, backend 2.491–2.787s, no retries. Prior human 2.909s retained; no sub-3s guarantee or unexplained local wait claimed.
 Root cause: Slow sample occurred after the app idled past access-token expiry, adding a 2.936s refresh to the normal backend/provider handshake.
 Fix: Refresh signed-in access tokens shortly before expiry in the background; keep the existing on-demand authenticated fallback.
 Evidence: `keyboard.wtf.log` sessions `144b85...` and `cf9358...`.
@@ -13,7 +13,7 @@ Touches: Paid account refresh; Live startup transport.
 Protect: 2.37–3s happy path, microphone readiness, reliable connection.
 
 ## P02 — Exactly-once completion and action ownership
-Status: FIXING
+Status: FIXED-SOURCE
 Expected: One logical request may execute several actions but produces one coherent completion and no repeated mutation.
 Latest evidence: Failing→passing tests prove transcript-only mutation, cancelled/superseded request execution, scalar re-publication and receipt expiry within one logical request. Installed duplicate speech still requires replay.
 Root cause: Ordinary effects ran before a model tool owned their result; scalar receipts bypassed acknowledgement, and a 12s cache expiry also released still-current result authority.
@@ -225,10 +225,10 @@ Protect: Do not alter Live/audio/VAD architecture.
 ## P23 — Website Pricing layout and auth state
 Status: OPEN
 Expected: Compact hero, card/notice aligned, FAQ then reviews, no real mobile overflow, and signed-out/no-plan/active-plan hydration without re-sign-in.
-Latest evidence: Canonical card/notice bounds align at 390/768/1440px without overflow. September 12 real Account/Google flow is signed out in the controlled browser; requested account login is required for no-plan/active-plan hydration proof.
+Latest evidence: September 12 real canonical Account showed the designated account and active plan; header Pricing, reload and Account return all hydrated automatically to Manage current plan without sign-in. Card/notice align at 390/768/1440px without horizontal overflow.
 Root cause: Old deployed Pricing shell differed from corrected source; real authenticated-state failure still needs tracing.
 Fix: Deployed existing shell alignment/session-hydration correction; app.js, account.js and desktop-login.js are byte-equivalent to prior deployment. Payment/auth logic unchanged.
-Evidence: Canonical deployed signed-out DOM verified at 390/768/1440px; prior preview/mock auth evidence does not prove real signed-in states. Public binary is temporarily original 1.4.17.
+Evidence: Real canonical signed-out and active-plan responsive DOM/visual checks pass; real signed-in/no-plan remains unverified. Public binary stays original 1.4.17. Browser-control screenshot/wait timeouts were checked against the actual completed page, not counted as product failures.
 Touches: Production site Pricing CSS/JS/auth hydration.
 Protect: Razorpay identifiers and billing semantics.
 
@@ -275,10 +275,10 @@ Protect: No speculative rewrite.
 ## P28 — Exact current installer/install provenance
 Status: VERIFIED-INSTALLED
 Expected: Installed bytes derive from the frozen source and exact hashed installer.
-Latest evidence: Frozen `785a48a...` installer `623D...878` and installed EXE `DE6B...6798` remain unchanged. This proves rejected-candidate provenance, not repair acceptance.
+Latest evidence: September 12 user installed repair `b82acc7...`; independent installed EXE hash equals packaged `FB199F81...50483`. Installer `D5B10779...BC413` is 84,293,105 bytes; running app restarted at 08:32 and owns the five production hotkeys.
 Root cause: Release-integrity requirement.
 Fix: Freeze source, build once, hash, install exact bytes and independently verify provenance.
-Evidence: Local and private-CI clean-profile runtime gates passed; installer exit 0, 84,274,021-byte installer and 314,781,134-byte executable independently hashed.
+Evidence: `dist/verification/repair-b82acc7/provenance.json`; CI `34660974129`, clean-profile runtime and installed hash agree. Production settings hash unchanged; this verifies provenance only, not remaining behavioral acceptance.
 Touches: Build/install/provenance.
 Protect: Do not rebuild without a source defect.
 
@@ -384,10 +384,10 @@ Protect: Safe native actions, bounded memory, sequential resumption.
 ## P39 — Intermittent Helper availability
 Status: FIXED-SOURCE
 Expected: Direct tabs/Browser tasks share the real Store Helper reliably; failures are truthful and cancellable.
-Latest evidence: Real isolated Chromium kept native heartbeat healthy while the renderer was debugger-paused; cancellation cleared the old lease and the next task worked. A separate old-heartbeat race initially cleared a newly adopted lease and is now regression-tested.
-Root cause: One poll awaits page status and full command execution before the next heartbeat; an unresponsive page blocks liveness and cancellation delivery.
-Fix: Existing poll owner keeps heartbeat alive, bounds page waits and validates original port/command; page mutation rechecks the same desktop waiter. Reset clears old leases, and old heartbeat/cleanup cannot revoke a resumed lease.
-Evidence: Worker races plus real isolated native messaging/renderer checks. Source Helper 2.1.27 / same protocol and identity; stale Store/content paths fail with update/refresh guidance. Installed Store 2.1.26 remains unchanged; final Store acceptance required.
+Latest evidence: Installed b82acc7 task 0514e3d4 failed before planner/page work: Store 2.1.26 lacks command-authority capability, despite Settings reporting actions available. Original isolated 2.1.27 cancellation/liveness proof remains valid; Store acceptance is blocked.
+Root cause: Page work blocked heartbeat/cancellation; capability checks also covered new sends but not advertised readiness or in-flight dispatch/result publication.
+Fix: Preserve heartbeat/waiter safety; the existing bridge requires the same capability for readiness, queued dispatch and result acceptance. Store 2.1.27 delivery/acceptance remains required.
+Evidence: Installed failure preserved in repair-b82acc7/installed-acceptance-20260912.json; readiness/capability-loss regressions fail→pass, 1,136 desktop + 262 backend pass. Source 2.1.27 isolated proof is not Store 2.1.26 acceptance.
 Touches: Helper communication and action ownership only if proven.
 Protect: Protocol 2.1.21, native trust/registration, original 1.4.17 compatibility; do not publish unaccepted Helper bytes.
 
@@ -417,3 +417,21 @@ Fix: At account/payment acceptance, trace UID→customer/subscription/payment→
 Evidence: Read-only production chain and actual customer-facing output required; do not generate another charge without authorization.
 Touches: Existing payment identity/config boundary only if proven.
 Protect: Firebase UID authority, account isolation, internal infrastructure URLs and existing billing semantics.
+
+## P43 — One public support address
+Status: FIXED-SOURCE
+Expected: Customer-facing app, site and Helper support references use only support@keyboardwtf.com; internal/admin identities remain unchanged.
+Latest evidence: Canonical support/privacy/refund/terms pages now use only the support address; fallback alias synchronized. Desktop resource and Helper listing changes await exact installed/Store verification.
+Fix: Replace public contact links only; verify actual deployed pages and the next installed resource.
+Evidence: Twelve contact checks fail→pass; 18 site tests pass. Deployment DMSjeF3uQwj1A9BH5RMwheYLFgC2 changes four pages only; download config/signed stable manifest unchanged.
+Touches: Public support text/links only.
+Protect: Auth/admin identities, payment settings, stable 1.4.17 public artifact and frozen candidate provenance.
+
+## P44 — Inactive resource and credit cleanup
+Status: OPEN
+Expected: Stopped/dismissed Jarvis releases Live, microphone, work and reservations; quiet pauses in an active logical conversation preserve context.
+Latest evidence: Installed b82acc7 sessions ended on Cancel/test stop; latest Live usage settled at 16:14 September 12. Overnight read-back shows no new Live usage, no active Browser task and zero reserved credits; only normal auth refresh remains.
+Fix: Verify existing cleanup/restart ownership; do not add a silence-driven logical exit or alter billing/lifecycle policy.
+Evidence: September 12 socket/shutdown/account read-back; remaining exit paths and bounded restart acceptance pending.
+Touches: Existing session/resource lifecycle only if a failure is reproduced; test-resource cleanup.
+Protect: Tray hotkeys/Helper readiness, long-silence continuity, 720s policy, 120s grace, exactly-once settlement.

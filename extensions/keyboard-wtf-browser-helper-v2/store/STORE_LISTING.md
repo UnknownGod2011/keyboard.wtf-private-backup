@@ -51,8 +51,7 @@ actions in the user’s existing Chrome session.
 
 ## Support
 
-- keyboard.wtf@gmail.com
-- tanushshah2006@gmail.com
+- support@keyboardwtf.com
 
 ## Homepage
 

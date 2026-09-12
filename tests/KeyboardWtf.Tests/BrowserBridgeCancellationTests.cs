@@ -8,6 +8,24 @@ namespace KeyboardWtf.Tests;
 public sealed class BrowserBridgeCancellationTests
 {
     [Fact]
+    public void Legacy_helper_is_connected_but_never_advertised_as_action_ready()
+    {
+        using var bridge = new BrowserHelperBridge();
+        Process(bridge, "hello", supportsAuthority: false);
+        Assert.True(bridge.Status.Connected);
+        Assert.False(bridge.Status.CommandChannelReady);
+        Assert.Contains("Update the Chrome Helper", bridge.Status.LastError);
+
+        Process(bridge, "heartbeat");
+        Assert.True(bridge.Status.CommandChannelReady);
+        Assert.Empty(bridge.Status.LastError);
+
+        Process(bridge, "heartbeat", supportsAuthority: false);
+        Assert.False(bridge.Status.CommandChannelReady);
+        Assert.Contains("Update the Chrome Helper", bridge.Status.LastError);
+    }
+
+    [Fact]
     public async Task Legacy_helper_fails_before_queuing_a_mutation_with_an_actionable_update_message()
     {
         using var bridge = new BrowserHelperBridge();
@@ -17,6 +35,29 @@ public sealed class BrowserBridgeCancellationTests
         Assert.Contains("Update the Chrome Helper", error.Message);
         Assert.Equal(JsonValueKind.Null, Process(bridge, "poll", supportsAuthority: false).GetProperty("command").ValueKind);
     }
+
+    [Fact]
+    public async Task Capability_loss_cannot_take_or_complete_an_existing_command()
+    {
+        using var bridge = new BrowserHelperBridge();
+        Process(bridge, "hello");
+        var action = new BrowserActionRequest { TaskId = "task", Type = "observe" };
+        var pending = bridge.ExecuteAsync(action, CancellationToken.None);
+
+        Assert.Equal(JsonValueKind.Null,
+            Process(bridge, "poll", supportsAuthority: false).GetProperty("command").ValueKind);
+        Assert.False(Process(bridge, "command_check", action, supportsAuthority: false)
+            .GetProperty("commandAuthorized").GetBoolean());
+        Process(bridge, "command_result", action, new { ok = true }, supportsAuthority: false);
+        Assert.False(pending.IsCompleted);
+
+        Assert.Equal(action.CommandId,
+            Process(bridge, "poll").GetProperty("command").GetProperty("commandId").GetString());
+        Process(bridge, "command_result", action, new { ok = true });
+        Assert.True((await pending).Ok);
+        Assert.Equal(JsonValueKind.Null, Process(bridge, "poll").GetProperty("command").ValueKind);
+    }
+
     [Fact]
     public async Task Cancelled_queued_action_is_never_returned_to_the_helper_after_it_recovers()
     {

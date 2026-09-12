@@ -115,5 +115,4 @@ Chrome Web Store User Data Policy, including Limited Use requirements.
 
 ## Contact
 
-- keyboard.wtf@gmail.com
-- tanushshah2006@gmail.com
+- support@keyboardwtf.com

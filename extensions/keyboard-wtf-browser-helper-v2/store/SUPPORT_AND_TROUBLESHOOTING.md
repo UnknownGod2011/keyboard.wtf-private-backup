@@ -30,5 +30,4 @@ account-security steps. Ctrl+Alt+X cancels a running task and keeps Chrome open.
 
 ## Contact
 
-- keyboard.wtf@gmail.com
-- tanushshah2006@gmail.com
+- support@keyboardwtf.com

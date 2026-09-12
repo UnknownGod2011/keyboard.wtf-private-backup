@@ -4,6 +4,27 @@ using Xunit;
 
 public sealed class ProductionSiteRegressionTests
 {
+    [Theory]
+    [InlineData("src/Resources/web/settings.html")]
+    [InlineData("production/site/support.html")]
+    [InlineData("production/site/privacy.html")]
+    [InlineData("production/site/refunds.html")]
+    [InlineData("production/site/terms.html")]
+    [InlineData("site/support.html")]
+    [InlineData("site/privacy.html")]
+    [InlineData("staging/site/support.html")]
+    [InlineData("staging/site/privacy.html")]
+    [InlineData("extensions/keyboard-wtf-browser-helper-v2/store/STORE_LISTING.md")]
+    [InlineData("extensions/keyboard-wtf-browser-helper-v2/store/PRIVACY_POLICY_PUBLIC_DRAFT.md")]
+    [InlineData("extensions/keyboard-wtf-browser-helper-v2/store/SUPPORT_AND_TROUBLESHOOTING.md")]
+    public void Customer_facing_support_uses_only_the_canonical_support_address(string relativePath)
+    {
+        var content = File.ReadAllText(Path.Combine(FindRepositoryRoot(), relativePath));
+        Assert.Contains("support@keyboardwtf.com", content, StringComparison.Ordinal);
+        Assert.DoesNotContain("keyboard.wtf@gmail.com", content, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("tanushshah2006@gmail.com", content, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void Account_history_uses_bounded_scroll_regions_and_cursor_loading()
     {

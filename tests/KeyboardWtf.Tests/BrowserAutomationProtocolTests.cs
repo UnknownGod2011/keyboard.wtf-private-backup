@@ -2021,9 +2021,11 @@ public sealed class BrowserAutomationProtocolTests
             string serviceWorkerVersion = BrowserHelperProtocol.Version,
             bool multipleHelpers = false,
             int? windowId = 4,
-            int? tabId = 12) => new()
+            int? tabId = 12,
+            bool supportsAuthority = true) => new()
         {
             Connected = connected,
+            CommandAuthoritySupported = supportsAuthority,
             ActiveTabIsDisposableProtectedOrBlank = disposable,
             ExtensionId = extensionId,
             ServiceWorkerVersion = serviceWorkerVersion,
@@ -2045,6 +2047,8 @@ public sealed class BrowserAutomationProtocolTests
             Status(multipleHelpers: true)));
         Assert.False(BrowserHelperBridge.CanBootstrapDisposableProtectedTab(
             Status(tabId: null)));
+        Assert.False(BrowserHelperBridge.CanBootstrapDisposableProtectedTab(
+            Status(supportsAuthority: false)));
     }
 
     [Theory]
