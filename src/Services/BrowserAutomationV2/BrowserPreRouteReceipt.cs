@@ -50,13 +50,13 @@ internal sealed class BrowserPreRouteReceipt
                 || existing.StartsWith(current + " ", StringComparison.Ordinal));
     }
 
-    public bool AppliesTo(string toolName, DateTime utcNow) =>
-        IsFresh(utcNow)
+    public bool AppliesTo(string toolName, DateTime utcNow, bool ownsCurrentTurn = false) =>
+        (ownsCurrentTurn || IsFresh(utcNow))
         && string.Equals(ToolName, toolName?.Trim(), StringComparison.Ordinal);
 
-    public bool BlocksCompetingTool(string toolName, DateTime utcNow) =>
-        IsFresh(utcNow)
-        && !AppliesTo(toolName, utcNow)
+    public bool BlocksCompetingTool(string toolName, DateTime utcNow, bool ownsCurrentTurn = false) =>
+        (ownsCurrentTurn || IsFresh(utcNow))
+        && !AppliesTo(toolName, utcNow, ownsCurrentTurn)
         && (string.Equals(ToolName, "run_workflow", StringComparison.Ordinal)
             || !CommandRegistry.IsBrowserTaskLifecycleTool(toolName));
 

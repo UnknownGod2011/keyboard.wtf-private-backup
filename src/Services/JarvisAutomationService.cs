@@ -73,6 +73,7 @@ public sealed class JarvisAutomationService : IDisposable
     private DateTimeOffset _latestOpenTargetAt;
     private string _latestWorkflowName = "";
     private DateTimeOffset _latestWorkflowAt;
+    private Dictionary<string, BrowserActionReceipt> _openedBrowserTabs = new();
     private bool _executingApprovedAction;
     private bool _disposed;
 
@@ -144,10 +145,19 @@ public sealed class JarvisAutomationService : IDisposable
             || okValue is not bool ok
             || !ok)
             return;
+        if (result.ContainsKey("referential_target"))
+            return; // A verified native/tab handle is stronger than the model argument.
 
         string kind;
         string target;
-        switch ((toolName ?? "").Trim())
+        // An app/path alias may resolve to a web link. Preserve the actual
+        // effect even when the shell could not supply an exact tab handle.
+        if (result.TryGetValue("url", out var actualUrl) && !string.IsNullOrWhiteSpace(actualUrl?.ToString()))
+        {
+            kind = "link";
+            target = actualUrl.ToString();
+        }
+        else switch ((toolName ?? "").Trim())
         {
             case "open_folder":
                 kind = "folder";
@@ -167,7 +177,9 @@ public sealed class JarvisAutomationService : IDisposable
                 break;
             case "open_url":
                 kind = "link";
-                target = GetString(args, "url");
+                target = result.TryGetValue("url", out var openedUrl)
+                    ? openedUrl?.ToString()
+                    : GetString(args, "url");
                 break;
             default:
                 return;
@@ -191,7 +203,9 @@ public sealed class JarvisAutomationService : IDisposable
             ["target"] = target,
             ["native_window_title"] = nativeWindowTitle,
             ["cardinality"] = "one",
-            ["instruction"] = "Use this exact target for the next compatible referential follow-up unless the user names another target.",
+            ["instruction"] = kind == "link"
+                ? "The destination opened but no exact tab handle was returned. Do not infer a tab or window close from its URL; clarify the target when needed."
+                : "Use this exact target for the next compatible referential follow-up unless the user names another target.",
         };
     }
 
@@ -203,10 +217,10 @@ public sealed class JarvisAutomationService : IDisposable
         token.ThrowIfCancellationRequested();
         return toolName switch
         {
-            "open_app" => OpenApp(
+            "open_app" => await OpenAppAsync(
                 GetString(args, "app_name"),
-                GetString(args, "target_kind")),
-            "open_url" => OpenUrl(GetString(args, "url"), GetString(args, "browser")),
+                GetString(args, "target_kind"), token),
+            "open_url" => await OpenUrlAsync(GetString(args, "url"), GetString(args, "browser"), token),
             "open_folder" => await OpenFolderAsync(
                 GetString(args, "folder"),
                 GetString(args, "location"),
@@ -221,11 +235,13 @@ public sealed class JarvisAutomationService : IDisposable
                 token,
                 GetString(args, "scope"),
                 GetString(args, "window_id")),
-            "browser_action" => BrowserAction(GetString(args, "action"), token),
-            "web_search" => WebSearch(
+            "browser_action" => args.ValueKind == JsonValueKind.Object && args.TryGetProperty("target_ids", out _)
+                ? await CloseOpenedBrowserTabsAsync(args, token)
+                : BrowserAction(GetString(args, "action"), token),
+            "web_search" => await WebSearchAsync(
                 GetString(args, "query"),
                 GetString(args, "engine") ?? GetString(args, "service"),
-                GetString(args, "browser")),
+                GetString(args, "browser"), token),
             "get_desktop_context" => GetDesktopContext(),
             "get_clipboard_text" => GetClipboardText(),
             "get_selected_text" => await GetSelectedTextAsync(token),
@@ -351,7 +367,9 @@ public sealed class JarvisAutomationService : IDisposable
         "open_folder" => $"Open the {GetString(args, "folder")} folder",
         "open_path" => $"Open {GetString(args, "path")}",
         "window_action" => $"{GetString(args, "action")} the requested window",
-        "browser_action" => $"{GetString(args, "action")} in the active browser",
+        "browser_action" => args.ValueKind == JsonValueKind.Object && args.TryGetProperty("target_ids", out _)
+            ? "Close the requested previously opened tab set"
+            : $"{GetString(args, "action")} in the active browser",
         "web_search" => $"Search for {GetString(args, "query")}",
         "replace_selected_text" => "Replace the selected text",
         "type_text" => "Type text into the active field",
@@ -367,7 +385,7 @@ public sealed class JarvisAutomationService : IDisposable
         "open_camera" => "Open the Windows Camera app",
         "take_photo" => "Open Windows Camera for a manually reviewed photo",
         "take_screenshot" => "Capture and save the current screen",
-        "inspect_screen" => "Inspect the current screen once with Gemini",
+        "inspect_screen" => "Analyze the current screen once",
         "virtual_desktop_action" => $"{GetString(args, "action")} virtual desktop",
         "windows_recording_action" => $"{GetString(args, "action")} Windows screen recording",
         "open_gmail_draft" => $"Prepare a Gmail draft for {GetString(args, "recipient")}",
@@ -439,7 +457,7 @@ public sealed class JarvisAutomationService : IDisposable
         }
     }
 
-    private Dictionary<string, object> OpenApp(string appName, string targetKind = "")
+    private async Task<Dictionary<string, object>> OpenAppAsync(string appName, string targetKind, CancellationToken token)
     {
         var nativeOnly = IsExplicitNativeTarget(targetKind);
         var resolverQuery = nativeOnly ? NormalizeNativeAppQuery(appName) : appName;
@@ -469,7 +487,7 @@ public sealed class JarvisAutomationService : IDisposable
             var learnedLink = _mappings.FindExact(LearnedMappingKind.Link, appName)
                 ?? _mappings.FindExact(LearnedMappingKind.Link, name);
             if (learnedLink != null)
-                return OpenUrl(learnedLink.Target, "");
+                return await OpenUrlAsync(learnedLink.Target, "", token);
         }
 
         if (name is "downloads" or "download folder" or "downloads folder"
@@ -480,7 +498,7 @@ public sealed class JarvisAutomationService : IDisposable
         }
 
         if (!nativeOnly && KnownWebApps.TryGetValue(name, out var webUrl))
-            return OpenUrl(webUrl, "");
+            return await OpenUrlAsync(webUrl, "", token);
         if (name is "camera" or "windows camera")
             return OpenCamera();
         var resolution = _apps.Resolve(resolverQuery);
@@ -524,8 +542,8 @@ public sealed class JarvisAutomationService : IDisposable
             "Apple Music",
             StringComparison.OrdinalIgnoreCase))
         {
-            var webResult = OpenUrl("https://music.apple.com/", "");
-            webResult["message"] = "Apple Music was not installed, so I opened Apple Music on the web.";
+            var webResult = await OpenUrlAsync("https://music.apple.com/", "", token);
+            if (Succeeded(webResult)) webResult["message"] = "Apple Music was not installed, so I opened Apple Music on the web.";
             return webResult;
         }
 
@@ -744,7 +762,7 @@ public sealed class JarvisAutomationService : IDisposable
             ? _mappings.FindExact(LearnedMappingKind.Link, path)
             : null;
         if (link != null)
-            return OpenUrl(link.Target, "");
+            return await OpenUrlAsync(link.Target, "", token);
 
         var result = await _files.SearchAsync(
             path,
@@ -909,6 +927,7 @@ public sealed class JarvisAutomationService : IDisposable
             _latestOpenTargetAt = default;
             _latestWorkflowName = "";
             _latestWorkflowAt = default;
+            _openedBrowserTabs = new();
         }
     }
 
@@ -1196,11 +1215,11 @@ public sealed class JarvisAutomationService : IDisposable
         };
     }
 
-    private Dictionary<string, object> WebSearch(string query, string engine, string browser)
+    private async Task<Dictionary<string, object>> WebSearchAsync(string query, string engine, string browser, CancellationToken token)
     {
         if (string.IsNullOrWhiteSpace(query))
             return Result(false, "What should I search for?", needsClarification: true);
-        return OpenUrl(BrowserLauncherService.BuildSearchUrl(query, engine), browser);
+        return await OpenUrlAsync(BrowserLauncherService.BuildSearchUrl(query, engine), browser, token);
     }
 
     private Dictionary<string, object> GetDesktopContext()
@@ -3074,6 +3093,7 @@ public sealed class JarvisAutomationService : IDisposable
 
         var failures = new List<string>();
         var receipts = new List<object>();
+        var targets = new List<object>();
         foreach (var action in OrderedWorkflowActions(workflow))
         {
             token.ThrowIfCancellationRequested();
@@ -3081,13 +3101,13 @@ public sealed class JarvisAutomationService : IDisposable
             switch (action.Kind)
             {
                 case "app":
-                    result = OpenApp(action.Target, "native");
+                    result = await OpenAppAsync(action.Target, "native", token);
                     break;
                 case "auto":
-                    result = OpenApp(action.Target);
+                    result = await OpenAppAsync(action.Target, "", token);
                     break;
                 case "url":
-                    result = OpenUrl(NormalizeUrl(action.Target));
+                    result = await OpenUrlAsync(NormalizeUrl(action.Target), null, token);
                     break;
                 case "folder":
                     result = await OpenFolderAsync(action.Target, "", token);
@@ -3097,10 +3117,16 @@ public sealed class JarvisAutomationService : IDisposable
                     break;
             }
             var ok = Succeeded(result);
+            AttachReferentialTarget(action.Kind switch
+            {
+                "url" => "open_url", "folder" => "open_folder", "app" or "auto" => "open_app", _ => "",
+            }, JsonSerializer.SerializeToElement(new { url = action.Target, folder = action.Target, app_name = action.Target }), result);
+            if (result.TryGetValue("referential_target", out var target))
+                targets.Add(target);
             var message = result.TryGetValue("message", out var detail)
                 ? detail?.ToString() ?? ""
                 : "";
-            receipts.Add(new { action.Kind, action.Target, ok, message });
+            receipts.Add(new { action.Kind, action.Target, ok, message, result });
             if (!Succeeded(result))
                 failures.Add(string.IsNullOrWhiteSpace(message) ? $"Could not run {action.Target}." : message);
             await Task.Delay(180, token);
@@ -3117,6 +3143,7 @@ public sealed class JarvisAutomationService : IDisposable
             {
                 ["failures"] = failures.ToArray(),
                 ["action_results"] = receipts.ToArray(),
+                ["referential_targets"] = targets.ToArray(),
                 ["workflow_version"] = workflow.Version,
             });
     }
@@ -3323,6 +3350,109 @@ public sealed class JarvisAutomationService : IDisposable
         }
     }
 
+    private async Task<Dictionary<string, object>> OpenUrlAsync(string url, string browser, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        var learned = _mappings.FindExact(LearnedMappingKind.Link, url);
+        url = learned?.Target ?? url;
+        if (_browserHelper == null || !_browsers.UsesChrome(browser)
+            || !BrowserLauncherService.TryNormalizeUrl(url, out var destination)
+            || !_browserHelper.Status.Connected || !_browserHelper.Status.CommandAuthoritySupported)
+            return OpenUrl(url, browser);
+
+        Dictionary<string, BrowserActionReceipt> context;
+        lock (_conversationStateLock) context = _openedBrowserTabs;
+        var targetId = Guid.NewGuid().ToString("N");
+        BrowserActionReceipt receipt;
+        try
+        {
+            receipt = await _browserHelper.ExecuteAsync(new BrowserActionRequest
+            {
+                TaskId = "direct-" + targetId, Type = "open_direct_tab", Url = destination.AbsoluteUri,
+            }, token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception)
+        {
+            // After dispatch the tab may exist; a shell retry could duplicate
+            // it. Report uncertainty rather than creating a hidden fallback.
+            return Result(false, "Chrome did not confirm the requested tab. It may have opened; check Chrome before retrying.", supported: false);
+        }
+        token.ThrowIfCancellationRequested();
+        if (!receipt.Ok || receipt.TabId is not > 0 || receipt.WindowId is not > 0 || string.IsNullOrWhiteSpace(receipt.SessionId))
+            return Result(false, string.IsNullOrWhiteSpace(receipt.Error) ? "Chrome returned no verified tab handle." : receipt.Error, supported: false);
+        lock (_conversationStateLock)
+        {
+            if (!ReferenceEquals(context, _openedBrowserTabs))
+                throw new OperationCanceledException("The originating conversation ended.");
+            if (context.Count >= 32) context.Remove(context.Keys.First());
+            context[targetId] = receipt;
+        }
+        return Logged("open_url", destination.AbsoluteUri, true, $"Opened {destination.Host} in a new Chrome tab.", extras: new()
+        {
+            ["url"] = destination.AbsoluteUri,
+            ["browser"] = "chrome",
+            ["page_load_verified"] = false,
+            ["referential_target"] = new Dictionary<string, object>
+            {
+                ["kind"] = "browser_tab", ["target"] = destination.AbsoluteUri, ["target_id"] = targetId,
+                ["instruction"] = "To close this tab, use browser_action action close tabs with this target_id in target_ids. Never substitute a foreground shortcut or window close.",
+            },
+        });
+    }
+
+    private async Task<Dictionary<string, object>> CloseOpenedBrowserTabsAsync(JsonElement args, CancellationToken token)
+    {
+        if (NormalizeWords(GetString(args, "action")) is not ("close" or "close tab" or "close tabs")
+            || !args.TryGetProperty("target_ids", out var values) || values.ValueKind != JsonValueKind.Array
+            || values.GetArrayLength() is < 1 or > 32 || values.EnumerateArray().Any(value => value.ValueKind != JsonValueKind.String))
+            return Result(false, "Use close tabs with the exact target_ids from successful tab-open receipts.", supported: false);
+        var ids = values.EnumerateArray().Select(value => value.GetString()).Distinct(StringComparer.Ordinal).ToArray();
+        KeyValuePair<string, BrowserActionReceipt>[] targets;
+        Dictionary<string, BrowserActionReceipt> context;
+        lock (_conversationStateLock)
+        {
+            context = _openedBrowserTabs;
+            if (ids.Any(id => !context.ContainsKey(id)))
+                return Result(false, "One or more tab references are unknown or expired. No tab was closed.", needsClarification: true);
+            targets = ids.Select(id => KeyValuePair.Create(id, context[id])).ToArray();
+        }
+        if (_browserHelper == null) return Result(false, "The Chrome Helper is unavailable. No tab was closed.", supported: false);
+        var results = new List<object>();
+        var closed = 0;
+        var alreadyClosed = 0;
+        foreach (var (id, target) in targets)
+        {
+            token.ThrowIfCancellationRequested();
+            lock (_conversationStateLock)
+                if (!ReferenceEquals(context, _openedBrowserTabs)) throw new OperationCanceledException("The originating conversation ended.");
+            BrowserActionReceipt receipt;
+            try
+            {
+                receipt = await _browserHelper.ExecuteAsync(new BrowserActionRequest
+                {
+                    TaskId = "direct-close-" + Guid.NewGuid().ToString("N"), Type = "close_direct_tab",
+                    TabId = target.TabId, WindowId = target.WindowId, ExpectedSessionId = target.SessionId,
+                }, token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (Exception) { receipt = new() { Error = "Chrome did not verify this tab's closure." }; }
+            token.ThrowIfCancellationRequested();
+            if (receipt.Ok && (receipt.TabId != target.TabId || receipt.WindowId != target.WindowId
+                || !string.Equals(receipt.SessionId, target.SessionId, StringComparison.Ordinal)))
+                receipt = new() { Error = "Chrome's response did not match the requested tab. Closure was not verified." };
+            if (receipt.Ok)
+            {
+                if (receipt.AlreadyClosed) alreadyClosed++; else closed++;
+                lock (_conversationStateLock) context.Remove(id);
+            }
+            results.Add(new { target_id = id, ok = receipt.Ok, already_closed = receipt.AlreadyClosed, error = receipt.Error });
+        }
+        return Logged("browser_action", "close exact tab set", closed + alreadyClosed == targets.Length,
+            $"Closed {closed} requested tab(s); {alreadyClosed} were already closed; {targets.Length - closed - alreadyClosed} could not be verified.",
+            extras: new() { ["closed_count"] = closed, ["already_closed_count"] = alreadyClosed, ["target_count"] = targets.Length, ["action_results"] = results.ToArray() });
+    }
+
     private Dictionary<string, object> OpenUrl(string url, string browser = null)
     {
         if (url?.StartsWith("ms-settings:", StringComparison.OrdinalIgnoreCase) == true)
@@ -3354,7 +3484,7 @@ public sealed class JarvisAutomationService : IDisposable
             $"{url} browser={browserUsed}",
             true,
             message,
-            extras: new() { ["browser"] = browserUsed });
+            extras: new() { ["browser"] = browserUsed, ["url"] = url });
     }
 
     private JarvisWorkflowSettings FindWorkflow(string name)

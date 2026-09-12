@@ -172,13 +172,12 @@ public sealed class BrowserAutomationVerifier
             || Regex.IsMatch(
                 text,
                 @"\b(?:all|every)\s+(?:required\s+)?(?:form\s+)?(?:field|question)s?\b");
+        var checks = decision.CompletionChecks ?? [];
         var formLikeMutation = !destinationEditorTransfer
-            && (wholeFormMutation
-                || (requestedMutationSteps > 1
-                && Regex.IsMatch(
-                    text,
-                    @"\b(fill|type|paste|set|choose|select|check|uncheck)\b")
-                    && receipts.Any(IsFormControlReceipt)));
+            && (wholeFormMutation || checks.Length > 0
+                || (!RequestsGroundedInformation(text)
+                    && IsFormControlReceipt(receipts.LastOrDefault())
+                    && receipts.Last().TargetRole != "searchbox"));
         if (formLikeMutation)
         {
             var missing = (page?.Controls ?? Array.Empty<BrowserControl>())
@@ -189,13 +188,31 @@ public sealed class BrowserAutomationVerifier
                 .Select(group => group.First().FieldLabel)
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
-            if (missing.Length > 0)
+            if (wholeFormMutation && missing.Length > 0)
                 return Failed("Required form questions remain unanswered: "
                     + string.Join("; ", missing)
                     + ". Use the provided context, or ask for genuinely missing required information before completion.");
 
+            if (checks.Length is 0 or > 80)
+                return Failed("Provide completionChecks for every requested final field state using current field/control identities. Do not repeat already-correct writes.");
+
+            var declared = new List<BrowserActionReceipt>();
+            foreach (var check in checks)
+            {
+                if (!IsFinalFieldCheck(check))
+                    return Failed("A final field check needs an exact field identity and a state type appropriate to its control role.");
+                declared.Add(ExpectedFieldState(check));
+            }
+
+            // Task coverage is semantic: words in labels/values are not an
+            // action count. Verify every declared outcome and retain evidence
+            // for earlier writes unless a final check explicitly replaces it.
             var expectedStates = receipts
                 .Where(HasExpectedFormState)
+                .Where(receipt => !receipt.Stale && !receipt.Cancelled
+                    && (!receipt.TabId.HasValue || page.TabId == 0 || receipt.TabId == page.TabId)
+                    && (string.IsNullOrWhiteSpace(receipt.AfterUrl) || string.IsNullOrWhiteSpace(page.Url)
+                        || receipt.AfterUrl.Equals(page.Url, StringComparison.Ordinal)))
                 .GroupBy(
                     receipt => string.Join(
                         "|",
@@ -204,19 +221,16 @@ public sealed class BrowserAutomationVerifier
                         receipt.TargetName),
                     StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.Last())
+                .Where(receipt => !declared.Any(check => SameFinalField(check, receipt)))
+                .Concat(declared)
                 .ToArray();
             var satisfied = expectedStates.Count(receipt =>
                 FinalPageStillSatisfies(page, receipt));
-            var required = Math.Max(1, requestedMutationSteps);
-            if (expectedStates.Length < required)
-            {
-                return Failed(
-                    $"Only {expectedStates.Length} of {required} requested form states have grounded action evidence.");
-            }
+            var required = expectedStates.Length;
 
             return satisfied >= required
                 ? Passed(
-                    $"The final live page still contains {satisfied} verified form states; Submit was not used.")
+                    $"The final live page contains all {satisfied} checked field states.")
                 : Failed(
                     $"Only {satisfied} of {required} requested form states remain present in the final live page.");
         }
@@ -378,6 +392,42 @@ public sealed class BrowserAutomationVerifier
                     : receipt.ExpectedValue);
     }
 
+    internal static bool FinalPageSatisfiesFieldCheck(
+        BrowserPageSnapshot page,
+        BrowserPlannerAction check) =>
+        IsFinalFieldCheck(check) && FinalPageStillSatisfies(page, ExpectedFieldState(check));
+
+    private static BrowserActionReceipt ExpectedFieldState(BrowserPlannerAction check)
+    {
+        var expected = new BrowserActionReceipt
+        {
+            Ok = true, Action = check.Type, TargetId = check.TargetId,
+            TargetFieldId = check.TargetFieldId, TargetRole = check.TargetRole,
+            TargetName = check.TargetName,
+        };
+        BrowserAutomationCoordinator.AttachExpectedState(expected, check);
+        return expected;
+    }
+
+    private static bool IsFinalFieldCheck(BrowserPlannerAction check) => check != null
+        && !string.IsNullOrWhiteSpace(check.TargetFieldId)
+        && !string.IsNullOrWhiteSpace(check.TargetRole)
+        && (check.Type switch
+    {
+        "type" or "paste" => check.TargetRole is "textbox" or "searchbox",
+        "select_option" => check.TargetRole is "combobox" or "listbox" or "option",
+        "check" or "uncheck" => check.TargetRole is "checkbox" or "radio" or "option",
+        _ => false,
+    });
+
+    private static bool SameFinalField(BrowserActionReceipt left, BrowserActionReceipt right) =>
+        !string.IsNullOrWhiteSpace(left.TargetFieldId)
+        && string.Equals(left.TargetFieldId, right.TargetFieldId, StringComparison.Ordinal)
+        && string.Equals(left.TargetRole, right.TargetRole, StringComparison.OrdinalIgnoreCase)
+        // A radio group has one final selection; checkboxes may allow several.
+        && (left.TargetRole == "radio"
+            || Normalize(left.TargetName) == Normalize(right.TargetName));
+
     private static bool FinalPageStillSatisfies(
         BrowserPageSnapshot page,
         BrowserActionReceipt receipt)
@@ -392,19 +442,19 @@ public sealed class BrowserAutomationVerifier
                     control.Id,
                     receipt.TargetId,
                     StringComparison.Ordinal))
-            ?? controls.FirstOrDefault(control =>
+            ?? UniqueControl(controls.Where(control =>
                 string.Equals(
                     control.Role,
                     receipt.TargetRole,
                     StringComparison.OrdinalIgnoreCase)
                 && ControlIdentity(control).Contains(
                     Normalize(receipt.TargetName),
-                    StringComparison.Ordinal));
+                    StringComparison.Ordinal)));
 
         if (receipt.Action is "check" or "uncheck")
         {
             return live != null
-                && live.Checked == receipt.Action.Equals(
+                && (live.Checked || live.Selected) == receipt.Action.Equals(
                     "check",
                     StringComparison.OrdinalIgnoreCase);
         }
@@ -412,17 +462,18 @@ public sealed class BrowserAutomationVerifier
         var expected = string.IsNullOrWhiteSpace(receipt.ExpectedValue)
             ? receipt.TargetName
             : receipt.ExpectedValue;
-        if (string.IsNullOrWhiteSpace(expected))
-            return false;
-
         if (receipt.Action is "type" or "paste")
         {
             return live != null
-                && EquivalentInputValue(live.Value, expected);
+                && EquivalentInputValue(live.Value, receipt.ExpectedValue ?? "");
         }
+
+        if (string.IsNullOrWhiteSpace(expected))
+            return false;
 
         if (live != null
             && (EquivalentInputValue(live.Value, expected)
+                || EquivalentInputValue(live.SelectedText, expected)
                 || ((live.Selected || live.Checked)
                     && ControlIdentity(live).Contains(
                         Normalize(expected),
@@ -440,10 +491,14 @@ public sealed class BrowserAutomationVerifier
                     "combobox",
                     StringComparison.OrdinalIgnoreCase))
             && (EquivalentInputValue(control.Value, expected)
-                || ControlIdentity(control).Contains(
-                    Normalize(expected),
-                    StringComparison.Ordinal)));
+                || EquivalentInputValue(control.SelectedText, expected)
+                || ((control.Selected || control.Checked)
+                    && ControlIdentity(control).Contains(Normalize(expected), StringComparison.Ordinal))
+                || (control.Role == "combobox" && EquivalentInputValue(control.Text, expected))));
     }
+
+    private static BrowserControl UniqueControl(IEnumerable<BrowserControl> controls) =>
+        controls.Take(2).ToArray() switch { [var only] => only, _ => null };
 
     private static string ControlIdentity(BrowserControl control) =>
         Normalize(string.Join(
@@ -466,7 +521,7 @@ public sealed class BrowserAutomationVerifier
         var actual = Normalize(observed);
         var wanted = Normalize(expected);
         if (wanted.Length == 0)
-            return true;
+            return actual.Length == 0;
         if (actual.Equals(wanted, StringComparison.Ordinal))
             return true;
 

@@ -59,9 +59,11 @@ public sealed class BrowserFormContextTests
             TargetId = "old1", TargetFieldId = "quality", CheckedChanged = true,
         };
         var verifier = new BrowserAutomationVerifier();
-        Assert.True(verifier.VerifyTerminal("Fill the survey", new() { Done = true }, page, [receipt]).Verified);
+        var decision = new BrowserPlannerDecision { Done = true, CompletionChecks = [
+            new() { Type = "check", TargetFieldId = "quality", TargetRole = "radio", TargetName = "4" }] };
+        Assert.True(verifier.VerifyTerminal("Fill the survey", decision, page, [receipt]).Verified);
         receipt.TargetFieldId = "optional";
-        Assert.False(verifier.VerifyTerminal("Fill the survey", new() { Done = true }, page, [receipt]).Verified);
+        Assert.False(verifier.VerifyTerminal("Fill the survey", decision, page, [receipt]).Verified);
     }
 
     [Fact]
@@ -80,6 +82,7 @@ public sealed class BrowserFormContextTests
         var requested = Choice("name", "name-field", "Full name", true);
         requested.Role = "textbox";
         requested.AccessibleName = "Full name";
+        requested.Value = "Handoff User";
         var unrelatedRequired = Choice("email", "email-field", "Email address", false);
         unrelatedRequired.Role = "textbox";
         unrelatedRequired.AccessibleName = "Email address";
@@ -92,11 +95,13 @@ public sealed class BrowserFormContextTests
             TargetRole = "textbox",
             TargetFieldId = "name-field",
             ValueMatches = true,
+            ExpectedValue = "Handoff User",
         };
 
         var result = new BrowserAutomationVerifier().VerifyTerminal(
             "Fill the Full name field with Handoff User on the current form.",
-            new BrowserPlannerDecision { Done = true },
+            new BrowserPlannerDecision { Done = true, CompletionChecks = [new() {
+                Type = "type", TargetFieldId = "name-field", TargetRole = "textbox", TargetName = "Full name", Text = "Handoff User" }] },
             page,
             [receipt]);
 

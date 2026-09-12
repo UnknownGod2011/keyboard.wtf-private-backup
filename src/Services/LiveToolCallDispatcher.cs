@@ -154,7 +154,6 @@ internal sealed class LiveToolCallDispatcher : IDisposable
             // Keep completed calls cancellable until the batch is published:
             // cancellation arriving during another action must suppress them too.
             _lifetime.Token.ThrowIfCancellationRequested();
-            AnnotateReferentialGroup(results.Select(result => result.Response));
             // Materialize only once the transport owns its send lock. A result
             // cancelled while waiting for audio/socket output must not survive
             // in an already-created message; unrelated results still publish.
@@ -162,8 +161,9 @@ internal sealed class LiveToolCallDispatcher : IDisposable
             {
                 var responses = results
                     .Where(result => !result.Call.Cancellation.IsCancellationRequested)
-                    .Select(result => new { id = result.Call.Id, name = result.Call.Name, response = result.Response })
+                    .Select(result => new { id = result.Call.Id, name = result.Call.Name, response = new Dictionary<string, object>(result.Response) })
                     .ToArray();
+                AnnotateReferentialGroup(responses.Select(result => result.response));
                 return responses.Length == 0 ? null : new { toolResponse = new { functionResponses = responses } };
             }, _lifetime.Token);
         }
@@ -190,20 +190,27 @@ internal sealed class LiveToolCallDispatcher : IDisposable
     internal static void AnnotateReferentialGroup(
         IEnumerable<Dictionary<string, object>> responses)
     {
-        var targets = (responses ?? [])
+        var owners = (responses ?? [])
             .Where(response => response != null
-                && response.TryGetValue("referential_target", out var value)
-                && value != null)
+                && !response.ContainsKey("duplicate_suppressed"))
             .ToArray();
+        var targets = owners.SelectMany(response =>
+            response.TryGetValue("referential_targets", out var many) && many is IEnumerable<object> list
+                ? list
+                : response.TryGetValue("referential_target", out var one) && one != null
+                    ? new[] { one }
+                    : Array.Empty<object>()).ToArray();
         if (targets.Length <= 1)
             return;
 
-        foreach (var response in targets)
+        foreach (var response in owners)
         {
             response["referential_group"] = new Dictionary<string, object>
             {
                 ["cardinality"] = "multiple",
                 ["target_count"] = targets.Length,
+                // The individual/workflow results already contain the exact
+                // targets. Do not replicate the whole set into every response.
                 ["instruction"] = "A later singular reference is ambiguous; ask the user to choose one target instead of selecting by execution order.",
             };
         }

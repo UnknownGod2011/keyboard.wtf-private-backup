@@ -28,10 +28,27 @@ public sealed class LiveToolCallDispatcherTests
             var group = Assert.IsType<Dictionary<string, object>>(response["referential_group"]);
             Assert.Equal("multiple", group["cardinality"]);
             Assert.Equal(2, group["target_count"]);
+            Assert.False(group.ContainsKey("targets")); // Keep payload growth linear.
         }
     }
 
     private static readonly TimeSpan AsyncTestTimeout = TimeSpan.FromSeconds(10);
+
+    [Fact]
+    public void Workflow_targets_and_separate_action_targets_share_one_complete_group()
+    {
+        var workflow = new Dictionary<string, object>
+        {
+            ["ok"] = false, // A failed action does not erase the successful subset.
+            ["referential_targets"] = new object[] { new { target = "one" }, new { target = "two" } },
+        };
+        var separate = new Dictionary<string, object> { ["ok"] = true, ["referential_target"] = new { target = "three" } };
+        LiveToolCallDispatcher.AnnotateReferentialGroup([workflow, separate]);
+        var group = Assert.IsType<Dictionary<string, object>>(workflow["referential_group"]);
+        Assert.Equal(3, group["target_count"]);
+        Assert.Equal(2, Assert.IsType<object[]>(workflow["referential_targets"]).Length);
+        Assert.True(separate.ContainsKey("referential_target"));
+    }
 
     [Fact]
     public async Task Multiple_actions_in_one_provider_batch_return_one_combined_response()
@@ -327,7 +344,11 @@ public sealed class LiveToolCallDispatcherTests
         var transportReady = Signal();
         var responses = new ConcurrentQueue<string>();
         using var queue = new LiveToolCallDispatcher(CancellationToken.None,
-            (_, _, _) => Task.FromResult(Ok()), async (buildResponse, token) =>
+            (_, args, _) => Task.FromResult(new Dictionary<string, object>
+            {
+                ["ok"] = true,
+                ["referential_target"] = new { kind = "folder", target = args.GetProperty("value").GetString() },
+            }), async (buildResponse, token) =>
             {
                 waitingForTransport.TrySetResult(true);
                 await transportReady.Task.WaitAsync(token);
@@ -348,6 +369,7 @@ public sealed class LiveToolCallDispatcherTests
             var batch = JsonDocument.Parse(Assert.Single(responses)).RootElement
                 .GetProperty("toolResponse").GetProperty("functionResponses");
             Assert.Equal("unrelated", Assert.Single(batch.EnumerateArray()).GetProperty("id").GetString());
+            Assert.False(batch[0].GetProperty("response").TryGetProperty("referential_group", out _));
         }
         else Assert.Empty(responses);
         Assert.Equal(0, queue.PendingCount);

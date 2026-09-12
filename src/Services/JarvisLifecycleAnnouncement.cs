@@ -2,6 +2,9 @@ namespace KeyboardWtf.Services;
 
 public sealed class JarvisLifecycleAnnouncement
 {
+    // The originating owner remains authoritative while delivery waits.
+    internal Func<bool> IsCurrent { get; init; }
+    internal bool CanPublish => IsCurrent?.Invoke() != false;
     public string Source { get; init; } = "";
     public string State { get; init; } = "";
     public string Detail { get; init; } = "";

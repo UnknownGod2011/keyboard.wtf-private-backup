@@ -579,7 +579,7 @@
           <input type="checkbox" id="useFillerWordCleaner" onchange="settingChanged()" style="width:18px;height:18px;cursor:pointer">
           Strip filler sounds from transcripts (um, uh, hmm, er, äh)
         </label>
-        <div class="hint">Optional local transcript cleanup for Raw Dictation and other local speech modes. Smart Writing always applies its own Gemini editing.</div>
+        <div class="hint">Optional local transcript cleanup for Raw Dictation and other local speech modes. Smart Writing always applies its own editing.</div>
       </div>
 
       <div class="field">
@@ -761,7 +761,7 @@
     <!-- Assistant -->
     <section id="assistant">
       <h2>Assistant</h2>
-      <p class="section-hint">Jarvis identity, Gemini voice, workflows, memory, safety, and action history.</p>
+      <p class="section-hint">Jarvis identity, voice, workflows, memory, safety, and action history.</p>
 
       <div class="field">
         <label for="assistantName">Assistant name</label>
@@ -779,9 +779,9 @@
       </div>
 
       <div class="field">
-        <label for="geminiVoice">Gemini Live voice</label>
+        <label for="geminiVoice">Jarvis voice</label>
         <select id="geminiVoice" onchange="assistantChanged()"></select>
-        <div class="hint">Jarvis conversation audio comes directly from Gemini Live. Voice changes apply to the next conversation.</div>
+        <div class="hint">Choose how Jarvis sounds. Voice changes apply to the next conversation.</div>
       </div>
 
       <div class="field">
@@ -3271,7 +3271,7 @@ async function testScreenGuidance() {
   const btn = document.getElementById('screenTestBtn');
   const result = document.getElementById('screenTestResult');
   btn.disabled = true;
-  result.textContent = 'Capturing one screen image and asking Gemini...';
+  result.textContent = 'Analyzing your screen...';
   try {
     const resp = await fetch('/api/screen-guidance-test', {
       method: 'POST',
@@ -3280,7 +3280,7 @@ async function testScreenGuidance() {
     const data = await resp.json();
     result.textContent = data.ok
       ? (data.guidance || data.message || 'Screen guidance completed.')
-      : `Screen guidance unavailable: ${data.error || data.message || 'Check the Gemini API key.'}`;
+      : `Screen guidance unavailable: ${data.error || data.message || 'Check your connection and account status.'}`;
   } catch (e) {
     result.textContent = 'Screen guidance test failed: ' + e.message;
   } finally {

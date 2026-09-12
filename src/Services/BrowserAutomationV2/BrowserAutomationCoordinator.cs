@@ -867,11 +867,12 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     }
                     if (IsRequestedInterventionAlreadySatisfied(
                             intervention,
-                            runtime.Page))
+                            runtime.Page,
+                            lastDecision.CompletionChecks))
                     {
                         var terminal = _verifier.VerifyTerminal(
                             runtime.Request,
-                            new BrowserPlannerDecision { Done = true },
+                            lastDecision,
                             runtime.Page,
                             runtime.Receipts,
                             runtime.OrderedSourceCollectionVerified);
@@ -3630,7 +3631,9 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         string normalizedIntervention,
         string fieldLabel)
     {
-        var label = NormalizeControlText(fieldLabel);
+        // Printed label punctuation is not part of a user's field reference.
+        // Keep the full words and the existing unique-field requirement.
+        var label = NormalizeControlText(Regex.Replace(fieldLabel ?? "", @"[\p{P}\s]+$", ""));
         if (label.Length < 3)
             return false;
         if (normalizedIntervention.Contains(label, StringComparison.OrdinalIgnoreCase))
@@ -3700,7 +3703,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
 
     internal static bool IsRequestedInterventionAlreadySatisfied(
         BrowserUserIntervention intervention,
-        BrowserPageSnapshot page)
+        BrowserPageSnapshot page,
+        IReadOnlyList<BrowserPlannerAction> expectedFields = null)
     {
         var request = NormalizeControlText(string.Join(
             " ",
@@ -3708,6 +3712,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             intervention?.Explanation));
         if (request.Length == 0
             || page?.Controls == null
+            || expectedFields is not { Count: > 0 and <= 80 }
             || IsProtectedIntervention(
                 intervention?.Missing ?? "",
                 intervention?.Explanation ?? "")
@@ -3741,6 +3746,13 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                 && !string.IsNullOrWhiteSpace(control.FieldId)
                 && !string.IsNullOrWhiteSpace(control.FieldLabel))
             .GroupBy(control => control.FieldId, StringComparer.Ordinal)
+            // Nonempty/default/pre-existing content is not the user's answer.
+            // Only the current plan's explicit expected state can prove that
+            // this question is redundant, using the same live-state verifier
+            // as terminal completion (not a second value/receipt owner).
+            .Where(group => expectedFields.Any(check =>
+                check != null && check.TargetFieldId == group.Key
+                && BrowserAutomationVerifier.FinalPageSatisfiesFieldCheck(page, check)))
             .Select(group => group.First().FieldLabel)
             .Any(label =>
             {
@@ -5613,32 +5625,44 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         string summary,
         string evidence)
     {
-        var finalSummary = string.IsNullOrWhiteSpace(summary)
-            ? "The browser task completed."
-            : summary.Trim();
-        runtime.History.Add($"Terminal verification: {evidence}");
-        SetTerminal(
-            runtime,
-            outcome == BrowserAutomationOutcome.CompletedWithNote
-                ? BrowserTaskState.CompletedWithNote
-                : BrowserTaskState.Completed,
-            outcome,
-            "Completed",
-            finalSummary);
-        _notifications.AttentionTransient("Browser automation", finalSummary);
+        lock (_sync)
+        {
+            if (!ReferenceEquals(_active, runtime) || IsTerminal(runtime.State)
+                || runtime.Cancellation.IsCancellationRequested)
+                return;
+            var finalSummary = string.IsNullOrWhiteSpace(summary)
+                ? "The browser task completed."
+                : summary.Trim();
+            runtime.History.Add($"Terminal verification: {evidence}");
+            SetTerminal(
+                runtime,
+                outcome == BrowserAutomationOutcome.CompletedWithNote
+                    ? BrowserTaskState.CompletedWithNote
+                    : BrowserTaskState.Completed,
+                outcome,
+                "Completed",
+                finalSummary);
+            _notifications.AttentionTransient("Browser automation", finalSummary);
+        }
     }
 
     private void Fail(Runtime runtime, BrowserAutomationOutcome outcome, string message)
     {
-        var state = outcome switch
+        lock (_sync)
         {
-            BrowserAutomationOutcome.Partial => BrowserTaskState.Partial,
-            BrowserAutomationOutcome.Blocked => BrowserTaskState.Blocked,
-            BrowserAutomationOutcome.NeedsUserAction => BrowserTaskState.NeedsUserAction,
-            _ => BrowserTaskState.Failed,
-        };
-        SetTerminal(runtime, state, outcome, message, "");
-        _notifications.WarningTransient("Browser automation", message);
+            if (!ReferenceEquals(_active, runtime) || IsTerminal(runtime.State)
+                || runtime.Cancellation.IsCancellationRequested)
+                return;
+            var state = outcome switch
+            {
+                BrowserAutomationOutcome.Partial => BrowserTaskState.Partial,
+                BrowserAutomationOutcome.Blocked => BrowserTaskState.Blocked,
+                BrowserAutomationOutcome.NeedsUserAction => BrowserTaskState.NeedsUserAction,
+                _ => BrowserTaskState.Failed,
+            };
+            SetTerminal(runtime, state, outcome, message, "");
+            _notifications.WarningTransient("Browser automation", message);
+        }
     }
 
     private void SetTerminal(
@@ -5736,12 +5760,22 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             BrowserTaskState.NeedsUserAction => BuildInterventionDisplay(runtime.Intervention),
             _ => runtime.LastError,
         };
+        var intervention = runtime.Intervention;
         var announcement = new JarvisLifecycleAnnouncement
         {
+            IsCurrent = () =>
+            {
+                lock (_sync)
+                    return ReferenceEquals(_active, runtime)
+                        && runtime.State == state
+                        && (state != BrowserTaskState.NeedsUserAction
+                            || ReferenceEquals(runtime.Intervention, intervention));
+            },
             Source = "browser_automation",
             State = state.ToString(),
             Detail = string.IsNullOrWhiteSpace(detail) ? spoken : detail,
-            FallbackSpeech = spoken,
+            // Browser task speech belongs only to the current Jarvis session.
+            // Background completion/failure still has its existing UI/notice.
             InterventionKind = state == BrowserTaskState.NeedsUserAction
                 ? runtime.Intervention?.Kind ?? "manual_step"
                 : "",
@@ -5758,10 +5792,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         };
         var handler = AnnouncementRequested;
         if (handler == null)
-        {
-            KeyboardWtf.Services.TtsService.Instance.Speak(spoken, "en");
             return;
-        }
 
         try
         {
@@ -5770,7 +5801,6 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         catch (Exception ex)
         {
             AppLog.Warning(ex, "Browser lifecycle announcement handler failed");
-            KeyboardWtf.Services.TtsService.Instance.Speak(spoken, "en");
         }
     }
 

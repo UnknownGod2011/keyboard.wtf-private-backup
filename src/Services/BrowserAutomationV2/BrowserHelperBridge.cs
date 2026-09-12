@@ -42,6 +42,7 @@ public sealed class BrowserHelperBridge : IDisposable
                     NativeHostRegistered = _status.NativeHostRegistered,
                     Connected = false,
                     CommandChannelReady = false,
+                    CommandAuthoritySupported = _status.CommandAuthoritySupported,
                     ActiveTabFresh = false,
                     ActiveTabIsDisposableProtectedOrBlank = false,
                     MultipleHelpersDetected = _status.MultipleHelpersDetected,
@@ -193,7 +194,6 @@ public sealed class BrowserHelperBridge : IDisposable
         if (!_pending.TryAdd(key, completion))
             throw new InvalidOperationException("Duplicate browser command ID");
 
-        _commands.Enqueue(action);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(token);
         linked.CancelAfter(commandTimeout);
         using var registration = linked.Token.Register(() =>
@@ -201,13 +201,15 @@ public sealed class BrowserHelperBridge : IDisposable
             if (_pending.TryRemove(key, out var pending))
                 pending.TrySetCanceled(linked.Token);
         });
+        linked.Token.ThrowIfCancellationRequested();
+        _commands.Enqueue(action);
 
         return await completion.Task;
     }
 
     internal static bool IsServiceWorkerCommand(string actionType) =>
         actionType is "activate_existing_tab" or "begin_task" or "navigate"
-            or "open_tab" or "end_task" or "cancel_task";
+            or "open_tab" or "end_task" or "cancel_task" or "open_direct_tab" or "close_direct_tab";
 
     private async Task WaitForCommandChannelAsync(
         bool serviceWorkerOnly,
@@ -219,6 +221,8 @@ public sealed class BrowserHelperBridge : IDisposable
         {
             token.ThrowIfCancellationRequested();
             var status = Status;
+            if (status.Connected && !status.CommandAuthoritySupported)
+                throw new InvalidOperationException("Update the Chrome Helper before using browser actions; this version cannot safely cancel a pending action.");
             if (status.CommandChannelReady
                 || (serviceWorkerOnly
                     && status.Connected
@@ -310,7 +314,7 @@ public sealed class BrowserHelperBridge : IDisposable
         var type = String(root, "type");
 
         var helperMayExecute = true;
-        if (type is "hello" or "heartbeat" or "poll" or "command_result")
+        if (type is "hello" or "heartbeat" or "poll" or "command_result" or "command_check")
             helperMayExecute = UpdateStatus(root);
 
         if (type == "command_result")
@@ -327,13 +331,27 @@ public sealed class BrowserHelperBridge : IDisposable
 
         BrowserActionRequest command = null;
         if (type == "poll" && helperMayExecute)
-            _commands.TryDequeue(out command);
+        {
+            // The result waiter is the existing command authority. A timeout
+            // or cancellation removes it, so recovery must not send its stale
+            // queued mutation merely because the Helper has begun polling again.
+            while (_commands.TryDequeue(out var candidate))
+            {
+                if (_pending.ContainsKey(PendingKey(candidate.TaskId, candidate.CommandId)))
+                {
+                    command = candidate;
+                    break;
+                }
+            }
+        }
 
         return JsonSerializer.Serialize(new
         {
             ok = true,
             protocolVersion = BrowserHelperProtocol.Version,
             command,
+            commandAuthorized = helperMayExecute
+                && _pending.ContainsKey(PendingKey(String(root, "taskId"), String(root, "commandId"))),
         }, JsonOptions);
     }
 
@@ -392,6 +410,7 @@ public sealed class BrowserHelperBridge : IDisposable
             {
                 NativeHostRegistered = true,
                 Connected = true,
+                CommandAuthoritySupported = Bool(helper, "commandAuthoritySupported"),
                 CommandChannelReady = extensionIdAllowed
                     && !multipleHelpersDetected
                     && versionsMatch

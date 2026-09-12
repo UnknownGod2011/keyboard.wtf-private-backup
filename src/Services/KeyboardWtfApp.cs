@@ -78,7 +78,8 @@ public sealed class KeyboardWtfApp : IDisposable
             _notifications,
             _settings,
             _intentMemory,
-            _paidAccount);
+            _paidAccount,
+            _learnedMappings);
         _browserHelper = new BrowserHelperBridge();
         _browserHelper.Start();
         _browserPlanner = new BrowserAutomationPlanner(_paidAccount);
@@ -111,7 +112,10 @@ public sealed class KeyboardWtfApp : IDisposable
             _jarvisHistory,
             _browserAutomation);
         _liveConversation.SetToolExecutor(_commands.ExecuteJarvisToolAsync);
-        _liveConversation.SetUserTranscriptObserver(_commands.ObserveJarvisTranscript);
+        _liveConversation.SetUserTranscriptObserver(
+            _commands.ObserveJarvisTranscript,
+            _commands.ObserveImmediateJarvisControl,
+            _commands.CompleteJarvisUserTurn);
         _liveConversation.SetSessionEndingObserver(_commands.HandleJarvisSessionEndingAsync);
         _overlay = new VoiceOverlayForm(_audioRecorder);
         _overlay.InitializeUiThreadHandle();
@@ -257,12 +261,10 @@ public sealed class KeyboardWtfApp : IDisposable
         if (_liveConversation.TryEndFromAuthoritativeUserText(text))
             return;
 
-        // Start deterministic or browser work promptly, but still let the
-        // Live conversation receive the turn. CommandRegistry supplies the
-        // matching verified receipt to the model, which lets Jarvis say
-        // "started" or "switched" rather than silently returning early.
+        // Ordinary actions belong to tool execution so the model receives
+        // their actual result. Only explicit cancellation is immediate.
         using var turnCancellation = CancellationTokenSource.CreateLinkedTokenSource(token, _liveConversation.SessionCancellation);
-        _commands?.TryPreRouteJarvisTranscript(text, turnCancellation.Token, fromLocalTextSubmission: true);
+        _commands?.ObserveSubmittedJarvisText(text, turnCancellation.Token);
 
         await _liveConversation.SendTextTurnAsync(
             BrowserAutomationText.Truncate(text.Trim(), 4000),
@@ -327,6 +329,8 @@ public sealed class KeyboardWtfApp : IDisposable
         JarvisLifecycleAnnouncement announcement)
     {
         var deliveredByJarvis = false;
+        var liveOwnedDelivery = _liveConversation?.IsActive == true
+            || _liveConversation?.IsStarting == true;
         try
         {
             deliveredByJarvis = _liveConversation != null
@@ -345,12 +349,13 @@ public sealed class KeyboardWtfApp : IDisposable
         }
 
         if (!deliveredByJarvis
+            && !liveOwnedDelivery
             && !_disposed
+            && announcement.CanPublish
             && !string.IsNullOrWhiteSpace(announcement.FallbackSpeech))
         {
-            // The Live conversation owns normal spoken updates. Local TTS is
-            // retained only so a timer or background task is not silently
-            // lost when Jarvis Live is disconnected.
+            // A failed/cancelled Live delivery must never become a second TTS
+            // owner after goodbye. Background-only tasks retain their fallback.
             AppLog.Info(
                 $"Lifecycle announcement used local speech fallback: source={announcement.Source} state={announcement.State}");
             TtsService.Instance.Speak(announcement.FallbackSpeech, "en");

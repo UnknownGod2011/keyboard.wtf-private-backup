@@ -45,7 +45,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 chrome.tabs.onActivated.addListener(() => wakeBridge());
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "helper_command_authority") {
+    authorizeRendererCommand(message, sender)
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
   if (message?.type === "helper_content_heartbeat") {
     wakeBridge();
     sendResponse({ ok: true, version: VERSION });
@@ -113,7 +119,7 @@ function connectNative() {
       }
       pollBusy = false;
       clearTimeout(pollTimer);
-      clearAllIndicators();
+      clearAllIndicators().catch(() => {});
       scheduleReconnect();
     });
     sendNative({ type: "hello", helper: baseHelperState() })
@@ -152,6 +158,7 @@ function resetNativePort(reason, expectedPort = null) {
   }
   pollBusy = false;
   clearTimeout(pollTimer);
+  clearAllIndicators().catch(() => {});
   try { stalePort?.disconnect(); } catch (_) {}
 }
 
@@ -172,17 +179,39 @@ function schedulePoll(delay = hasActiveTask() ? 220 : 900) {
 }
 
 async function pollOnce() {
-  if (!nativePort || pollBusy) {
+  if (!nativePort) {
     schedulePoll();
     return;
   }
+  if (pollBusy) {
+    // Page work may be slow, but it must not starve native liveness. Keep
+    // exactly one command executor; a heartbeat never pulls another command.
+    schedulePoll();
+    if (pendingNative.length === 0) {
+      const owner = pollBusy;
+      try {
+        const response = await sendNative({ type: "heartbeat", helper: baseHelperState(),
+          taskId: owner.command?.taskId || "", commandId: owner.command?.commandId || "" });
+        if (owner.command?.requiresAuthorityCheck && response.commandAuthorized === false) {
+          cancelCommandOwner(owner);
+        }
+      } catch { cancelCommandOwner(owner); }
+    }
+    return;
+  }
 
-  pollBusy = true;
+  const owner = { port: nativePort, command: null, cancelled: false };
+  pollBusy = owner;
+  schedulePoll();
   try {
     const helper = await collectHelperState();
+    if (pollBusy !== owner || nativePort !== owner.port) return;
     const response = await sendNative({ type: "poll", helper });
+    if (pollBusy !== owner || nativePort !== owner.port) return;
     if (response?.command) {
+      owner.command = response.command;
       const result = await executeCommand(response.command);
+      if (pollBusy !== owner || nativePort !== owner.port) return;
       await sendNative({
         type: "command_result",
         taskId: response.command.taskId || "",
@@ -194,8 +223,53 @@ async function pollOnce() {
   } catch (error) {
     lastError = String(error?.message || error);
   } finally {
+    // A late old-port operation cannot clear the new poll owner's state.
+    if (pollBusy === owner) {
+      pollBusy = false;
+      schedulePoll();
+    }
+  }
+}
+
+async function assertCommandAuthorized(command) {
+  if (!command.requiresAuthorityCheck) return; // Original 1.4.17 desktop protocol.
+  const owner = pollBusy;
+  if (!owner || owner.command !== command || owner.cancelled || owner.port !== nativePort)
+    throw new Error("The originating browser command has ended.");
+  const result = await sendNative({ type: "command_check", helper: baseHelperState(),
+    taskId: command.taskId || "", commandId: command.commandId || "" });
+  if (pollBusy !== owner || owner.port !== nativePort || owner.cancelled || result.commandAuthorized !== true) {
+    cancelCommandOwner(owner);
+    throw new Error("The browser command was cancelled or expired before mutation.");
+  }
+}
+
+async function authorizeRendererCommand(message, sender) {
+  const command = pollBusy?.command;
+  if (!command?.requiresAuthorityCheck
+      || sender?.id !== chrome.runtime.id
+      || message.taskId !== command.taskId
+      || message.commandId !== command.commandId
+      || sender.tab?.id !== resolveTaskTab(command)
+      || Number(sender.frameId || 0) !== frameForCommand(command).frameId)
+    throw new Error("The renderer does not own this browser command.");
+  // Use the same desktop waiter at the final renderer boundary. A commit
+  // already queued in an unresponsive page must not outlive cancellation.
+  await assertCommandAuthorized(command);
+}
+
+function cancelCommandOwner(owner) {
+  if (!owner || owner.cancelled) return;
+  owner.cancelled = true;
+  if (pollBusy !== owner || owner.port !== nativePort) return;
+  if (owner.command?.taskId) {
+    // The existing task owner drops its lease immediately. A slow page reply
+    // cannot postpone cancellation or bring its prepared action back to life.
+    endTask({ taskId: owner.command.taskId, type: "cancel_task" }).catch(() => {});
+  }
+  if (pollBusy === owner) {
     pollBusy = false;
-    schedulePoll();
+    schedulePoll(0);
   }
 }
 
@@ -255,6 +329,7 @@ function baseHelperState() {
   return {
     extensionId: chrome.runtime.id,
     serviceWorkerVersion: VERSION,
+    commandAuthoritySupported: true,
     contentScriptVersion: "",
     sessionId,
     commandChannelReady: false,
@@ -306,6 +381,7 @@ async function collectHelperState() {
 
 async function executeCommand(command) {
   try {
+    await assertCommandAuthorized(command);
     switch (command.type) {
       case "begin_task":
         return await beginTask(command);
@@ -317,6 +393,10 @@ async function executeCommand(command) {
         return await activateTab(command);
       case "activate_existing_tab":
         return await activateExistingTab(command);
+      case "open_direct_tab":
+        return await openDirectTab(command);
+      case "close_direct_tab":
+        return await closeDirectTab(command);
       case "navigate":
         return await navigate(command);
       case "capture_screenshot":
@@ -342,13 +422,49 @@ async function beginTask(command) {
   const [current] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!current?.id) throw new Error("Chrome has no active tab.");
 
+  await assertCommandAuthorized(command);
   ownTab(command.taskId, current.id);
   taskActiveTab.set(command.taskId, current.id);
   if (!isNormalPage(current.url)) {
     return protectedPageSnapshot(command.taskId, current);
   }
-  await beginTaskFrames(command.taskId, current.id, "Planning task");
-  return await scanTab(command.taskId, current.id);
+  await beginTaskFrames(command.taskId, current.id, "Planning task", command);
+  return await scanTab(command.taskId, current.id, command);
+}
+
+async function openDirectTab(command) {
+  const url = safeUrl(command.url);
+  if (!url) throw new Error("Only http/https destinations can be opened.");
+  await assertCommandAuthorized(command);
+  const tab = await chrome.tabs.create({ url: url.href, active: true });
+  return { commandId: command.commandId, taskId: command.taskId, ok: true,
+    action: command.type, sessionId, tabId: tab.id, windowId: tab.windowId,
+    afterUrl: tab.pendingUrl || tab.url || url.href };
+}
+
+async function closeDirectTab(command) {
+  // IDs are meaningful only in their original worker/browser session. The
+  // desktop accepts only handles from its own successful open receipts.
+  if (!command.expectedSessionId || command.expectedSessionId !== sessionId
+      || !Number.isInteger(command.tabId) || !Number.isInteger(command.windowId))
+    throw new Error("The original tab handle is no longer valid. No tab was closed.");
+  const tabs = await chrome.tabs.query({});
+  const tab = tabs.find(tab => tab.id === command.tabId);
+  if (tab && tab.windowId !== command.windowId)
+    throw new Error("That tab moved to another window. Confirm its new target before closing.");
+  await assertCommandAuthorized(command);
+  let alreadyClosed = !tab;
+  if (tab) {
+    // A user may close this same tab between enumeration and removal. Its
+    // actual disappearance, not a raced API error, owns the final result.
+    try { await chrome.tabs.remove(tab.id); }
+    catch { alreadyClosed = true; }
+    if ((await chrome.tabs.query({})).some(current => current.id === tab.id))
+      throw new Error("Chrome did not confirm that the requested tab closed.");
+  }
+  return { commandId: command.commandId, taskId: command.taskId, ok: true,
+    action: command.type, sessionId, tabId: command.tabId, windowId: command.windowId,
+    alreadyClosed };
 }
 
 function protectedPageSnapshot(taskId, tab) {
@@ -376,8 +492,8 @@ async function observe(command) {
   // A normal navigation creates a fresh content-script world. Reassert the
   // existing task lease before returning the refreshed graph so the next
   // grounded action cannot be rejected as belonging to a stale page.
-  await beginTaskFrames(command.taskId, tabId, "Reading updated page");
-  return await scanTab(command.taskId, tabId);
+  await beginTaskFrames(command.taskId, tabId, "Reading updated page", command);
+  return await scanTab(command.taskId, tabId, command);
 }
 
 async function openTab(command) {
@@ -388,6 +504,7 @@ async function openTab(command) {
     command.url);
   const beforeUrl = current?.url || "";
   let tab = existing;
+  await assertCommandAuthorized(command);
   if (!tab) {
     tab = await chrome.tabs.create({
       windowId: command.windowId || current?.windowId,
@@ -400,8 +517,9 @@ async function openTab(command) {
   ownTab(command.taskId, tab.id);
   taskActiveTab.set(command.taskId, tab.id);
   await waitForTab(tab.id);
-  await beginTaskFrames(command.taskId, tab.id, "Opening page");
-  const snapshot = await scanTab(command.taskId, tab.id);
+  await assertCommandAuthorized(command);
+  await beginTaskFrames(command.taskId, tab.id, "Opening page", command);
+  const snapshot = await scanTab(command.taskId, tab.id, command);
   return {
     commandId: command.commandId,
     taskId: command.taskId,
@@ -420,6 +538,7 @@ async function openTab(command) {
 async function activateTab(command) {
   const tabId = resolveTaskTab(command);
   const tab = await chrome.tabs.get(tabId);
+  await assertCommandAuthorized(command);
   await chrome.tabs.update(tabId, { active: true });
   taskActiveTab.set(command.taskId, tabId);
   return {
@@ -464,6 +583,7 @@ async function activateExistingTab(command) {
 
   const before = tabs[activeIndex] || null;
   const target = tabs[targetIndex];
+  await assertCommandAuthorized(command);
   await chrome.tabs.update(target.id, { active: true });
   return {
     commandId: command.commandId || "",
@@ -483,10 +603,12 @@ async function activateExistingTab(command) {
 async function navigate(command) {
   const tabId = resolveTaskTab(command);
   const before = await chrome.tabs.get(tabId);
+  await assertCommandAuthorized(command);
   await chrome.tabs.update(tabId, { url: command.url });
   await waitForTab(tabId);
-  await beginTaskFrames(command.taskId, tabId, "Reading page");
-  const snapshot = await scanTab(command.taskId, tabId);
+  await assertCommandAuthorized(command);
+  await beginTaskFrames(command.taskId, tabId, "Reading page", command);
+  const snapshot = await scanTab(command.taskId, tabId, command);
   return {
     commandId: command.commandId,
     taskId: command.taskId,
@@ -505,7 +627,7 @@ async function navigate(command) {
 async function captureScreenshot(command) {
   const tabId = resolveTaskTab(command);
   const tab = await chrome.tabs.get(tabId);
-  const screenshotDataUrl = await captureTaskTab(tabId, tab.windowId, 72);
+  const screenshotDataUrl = await captureTaskTab(tabId, tab.windowId, 72, command);
   return {
     commandId: command.commandId,
     taskId: command.taskId,
@@ -527,13 +649,16 @@ async function executePageAction(command) {
   // need Chrome to own the Windows foreground. Only native keyboard fallbacks
   // explicitly focus the tab first via a focus/focus_active_cursor command.
   if (requiresForeground(command)) {
+    await assertCommandAuthorized(command);
     await chrome.windows.update(beforeTab.windowId, { focused: true });
+    await assertCommandAuthorized(command);
     await chrome.tabs.update(tabId, { active: true });
   }
   await ensureContentScript(tabId, frameId);
   // Navigation may finish after the preceding observation. Reassert the lease
   // at the mutation boundary so a newly created content-script world can only
   // execute the still-active task that owns this exact tab.
+  await assertCommandAuthorized(command);
   await sendToTab(tabId, {
     type: "begin_task",
     taskId: command.taskId,
@@ -544,11 +669,13 @@ async function executePageAction(command) {
     command: frameCommand
   }, true, frameId);
   if (!prepared?.ok) return failureReceipt(command, prepared);
+  if (command.requiresAuthorityCheck && prepared.commandAuthoritySupported !== true)
+    return failureReceipt(command, { error: "Refresh this tab to finish updating the Chrome Helper. No action was applied." });
 
   let screenshotDataUrl = "";
   if (command.captureBeforeAction) {
     try {
-      screenshotDataUrl = await captureTaskTab(tabId, beforeTab.windowId, 70);
+      screenshotDataUrl = await captureTaskTab(tabId, beforeTab.windowId, 70, command);
     } catch {
       // This receipt image is optional. A transient permission or capture
       // failure must never prevent the already-grounded live action.
@@ -557,6 +684,7 @@ async function executePageAction(command) {
   }
 
   let receipt;
+  await assertCommandAuthorized(command);
   try {
     receipt = await sendToTab(tabId, {
       type: "commit_action",
@@ -599,11 +727,12 @@ function requiresForeground(command) {
     || command?.type === "focus_active_cursor";
 }
 
-async function captureTaskTab(tabId, windowId, quality) {
+async function captureTaskTab(tabId, windowId, quality, command) {
   const [previous] = await chrome.tabs.query({ active: true, windowId });
   const restoreTabId = previous?.id && previous.id !== tabId
     ? previous.id
     : 0;
+  if (command) await assertCommandAuthorized(command);
   if (restoreTabId) await chrome.tabs.update(tabId, { active: true });
   try {
     return await chrome.tabs.captureVisibleTab(windowId, {
@@ -619,9 +748,9 @@ async function captureTaskTab(tabId, windowId, quality) {
 
 async function endTask(command) {
   const tabs = [...(taskTabs.get(command.taskId) || [])];
-  await Promise.all(tabs.map(tabId => endTaskFrames(command.taskId, tabId)));
   taskTabs.delete(command.taskId);
   taskActiveTab.delete(command.taskId);
+  await Promise.all(tabs.map(tabId => endTaskFrames(command.taskId, tabId)));
   await updateBadge();
   return {
     commandId: command.commandId,
@@ -683,12 +812,12 @@ function sameReusablePage(current, target) {
     && current.search === target.search;
 }
 
-async function scanTab(taskId, tabId) {
+async function scanTab(taskId, tabId, command) {
   const top = await scanFrame(taskId, tabId, 0);
   const frames = await normalChildFrames(tabId);
   const children = (await Promise.all(frames.map(async frame => {
     try {
-      await beginTaskFrame(taskId, tabId, frame.frameId, "Reading embedded editor");
+      await beginTaskFrame(taskId, tabId, frame.frameId, "Reading embedded editor", command);
       return await scanFrame(taskId, tabId, frame.frameId);
     } catch {
       return null;
@@ -709,20 +838,24 @@ async function scanFrame(taskId, tabId, frameId) {
   return await sendToTab(tabId, { type: "scan", taskId, frameId }, true, frameId);
 }
 
-async function beginTaskFrames(taskId, tabId, action) {
-  await beginTaskFrame(taskId, tabId, 0, action);
+async function beginTaskFrames(taskId, tabId, action, command) {
+  await beginTaskFrame(taskId, tabId, 0, action, command);
   const frames = await normalChildFrames(tabId);
   await Promise.all(frames.map(frame =>
-    beginTaskFrame(taskId, tabId, frame.frameId, action).catch(() => {})));
+    beginTaskFrame(taskId, tabId, frame.frameId, action, command).catch(() => {})));
 }
 
-async function beginTaskFrame(taskId, tabId, frameId, action) {
+async function beginTaskFrame(taskId, tabId, frameId, action, command) {
   await ensureContentScript(tabId, frameId);
+  if (command) await assertCommandAuthorized(command);
   await sendToTab(tabId, { type: "begin_task", taskId, action, frameId }, true, frameId);
 }
 
 async function endTaskFrames(taskId, tabId) {
   const frames = await normalChildFrames(tabId);
+  // A resumed/re-grounded task can adopt this tab while the old cleanup is
+  // awaiting Chrome. That new lease must not inherit the old end message.
+  if (taskTabs.get(taskId)?.has(tabId)) return;
   await Promise.all([0, ...frames.map(frame => frame.frameId)].map(frameId =>
     sendToTab(tabId, { type: "end_task", taskId, frameId }, false, frameId)));
 }
@@ -815,19 +948,31 @@ async function ensureContentScript(tabId, frameId = 0) {
 
 async function tryInjectContentScript(tabId, frameId = 0) {
   try {
-    await chrome.scripting.executeScript({
+    await withPageDeadline(chrome.scripting.executeScript({
       target: { tabId, frameIds: [frameId] },
       files: ["content-script.js"]
-    });
+    }), 1000);
   } catch {}
 }
 
 async function sendToTab(tabId, message, throwOnError = true, frameId = 0) {
   try {
-    return await chrome.tabs.sendMessage(tabId, message, { frameId });
+    return await withPageDeadline(chrome.tabs.sendMessage(tabId, message, { frameId }),
+      message.type === "helper_status" ? 1000 : 10000);
   } catch (error) {
     if (throwOnError) throw error;
     return null;
+  }
+}
+
+async function withPageDeadline(response, timeoutMs) {
+  let timer;
+  try {
+    return await Promise.race([response, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("The Chrome page did not respond to the Helper.")), timeoutMs);
+    })]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

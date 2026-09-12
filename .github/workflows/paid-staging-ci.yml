@@ -68,6 +68,9 @@ jobs:
       - name: Test Chrome Helper form context
         run: node extensions/keyboard-wtf-browser-helper-v2/scripts/test-form-context.js
 
+      - name: Test Chrome Helper liveness and cancellation
+        run: node extensions/keyboard-wtf-browser-helper-v2/scripts/test-bridge-lifecycle.js
+
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 

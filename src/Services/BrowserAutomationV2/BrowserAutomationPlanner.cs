@@ -69,6 +69,11 @@ public sealed class BrowserPlannerDecision
     [JsonPropertyName("completionValue")]
     public string CompletionValue { get; set; } = "";
 
+    // Declarative final field states, never actions to execute. The planner
+    // owns semantic task coverage; the verifier owns live-state validation.
+    [JsonPropertyName("completionChecks")]
+    public BrowserPlannerAction[] CompletionChecks { get; set; } = [];
+
     [JsonPropertyName("needsUserAction")]
     public bool NeedsUserAction { get; set; }
 
@@ -143,6 +148,24 @@ public sealed class BrowserAutomationPlanner : IDisposable
                     ["captureBeforeAction"] = new { type = "boolean" },
                 },
                 required = new[] { "type", "replace" },
+            },
+            ["completionChecks"] = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["type"] = new { type = "string", @enum = new[] { "type", "paste", "select_option", "check", "uncheck" } },
+                        ["targetFieldId"] = StringSchema(),
+                        ["targetRole"] = StringSchema(),
+                        ["targetName"] = StringSchema(),
+                        ["text"] = StringSchema(),
+                        ["option"] = StringSchema(),
+                    },
+                    required = new[] { "type", "targetFieldId", "targetRole", "targetName" },
+                },
             },
             ["done"] = new { type = "boolean" },
             ["resultSummary"] = StringSchema(),
@@ -511,6 +534,7 @@ public sealed class BrowserAutomationPlanner : IDisposable
         builder.AppendLine("Do not submit forms, send messages/posts, delete, register, apply, or place orders unless the original request explicitly asks for that final action.");
         builder.AppendLine("Add-to-cart is allowed, but stop before checkout.");
         builder.AppendLine("Set done only when the current live state is sufficient for deterministic verification.");
+        builder.AppendLine("When done with form fields, completionChecks must cover EVERY requested final field state, including already-correct fields and corrections. Use exact fieldId/role/name. For text use type='type' and text; for an option type='select_option' and option; for toggles type='check' or 'uncheck'. These are read-only assertions, never executed. Leave [] for non-form results; omit unrelated fields and skipped optional values.");
         builder.AppendLine("For read/summarize requests, put the user-ready result in resultSummary.");
         builder.AppendLine("For copy requests, choose copy_clipboard and put exactly the intended clipboard text in action.text.");
         builder.AppendLine();
@@ -537,6 +561,8 @@ public sealed class BrowserAutomationPlanner : IDisposable
                 + $"text={Quote(control.Text)} label={Quote(control.NearbyLabel)} "
                 + $"placeholder={Quote(control.Placeholder)} value={Quote(control.Value)} selected={control.Selected} "
                 + $"checked={control.Checked} editable={control.Editable} actions=[{string.Join(",", control.SafeActions)}]");
+            if (!string.IsNullOrWhiteSpace(control.SelectedText))
+                builder.AppendLine($"  selectedOption={Quote(control.SelectedText)}");
             if (!string.IsNullOrWhiteSpace(control.FieldId))
                 builder.AppendLine($"  fieldId={Quote(control.FieldId)} field={Quote(control.FieldLabel)} required={control.FieldRequired?.ToString() ?? "unknown"} answered={control.FieldAnswered}");
         }

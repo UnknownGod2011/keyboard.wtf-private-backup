@@ -1,6 +1,7 @@
 namespace KeyboardWtf.Services;
 
 using KeyboardWtf.Models;
+
 using NAudio.Wave;
 
 // MME gives 50ms callbacks with no exclusive microphone hold. WASAPI exclusive mode would
@@ -13,12 +14,29 @@ public sealed class AudioRecorderService : IDisposable
     // pinning first-run users to whatever happens to be device zero.
     internal const int SystemDefaultDeviceNumber = -1;
 
-    private WaveInEvent _waveIn;
+    private readonly Func<int, IWaveIn> _createInput;
+    private readonly object _captureGate = new();
+    private IWaveIn _waveIn;
     private MemoryStream _pcmStream;
     private WaveFormat _waveFormat;
     private bool _disposed;
+    private bool _stopRequested;
+    private TaskCompletionSource _recordingStopped;
+    private Task<byte[]> _stopTask;
+    private volatile Exception _lastRecordingError;
+
+    public AudioRecorderService() : this(sampleRate => new WaveInEvent
+    {
+        DeviceNumber = ResolveDeviceNumber(KeyboardWtfState.SelectedMicrophoneIndex),
+        WaveFormat = new WaveFormat(sampleRate, 1),
+        BufferMilliseconds = 50,
+    })
+    { }
+
+    internal AudioRecorderService(Func<int, IWaveIn> createInput) => _createInput = createInput;
 
     public bool IsRecording { get; private set; }
+    public Exception LastRecordingError => _lastRecordingError;
     public event Action<byte[], int> PcmDataAvailable;
 
     // volatile: DataAvailable writes on the NAudio callback thread; meters read on timer threads.
@@ -30,85 +48,124 @@ public sealed class AudioRecorderService : IDisposable
 
     public void StartRecording(int sampleRate = 16000)
     {
-        if (IsRecording)
-            return;
-
-        _waveFormat = new WaveFormat(sampleRate: sampleRate, channels: 1);
-        _pcmStream = new MemoryStream();
-        var micIndex = ResolveDeviceNumber(KeyboardWtfState.SelectedMicrophoneIndex);
-        _waveIn = new WaveInEvent
+        lock (_captureGate)
         {
-            DeviceNumber = micIndex,
-            WaveFormat = _waveFormat,
-            BufferMilliseconds = 50 // 50ms: responsive enough for live meter, large enough to avoid callback thrash
-        };
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (IsRecording)
+                return;
+            if (_waveIn != null)
+                throw new InvalidOperationException("The previous microphone capture is still closing. Try again in a moment.");
 
-        _waveIn.DataAvailable += OnDataAvailable;
-        _waveIn.RecordingStopped += OnRecordingStopped;
-        try
-        {
-            _waveIn.StartRecording();
+            _waveFormat = new WaveFormat(sampleRate, 1);
+            _pcmStream = new MemoryStream();
+            _recordingStopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            _stopTask = null;
+            _stopRequested = false;
+            _lastRecordingError = null;
+            _currentPeak = 0;
+            try
+            {
+                _waveIn = _createInput(sampleRate);
+                _waveIn.DataAvailable += OnDataAvailable;
+                _waveIn.RecordingStopped += OnRecordingStopped;
+                _waveIn.StartRecording();
+                IsRecording = true;
+            }
+            catch
+            {
+                CleanupRecordingResources();
+                throw;
+            }
         }
-        catch
-        {
-            CleanupRecordingResources();
-            throw;
-        }
-
-        _currentPeak = 0;
-        IsRecording = true;
     }
 
     internal static int ResolveDeviceNumber(int selectedIndex) =>
         selectedIndex >= 0 ? selectedIndex : SystemDefaultDeviceNumber;
 
-    public byte[] StopRecording()
+    public Task<byte[]> StopRecordingAsync()
     {
-        if (!IsRecording)
-            return Array.Empty<byte>();
+        lock (_captureGate)
+        {
+            if (_stopTask != null)
+                return _stopTask;
+            if (_waveIn == null)
+                return Task.FromResult(Array.Empty<byte>());
+            IsRecording = false;
+            _stopRequested = true;
+            return _stopTask = FinishRecordingAsync(_waveIn, _recordingStopped.Task);
+        }
+    }
 
-        IsRecording = false;
-        _waveIn.StopRecording();
+    private async Task<byte[]> FinishRecordingAsync(IWaveIn input, Task stopped)
+    {
+        try
+        {
+            input.StopRecording();
+            // StopRecording requests a stop; RecordingStopped confirms the last callback.
+            // Await it (never block the UI synchronization context) before taking the WAV.
+            await stopped.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _lastRecordingError = ex;
+            AppLog.Warning(ex, "Microphone shutdown interrupted; preserving captured audio");
+        }
 
-        // WaveFileWriter.Dispose() finalizes the RIFF header (writes the byte-count fields at
-        // offset 4 and 40). Without it, the WAV is malformed and Whisper rejects it. Calling
-        // ToArray() after Dispose() on a MemoryStream is safe — it returns the full internal buffer.
-        var pcmData = _pcmStream.ToArray();
+        byte[] pcmData;
+        WaveFormat format;
+        lock (_captureGate)
+        {
+            pcmData = _pcmStream.ToArray();
+            format = _waveFormat;
+            CleanupRecordingResources();
+        }
         if (KeyboardWtfState.UseNoiseGate)
-            pcmData = NoiseGateFilter.Apply(pcmData, _waveFormat.SampleRate);
-        var wavStream = new MemoryStream();
-        var writer = new WaveFileWriter(wavStream, _waveFormat);
-        writer.Write(pcmData, 0, pcmData.Length);
-        writer.Dispose();
-        var wavBytes = wavStream.ToArray();
-
-
-        CleanupRecordingResources();
-
-        return wavBytes;
+            pcmData = NoiseGateFilter.Apply(pcmData, format.SampleRate);
+        using var wavStream = new MemoryStream();
+        // Dispose finalizes the RIFF byte counts; MemoryStream.ToArray remains valid afterward.
+        using (var writer = new WaveFileWriter(wavStream, format))
+            writer.Write(pcmData, 0, pcmData.Length);
+        return wavStream.ToArray();
     }
 
     private void OnDataAvailable(object sender, WaveInEventArgs e)
     {
-        _pcmStream?.Write(e.Buffer, 0, e.BytesRecorded);
-        PcmDataAvailable?.Invoke(e.Buffer, e.BytesRecorded);
-
-        // Compute peak for this buffer (16-bit signed samples)
-        var peak = 0;
-        for (var i = 0; i < e.BytesRecorded - 1; i += 2)
+        lock (_captureGate)
         {
-            var sample = Math.Abs((short)(e.Buffer[i] | (e.Buffer[i + 1] << 8)));
-            if (sample > peak) peak = sample;
+            if (!ReferenceEquals(sender, _waveIn))
+                return;
+            _pcmStream.Write(e.Buffer, 0, e.BytesRecorded);
+            _currentPeak = Pcm16Peak(e.Buffer.AsSpan(0, e.BytesRecorded));
+            KeyboardWtfState.InputLevelDb = CurrentPeakDb;
         }
-        _currentPeak = peak;
-        KeyboardWtfState.InputLevelDb = CurrentPeakDb;
+        PcmDataAvailable?.Invoke(e.Buffer, e.BytesRecorded);
+    }
+
+    internal static int Pcm16Peak(ReadOnlySpan<byte> pcm)
+    {
+        var peak = 0;
+        for (var i = 0; i < pcm.Length - 1; i += 2)
+        {
+            // -32768 is valid PCM: widen BEFORE Abs, whose short overload throws.
+            var sample = Math.Abs((int)(short)(pcm[i] | (pcm[i + 1] << 8)));
+            if (sample > peak)
+                peak = sample;
+        }
+        return peak;
     }
 
     private void OnRecordingStopped(object sender, StoppedEventArgs e)
     {
-        if (e.Exception != null)
+        lock (_captureGate)
         {
-            AppLog.Error($"Recording error: {e.Exception.Message}");
+            if (!ReferenceEquals(sender, _waveIn))
+                return;
+            if (e.Exception != null || !_stopRequested)
+            {
+                _lastRecordingError = e.Exception ?? new IOException("Microphone capture ended unexpectedly.");
+                AppLog.Error($"Recording error: {LastRecordingError.Message}");
+            }
+            _recordingStopped.TrySetResult();
         }
     }
 
@@ -118,13 +175,24 @@ public sealed class AudioRecorderService : IDisposable
         {
             _waveIn.DataAvailable -= OnDataAvailable;
             _waveIn.RecordingStopped -= OnRecordingStopped;
-            _waveIn.Dispose();
+            try
+            { _waveIn.Dispose(); }
+            catch (Exception ex) { AppLog.Warning(ex, "Microphone device cleanup failed"); }
             _waveIn = null;
         }
 
         _pcmStream?.Dispose();
         _pcmStream = null;
         KeyboardWtfState.InputLevelDb = -96;
+    }
+
+    public void CancelRecording() => _ = DiscardRecordingAsync();
+
+    private async Task DiscardRecordingAsync()
+    {
+        try
+        { await StopRecordingAsync().ConfigureAwait(false); }
+        catch (Exception ex) { AppLog.Warning(ex, "Microphone cancellation cleanup failed"); }
     }
 
     public void Dispose()
@@ -134,9 +202,6 @@ public sealed class AudioRecorderService : IDisposable
 
         _disposed = true;
 
-        if (IsRecording)
-            StopRecording();
-        else
-            CleanupRecordingResources();
+        CancelRecording();
     }
 }

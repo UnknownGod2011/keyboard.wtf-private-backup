@@ -87,6 +87,7 @@ public sealed class BrowserHelperStatus
     public bool NativeHostRegistered { get; init; }
     public bool Connected { get; init; }
     public bool CommandChannelReady { get; init; }
+    public bool CommandAuthoritySupported { get; init; }
     public bool ActiveTabFresh { get; init; }
     public bool ActiveTabIsDisposableProtectedOrBlank { get; init; }
     public bool MultipleHelpersDetected { get; init; }
@@ -134,6 +135,9 @@ public sealed class BrowserControl
 
     [JsonPropertyName("value")]
     public string Value { get; set; } = "";
+
+    [JsonPropertyName("selectedText")]
+    public string SelectedText { get; set; } = "";
 
     [JsonPropertyName("nearbyLabel")]
     public string NearbyLabel { get; set; } = "";
@@ -243,9 +247,13 @@ public sealed class BrowserPageSnapshot
 
 public sealed class BrowserActionRequest
 {
+    // Updated Helpers recheck this command's existing desktop waiter before
+    // mutation. Older public desktop releases omit the flag and stay compatible.
+    public bool RequiresAuthorityCheck => true;
     public string CommandId { get; init; } = Guid.NewGuid().ToString("N");
     public string TaskId { get; init; } = "";
     public string Type { get; init; } = "";
+    public string ExpectedSessionId { get; init; } = "";
     public int? WindowId { get; init; }
     public int? TabId { get; init; }
     public long? GraphVersion { get; init; }
@@ -264,6 +272,8 @@ public sealed class BrowserActionRequest
 
 public sealed class BrowserActionReceipt
 {
+    public string SessionId { get; set; } = "";
+    public bool AlreadyClosed { get; set; }
     public string CommandId { get; set; } = "";
     public string TaskId { get; set; } = "";
     public bool Ok { get; set; }
@@ -301,7 +311,7 @@ public sealed class BrowserActionReceipt
 internal static class BrowserHelperProtocol
 {
     public const string Version = "2.1.21";
-    public const string PackageVersion = "2.1.26";
+    public const string PackageVersion = "2.1.27";
     public const string StoreExtensionId = "gojdebdikepkpapmnggeljneamjdigbh";
     public const string DevelopmentExtensionId = "gfndpohemndahmmeealkdobepjacblnf";
     public const string ExtensionId = StoreExtensionId;

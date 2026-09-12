@@ -68,3 +68,58 @@ assert.equal(capture(new Element("button")).fieldId, undefined);
 scope.element = quality;
 assert.match(vm.runInContext("formField(element, 9).fieldId", scope), /^9:/);
 console.log("Form context: question identity, repeated options, required/optional, answer state and frame scope passed.");
+
+// Native option labels and stored values are separate pieces of evidence.
+class Select {
+  constructor(options) { this.options = options; this.value = options[0].value; }
+  get selectedOptions() { return this.options.filter(o => o.value === this.value); }
+  dispatchEvent() {}
+}
+const optionsScope = vm.createContext({ HTMLSelectElement: Select, Event: class {},
+  normalize: s => String(s || "").trim().toLowerCase(), isRestrictedInput: () => false });
+vm.runInContext(source.slice(source.indexOf("  function selectOption("), source.indexOf("  function findSemanticControl("))
+  + source.slice(source.indexOf("  function valueMatches("), source.indexOf("  function valueContains(")), optionsScope);
+optionsScope.element = new Select([{value:"1", textContent:"Alpha"}, {value:"2", textContent:"Beta"}]);
+vm.runInContext('selectOption(element, "Beta")', optionsScope);
+assert.equal(optionsScope.element.value, "2");
+assert.equal(vm.runInContext('valueMatches(element, "Beta")', optionsScope), true);
+assert.equal(vm.runInContext('valueMatches(element, "2")', optionsScope), true);
+assert.equal(vm.runInContext('valueMatches(element, "Alpha")', optionsScope), false);
+assert.throws(() => vm.runInContext('selectOption(element, "Be")', optionsScope), /missing or ambiguous/);
+optionsScope.element.options.push({value:"3", textContent:"Beta"});
+assert.throws(() => vm.runInContext('selectOption(element, "Beta")', optionsScope), /ambiguous/);
+assert.equal(optionsScope.element.value, "2");
+console.log("Native select: exact label/value, unselected options and ambiguous targets passed.");
+
+const identityScope = vm.createContext({ normalize: s => String(s || "").trim().toLowerCase(),
+  formField: element => ({fieldId: element.fieldId}), semanticIdentity: element => element.identity });
+vm.runInContext(source.slice(source.indexOf("  function semanticScore("), source.indexOf("  function semanticIdentity(")), identityScope);
+identityScope.element = {fieldId:"exact-field", identity:{role:"textbox",name:""},
+  matches:()=>true, getBoundingClientRect:()=>({width:100,height:25}), getAttribute:()=>null};
+const match = command => { identityScope.command = command; return vm.runInContext("semanticMatch(element, command)", identityScope); };
+assert.equal(match({targetRole:"textbox",targetFieldId:"exact-field"}), true,
+  "fresh exact anonymous field must not depend on a fuzzy-name score");
+assert.equal(match({targetRole:"textbox",targetFieldId:"other-field"}), false);
+assert.equal(match({targetRole:"checkbox",targetFieldId:"exact-field"}), false);
+assert.equal(match({targetRole:"textbox",targetFieldId:"exact-field",targetName:"Invented label"}), false);
+console.log("Exact anonymous control identity: field/role/name checks passed.");
+
+{
+const labelScope = vm.createContext({ visibleText: node => String(node.textContent || "").trim(),
+  truncate: (s,n)=>s.slice(0,n) });
+vm.runInContext(source.slice(source.indexOf("  function contextualAccessibleLabel("), source.indexOf("  function safeActions(")), labelScope);
+const text = value => ({nodeType:3,textContent:value});
+const newline = {nodeType:1,tagName:"BR"};
+const input = {closest:()=>null, matches:selector=>selector==='input,textarea,select', previousSibling:text(' ')};
+input.previousSibling.previousSibling = newline;
+newline.previousSibling = text('Project title:');
+labelScope.element = input;
+assert.equal(vm.runInContext('contextualAccessibleLabel(element)',labelScope),'Project title:');
+input.previousSibling = {nodeType:1,tagName:'INPUT',textContent:'another field'};
+assert.equal(vm.runInContext('contextualAccessibleLabel(element)',labelScope),'');
+input.matches = ()=>true;input.nextSibling=text('Choice Delta');
+assert.equal(vm.runInContext('contextualAccessibleLabel(element)',labelScope),'Choice Delta');
+input.closest=()=>({getAttribute:()=> 'ARIA parent'});
+assert.equal(vm.runInContext('contextualAccessibleLabel(element)',labelScope),'ARIA parent');
+console.log("Legacy form labels: bounded adjacent text, choice text, no cross-control borrowing, ARIA precedence passed.");
+}

@@ -64,7 +64,7 @@ public sealed class VoiceModesRegressionTests
             settingsPage,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Smart Writing always applies its own Gemini editing",
+            "Smart Writing always applies its own editing",
             settingsPage,
             StringComparison.Ordinal);
     }

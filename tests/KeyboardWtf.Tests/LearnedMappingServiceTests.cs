@@ -91,4 +91,20 @@ public sealed class LearnedMappingServiceTests : IDisposable
         }
         catch { }
     }
+
+    [Fact]
+    public void Live_link_capabilities_are_bounded_and_do_not_expose_stored_targets()
+    {
+        var service = new LearnedMappingService(_path);
+        Assert.Equal("", service.BuildLinkAliasPromptDigest());
+        for (var i = 0; i < 80; i++)
+            service.Remember(LearnedMappingKind.Link, new string('x', 65) + i, $"https://example.org/private?token=secret-{i}");
+        service.Remember(LearnedMappingKind.Workflow, "not-a-link", "separate workflow");
+        var digest = service.BuildLinkAliasPromptDigest();
+        Assert.True(digest.Length < 1100);
+        Assert.Contains("open_url", digest);
+        Assert.DoesNotContain("secret-", digest);
+        Assert.DoesNotContain("not-a-link", digest);
+        Assert.DoesNotContain("example.org", digest);
+    }
 }

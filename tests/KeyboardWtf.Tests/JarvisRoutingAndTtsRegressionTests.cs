@@ -155,6 +155,27 @@ public sealed class JarvisRoutingAndTtsRegressionTests
         Assert.Contains("started", receipt.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("browser_action")]
+    [InlineData("browser_automation")]
+    [InlineData("browser_automation_control")]
+    public async Task Every_pre_route_receipt_representation_has_one_completion_owner(string tool)
+    {
+        var commands = new CommandRegistry(null, null, null, null, null);
+        var receipt = new BrowserPreRouteReceipt
+        {
+            UserTurn = "test request", ToolName = tool, Ok = true,
+            Started = tool == "browser_automation", TaskId = "task", Message = "The verified result.",
+        };
+        typeof(CommandRegistry).GetField("_browserPreRouteReceipt", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(commands, receipt);
+        var first = await commands.ExecuteJarvisToolAsync(tool, JsonSerializer.SerializeToElement(new { }), CancellationToken.None);
+        var repeated = await commands.ExecuteJarvisToolAsync(tool, JsonSerializer.SerializeToElement(new { }), CancellationToken.None);
+        Assert.Equal("The verified result.", first["message"]);
+        Assert.Equal("", repeated["message"]);
+        Assert.Equal(true, repeated["duplicate_suppressed"]);
+    }
+
     [Fact]
     public void Durable_workflow_receipt_blocks_reinterpretation_but_accepts_its_one_tool_result()
     {

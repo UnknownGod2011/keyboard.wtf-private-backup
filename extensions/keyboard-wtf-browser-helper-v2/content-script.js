@@ -191,6 +191,7 @@ const VERSION = "2.1.21";
     return {
       ok: true,
       resolutionToken: token,
+      commandAuthoritySupported: true,
       targetId: command.controlId || "",
       targetRole: identity.role,
       targetName: identity.name,
@@ -236,6 +237,7 @@ const VERSION = "2.1.21";
     return {
       ok: true,
       resolutionToken: token,
+      commandAuthoritySupported: true,
       targetId: command.controlId || "",
       targetRole: identity.role,
       targetName: identity.name,
@@ -250,7 +252,7 @@ const VERSION = "2.1.21";
       || prepared.taskId !== command.taskId
       || !prepared.element?.isConnected
       || !sameIdentity(prepared.identity, semanticIdentity(prepared.element))) {
-      clearHighlight();
+      if (prepared?.token === token) clearHighlight();
       return {
         commandId: command.commandId || "",
         taskId: command.taskId || "",
@@ -320,7 +322,7 @@ const VERSION = "2.1.21";
       }
       targetBounds = rectangle(liveRect);
       drawHighlight(liveRect);
-      await performAction(target, command);
+      await performAction(target, command, token);
       await delay(command.type === "click" ? 450 : 180);
       const afterState = target.isConnected ? captureElementState(target) : null;
       const afterFingerprint = pageFingerprint();
@@ -383,12 +385,29 @@ const VERSION = "2.1.21";
         targetBounds
       };
     } finally {
-      prepared = null;
-      clearHighlight();
+      if (prepared?.token === token) {
+        prepared = null;
+        clearHighlight();
+      }
     }
   }
 
-  async function performAction(element, command) {
+  async function performAction(element, command, token) {
+    if (command.requiresAuthorityCheck) {
+      const authority = await chrome.runtime.sendMessage({
+        type: "helper_command_authority",
+        taskId: command.taskId,
+        commandId: command.commandId
+      });
+      if (authority?.ok !== true)
+        throw new Error("The browser command ended before the page could apply it.");
+      requireTask(command.taskId);
+      if (prepared?.token !== token || prepared.element !== element
+          || !element.isConnected
+          || !sameIdentity(prepared.identity, semanticIdentity(element))
+          || !isVisible(element, element.getBoundingClientRect()))
+        throw new Error("The live target changed before the page could apply it.");
+    }
     switch (command.type) {
       case "click":
         activateElement(element);
@@ -615,11 +634,11 @@ const VERSION = "2.1.21";
       throw new Error("The target is not a native select control.");
     }
     const normalized = normalize(requested);
-    const option = [...element.options].find(item =>
+    const matches = [...element.options].filter(item =>
       normalize(item.textContent) === normalized
-      || normalize(item.value) === normalized
-      || normalize(item.textContent).includes(normalized));
-    if (!option) throw new Error("The requested option was not found.");
+      || normalize(item.value) === normalized);
+    if (matches.length !== 1) throw new Error("The requested option is missing or ambiguous.");
+    const option = matches[0];
     element.value = option.value;
     element.dispatchEvent(new Event("input", { bubbles: true }));
     element.dispatchEvent(new Event("change", { bubbles: true }));
@@ -657,7 +676,7 @@ const VERSION = "2.1.21";
     const wantedRole = normalize(command.targetRole);
     let score = 0;
     if (wantedRole && identity.role === wantedRole) score += 30;
-    if (wantedName) {
+    if (wantedName && identity.name) {
       if (identity.name === wantedName) score += 80;
       else if (identity.name.startsWith(wantedName) || wantedName.startsWith(identity.name)) score += 45;
       else if (identity.name.includes(wantedName) || wantedName.includes(identity.name)) score += 25;
@@ -673,6 +692,11 @@ const VERSION = "2.1.21";
 
   function semanticMatch(element, command) {
     if (command.targetFieldId && formField(element).fieldId !== command.targetFieldId) return false;
+    const identity = semanticIdentity(element);
+    if (command.targetRole && identity.role !== normalize(command.targetRole)) return false;
+    // This path already owns an exact graph element. An unnamed input is not
+    // stale merely because it cannot earn a fuzzy label score.
+    if (!command.targetName && command.targetFieldId) return true;
     if (!command.targetName && !command.targetRole) return true;
     return semanticScore(element, command) >= 45;
   }
@@ -704,6 +728,8 @@ const VERSION = "2.1.21";
       inputType: type,
       ...formField(element, frameId),
       value: safeControlValue(element),
+      selectedText: element instanceof HTMLSelectElement && !element.multiple
+        ? truncate(element.selectedOptions[0]?.textContent || "", 240) : "",
       nearbyLabel: truncate(nearbyLabel(element), 180),
       enabled: !element.disabled && element.getAttribute("aria-disabled") !== "true",
       selected: Boolean(element.selected || element.getAttribute("aria-selected") === "true"),
@@ -770,6 +796,7 @@ const VERSION = "2.1.21";
       element.getAttribute("alt"),
       element.getAttribute("placeholder"),
       element.labels ? [...element.labels].map(label => visibleText(label)).join(" ") : "",
+      element.matches("input[type='button'],input[type='submit'],input[type='reset']") ? element.value : "",
       contextualLabel,
       visibleText(element)
     ].map(value => String(value || "").trim()).find(Boolean) || "";
@@ -860,8 +887,23 @@ const VERSION = "2.1.21";
     const labelledAncestor = element.closest(
       "[role='gridcell'][aria-label],td[aria-label],[role='option'][aria-label],[role='row'][aria-label]"
     );
-    if (!labelledAncestor || labelledAncestor === element) return "";
-    return labelledAncestor.getAttribute("aria-label") || "";
+    if (labelledAncestor && labelledAncestor !== element)
+      return labelledAncestor.getAttribute("aria-label") || "";
+    if (!element.matches("input,textarea,select")) return "";
+    // Legacy forms often use adjacent text instead of a <label>. Stay within
+    // this sibling run; never borrow a different control's label or value.
+    const direction = element.matches("input[type='radio'],input[type='checkbox']")
+      ? "nextSibling" : "previousSibling";
+    let node = element[direction];
+    for (let count = 0; node && count < 8; count++, node = node[direction]) {
+      if (node.nodeType === 3) {
+        const text = visibleText(node);
+        if (text) return truncate(text, 240);
+      } else if (node.nodeType === 1 && node.tagName !== "BR") {
+        return "";
+      }
+    }
+    return "";
   }
 
   function safeActions(element) {
@@ -909,6 +951,11 @@ const VERSION = "2.1.21";
 
   function valueMatches(element, expected) {
     if (isRestrictedInput(element)) return false;
+    if (element instanceof HTMLSelectElement) {
+      return [...element.selectedOptions].some(option =>
+        normalize(option.value) === normalize(expected)
+        || normalize(option.textContent) === normalize(expected));
+    }
     const value = element.isContentEditable ? element.textContent : element.value;
     return String(value || "") === String(expected || "");
   }

@@ -629,7 +629,80 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
-    public void Fresh_answered_field_state_suppresses_only_its_redundant_intervention()
+    public void Nonempty_default_value_does_not_answer_a_missing_user_reference()
+    {
+        var page = new BrowserPageSnapshot
+        {
+            Controls =
+            [
+                new BrowserControl
+                {
+                    Id = "comment", FieldId = "comment-field", FieldLabel = "Project notes",
+                    Role = "textbox", AccessibleName = "Project notes", Value = "Initial notes",
+                    FieldAnswered = true, FieldRequired = false, Visible = true, Enabled = true,
+                },
+            ],
+        };
+        var intervention = new BrowserUserIntervention
+        {
+            Missing = "Please provide the project reference for Project notes.",
+            Explanation = "The user has not supplied the reference.",
+            CanSkip = true,
+        };
+        Assert.False(BrowserAutomationCoordinator.IsRequestedInterventionAlreadySatisfied(intervention, page));
+        var check = new BrowserPlannerAction
+        {
+            Type = "type", TargetFieldId = "comment-field", TargetRole = "textbox",
+            TargetName = "Project notes", Text = "The actual reference",
+        };
+        Assert.False(BrowserAutomationCoordinator.IsRequestedInterventionAlreadySatisfied(intervention, page, [check]));
+        check.Text = "Initial notes"; // Explicitly requested, rather than inferred from nonempty content.
+        Assert.True(BrowserAutomationCoordinator.IsRequestedInterventionAlreadySatisfied(intervention, page, [check]));
+        check.Text = "Corrected reference";
+        Assert.False(BrowserAutomationCoordinator.IsRequestedInterventionAlreadySatisfied(intervention, page, [check]));
+        check.Text = "Initial notes";
+        check.TargetFieldId = "a-different-field";
+        Assert.False(BrowserAutomationCoordinator.IsRequestedInterventionAlreadySatisfied(intervention, page, [check]));
+        check.TargetFieldId = "comment-field";
+        check.Type = "uncheck"; // Inappropriate state type must not masquerade as an answer.
+        Assert.False(BrowserAutomationCoordinator.IsRequestedInterventionAlreadySatisfied(intervention, page, [check]));
+    }
+
+    [Theory]
+    [InlineData("Project notes:")]
+    [InlineData("Project notes?")]
+    [InlineData("Project notes *")]
+    [InlineData("Project notes：")]
+    public void Optional_field_identity_does_not_require_spoken_label_punctuation(string label)
+    {
+        var field = new BrowserControl
+        {
+            Id = "notes", FieldId = "notes-field", FieldLabel = label,
+            Role = "textbox", Visible = true, Enabled = true,
+            Value = "Default notes", FieldAnswered = true, FieldRequired = false,
+        };
+        var page = new BrowserPageSnapshot { TabId = 12, Controls = [field] };
+        var intervention = new BrowserUserIntervention
+        {
+            Missing = "Please provide the reference for Project notes.", Required = true,
+        };
+        var reconciled = BrowserAutomationCoordinator.ReconcileInterventionWithPageMetadata(intervention, page);
+        Assert.True(reconciled.CanSkip);
+        Assert.False(reconciled.Required);
+        Assert.Same(field, BrowserAutomationCoordinator.FindInterventionPageField(intervention, page));
+        field.FieldRequired = true;
+        Assert.False(BrowserAutomationCoordinator.ReconcileInterventionWithPageMetadata(intervention, page).CanSkip);
+        field.FieldRequired = false;
+        page.Controls = [field, new BrowserControl
+        {
+            Id = "other", FieldId = "other-field", FieldLabel = "Project notes",
+            Role = "textbox", Visible = true, Enabled = true, FieldRequired = false,
+        }];
+        Assert.Null(BrowserAutomationCoordinator.FindInterventionPageField(intervention, page));
+    }
+
+    [Fact]
+    public void Verified_expected_field_state_suppresses_only_its_redundant_intervention()
     {
         var page = new BrowserPageSnapshot
         {
@@ -641,6 +714,7 @@ public sealed class BrowserAutomationProtocolTests
                     FieldId = "stability-rating",
                     FieldLabel = "Overall performance and stability of the Chrome plugin",
                     FieldAnswered = true,
+                    Checked = true,
                     FieldRequired = true,
                     Role = "radio",
                     AccessibleName = "4",
@@ -662,6 +736,14 @@ public sealed class BrowserAutomationProtocolTests
             ],
         };
 
+        BrowserPlannerAction[] expectedFields =
+        [
+            new()
+            {
+                Type = "check", TargetRole = "radio", TargetName = "4",
+                TargetFieldId = "stability-rating",
+            },
+        ];
         Assert.True(BrowserAutomationCoordinator.IsRequestedInterventionAlreadySatisfied(
             new BrowserUserIntervention
             {
@@ -669,7 +751,7 @@ public sealed class BrowserAutomationProtocolTests
                 Explanation = "The overall performance and stability question is required.",
                 Required = true,
             },
-            page));
+            page, expectedFields));
         Assert.False(BrowserAutomationCoordinator.IsRequestedInterventionAlreadySatisfied(
             new BrowserUserIntervention
             {
@@ -677,7 +759,7 @@ public sealed class BrowserAutomationProtocolTests
                 Explanation = "The usefulness question is required.",
                 Required = true,
             },
-            page));
+            page, expectedFields));
         Assert.False(BrowserAutomationCoordinator.IsRequestedInterventionAlreadySatisfied(
             new BrowserUserIntervention
             {
@@ -685,7 +767,7 @@ public sealed class BrowserAutomationProtocolTests
                 Explanation = "Security verification is required.",
                 Required = true,
             },
-            page));
+            page, expectedFields));
     }
 
     [Fact]
@@ -3065,6 +3147,13 @@ public sealed class BrowserAutomationProtocolTests
     [InlineData("Cancel Browser Automation now.", true)]
     [InlineData("Please stop the browser task immediately.", true)]
     [InlineData("Could you please stop the browser task?", true)]
+    [InlineData("Okay stop, cancel browser automation.", true)]
+    [InlineData("Stop; please pause the browser task.", true)]
+    [InlineData("Cancel and stop the automation task.", true)]
+    [InlineData("Stop. Then cancel the browser task.", true)]
+    [InlineData("Stop, don't cancel browser automation.", false)]
+    [InlineData("He said: cancel browser automation.", false)]
+    [InlineData("Explain this: cancel browser automation.", false)]
     [InlineData("Don't cancel browser automation.", false)]
     [InlineData("I wonder whether we should cancel browser automation.", false)]
     public void Natural_explicit_browser_cancellation_is_authoritative_without_matching_discussion(

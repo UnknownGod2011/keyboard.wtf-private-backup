@@ -988,12 +988,7 @@ public sealed class WebSettingsService : IDisposable
             pcm.Dispose();
 
             // Calculate peak amplitude from raw PCM (16-bit samples)
-            var peak = 0;
-            for (var i = 0; i < pcmData.Length - 1; i += 2)
-            {
-                var sample = Math.Abs((short)(pcmData[i] | (pcmData[i + 1] << 8)));
-                if (sample > peak) peak = sample;
-            }
+            var peak = AudioRecorderService.Pcm16Peak(pcmData);
 
             var peakDb = peak > 0 ? 20.0 * Math.Log10(peak / 32768.0) : -96.0;
             var byteCount = pcmData.Length;
@@ -1265,12 +1260,7 @@ public sealed class WebSettingsService : IDisposable
 
     private void OnLiveMicData(object sender, WaveInEventArgs e)
     {
-        var peak = 0;
-        for (var i = 0; i < e.BytesRecorded - 1; i += 2)
-        {
-            var sample = Math.Abs((short)(e.Buffer[i] | (e.Buffer[i + 1] << 8)));
-            if (sample > peak) peak = sample;
-        }
+        var peak = AudioRecorderService.Pcm16Peak(e.Buffer.AsSpan(0, e.BytesRecorded));
         // Keep the highest peak observed since last poll (simple VU-meter behavior)
         if (peak > _liveMicPeak)
             _liveMicPeak = peak;

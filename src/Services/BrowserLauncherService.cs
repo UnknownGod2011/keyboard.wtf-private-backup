@@ -1,6 +1,7 @@
 namespace KeyboardWtf.Services;
 
 using System.Diagnostics;
+using Microsoft.Win32;
 
 public sealed class BrowserLauncherService
 {
@@ -169,6 +170,23 @@ public sealed class BrowserLauncherService
             && !string.IsNullOrWhiteSpace(uri.Host)
             && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
     }
+
+    internal bool UsesChrome(string requestedBrowser)
+    {
+        var chosen = NormalizeBrowser(requestedBrowser);
+        if (chosen.Length == 0) chosen = NormalizeBrowser(_settings.Current.PreferredBrowser);
+        if (chosen.Length != 0) return chosen == "chrome";
+        try
+        {
+            using var choice = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice");
+            return IsChromeAssociation(choice?.GetValue("ProgId") as string);
+        }
+        catch { return false; } // Unknown default is never permission to substitute Chrome.
+    }
+
+    internal static bool IsChromeAssociation(string progId) =>
+        string.Equals(progId, "ChromeHTML", StringComparison.OrdinalIgnoreCase)
+        || (progId ?? "").StartsWith("ChromeHTML.", StringComparison.OrdinalIgnoreCase);
 
     private static string DisplayBrowser(string browser) => NormalizeBrowser(browser) switch
     {

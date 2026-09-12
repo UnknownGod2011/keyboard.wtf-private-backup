@@ -202,14 +202,17 @@ public sealed class HotkeyServiceTests
         HotkeyService service = null;
         uint messageThreadId = 0;
         Exception threadFailure = null;
+        var phase = "starting";
         var messageThread = new Thread(() =>
         {
             try
             {
                 messageThreadId = GetCurrentThreadId();
                 service = new HotkeyService();
+                phase = "window created";
                 ready.Set();
                 Application.Run();
+                phase = "message loop returned";
             }
             catch (Exception exception)
             {
@@ -218,7 +221,9 @@ public sealed class HotkeyServiceTests
             }
             finally
             {
+                phase = "disposing service";
                 service?.Dispose();
+                phase = "stopped";
             }
         });
         messageThread.SetApartmentState(ApartmentState.STA);
@@ -236,8 +241,10 @@ public sealed class HotkeyServiceTests
                     candidate,
                     () =>
                     {
+                        phase = "hotkey callback";
                         fired.Set();
                         Application.ExitThread();
+                        phase = "exit requested";
                     },
                     out _));
 
@@ -249,7 +256,7 @@ public sealed class HotkeyServiceTests
         {
             if (messageThread.IsAlive && messageThreadId != 0)
                 PostThreadMessage(messageThreadId, 0x0012, IntPtr.Zero, IntPtr.Zero); // WM_QUIT
-            Assert.True(messageThread.Join(TimeSpan.FromSeconds(5)), "The hotkey message thread did not stop.");
+            Assert.True(messageThread.Join(TimeSpan.FromSeconds(5)), $"The hotkey message thread did not stop: phase={phase}, fired={fired.IsSet}, failure={threadFailure}.");
         }
     }
 

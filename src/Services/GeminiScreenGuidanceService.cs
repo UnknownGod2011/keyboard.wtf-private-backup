@@ -30,12 +30,12 @@ public sealed class GeminiScreenGuidanceService : IDisposable
     public async Task<string> InspectAsync(string request, CancellationToken token)
     {
         if (_paidAccount?.Enabled != true && string.IsNullOrWhiteSpace(KeyboardWtfState.GeminiApiKey))
-            throw new InvalidOperationException("Gemini is not configured.");
+            throw new InvalidOperationException("Screen analysis is not configured.");
 
         KeyboardWtfState.SetUi(VoiceUiPhase.Executing, "Capturing screen", "One-time capture approved. Nothing is saved.");
         var image = CaptureScreenJpeg();
         token.ThrowIfCancellationRequested();
-        KeyboardWtfState.SetUi(VoiceUiPhase.Thinking, "Analyzing screen", "Gemini is examining this one approved image.");
+        KeyboardWtfState.SetUi(VoiceUiPhase.Thinking, "Analyzing screen", "Analyzing your screen...");
 
         if (_paidAccount?.Enabled == true)
         {
@@ -143,11 +143,11 @@ public sealed class GeminiScreenGuidanceService : IDisposable
         using var response = await _http.SendAsync(requestMessage, token);
         var responseBody = await response.Content.ReadAsStringAsync(token);
         if (!response.IsSuccessStatusCode)
-            throw new HttpRequestException($"Gemini vision returned {(int)response.StatusCode}: {ExtractError(responseBody)}");
+            throw new HttpRequestException($"Screen analysis returned {(int)response.StatusCode}: {ExtractError(responseBody)}");
 
         var text = ExtractText(responseBody);
         if (string.IsNullOrWhiteSpace(text))
-            throw new InvalidDataException("Gemini vision returned no guidance.");
+            throw new InvalidDataException("Screen analysis returned no guidance.");
         KeyboardWtfState.SetUi(VoiceUiPhase.Done, "Guidance ready", Limit(text, 120));
         return text;
     }

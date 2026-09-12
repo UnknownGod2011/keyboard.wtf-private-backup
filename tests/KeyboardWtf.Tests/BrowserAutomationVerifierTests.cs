@@ -305,9 +305,14 @@ public sealed class BrowserAutomationVerifierTests
     {
         const string request =
             "Fill Display name, choose Browser automation, choose Speech recognition, and set the date.";
+        var decision = new BrowserPlannerDecision { Done = true, ResultSummary = "Done", CompletionChecks = [
+            FinalCheck("name", "textbox", "Display name", "type", "Regression User"),
+            FinalCheck("topic", "combobox", "Topic", "select_option", "Browser automation"),
+            FinalCheck("custom-topic", "combobox", "Custom topic", "select_option", "Speech recognition"),
+            FinalCheck("date", "textbox", "Practice date", "type", "2026-07-29")] };
         var partial = _verifier.VerifyTerminal(
             request,
-            new BrowserPlannerDecision { Done = true, ResultSummary = "Done" },
+            decision,
             new BrowserPageSnapshot
             {
                 PageText = "Practice form",
@@ -330,7 +335,7 @@ public sealed class BrowserAutomationVerifierTests
 
         var complete = _verifier.VerifyTerminal(
             request,
-            new BrowserPlannerDecision { Done = true, ResultSummary = "Done" },
+            decision,
             new BrowserPageSnapshot
             {
                 PageText = "Practice form",
@@ -341,6 +346,7 @@ public sealed class BrowserAutomationVerifierTests
                     new BrowserControl
                     {
                         Id = "custom-topic",
+                        FieldId = "custom-topic",
                         Role = "combobox",
                         AccessibleName = "Custom topic",
                         Text = "Speech recognition",
@@ -369,7 +375,7 @@ public sealed class BrowserAutomationVerifierTests
 
         var lostEarlierValues = _verifier.VerifyTerminal(
             request,
-            new BrowserPlannerDecision { Done = true, ResultSummary = "Done" },
+            decision,
             new BrowserPageSnapshot
             {
                 PageText = "Practice form",
@@ -420,7 +426,8 @@ public sealed class BrowserAutomationVerifierTests
     {
         var result = _verifier.VerifyTerminal(
             "Fill this quiz and do not submit",
-            new BrowserPlannerDecision { Done = true, ResultSummary = "Done" },
+            new BrowserPlannerDecision { Done = true, ResultSummary = "Done", CompletionChecks = [
+                FinalCheck("a", "radio", "Answer A", "check", ""), FinalCheck("b", "option", "Answer B", "check", "")] },
             new BrowserPageSnapshot
             {
                 PageText = "Practice quiz",
@@ -428,14 +435,14 @@ public sealed class BrowserAutomationVerifierTests
                 [
                     new BrowserControl
                     {
-                        Id = "answer-a",
+                        Id = "answer-a", FieldId = "a",
                         Role = "radio",
                         AccessibleName = "Answer A",
                         Checked = true,
                     },
                     new BrowserControl
                     {
-                        Id = "answer-b",
+                        Id = "answer-b", FieldId = "b",
                         Role = "option",
                         AccessibleName = "Answer B",
                         Selected = true,
@@ -449,7 +456,7 @@ public sealed class BrowserAutomationVerifierTests
                     Ok = true,
                     Action = "click",
                     TargetRole = "radio",
-                    TargetName = "Answer A",
+                    TargetName = "Answer A", TargetFieldId = "a",
                     CheckedChanged = true,
                 },
                 new BrowserActionReceipt
@@ -457,7 +464,7 @@ public sealed class BrowserAutomationVerifierTests
                     Ok = true,
                     Action = "click",
                     TargetRole = "option",
-                    TargetName = "Answer B",
+                    TargetName = "Answer B", TargetFieldId = "b",
                     SelectedChanged = true,
                 },
             });
@@ -826,6 +833,11 @@ public sealed class BrowserAutomationVerifierTests
         Assert.True(result.Verified, result.Error);
     }
 
+    private static BrowserPlannerAction FinalCheck(string field, string role, string name, string type, string value) => new()
+    {
+        TargetFieldId = field, TargetRole = role, TargetName = name, Type = type, Text = value, Option = value,
+    };
+
     private static BrowserActionReceipt Changed(
         string action,
         string targetId,
@@ -838,6 +850,7 @@ public sealed class BrowserAutomationVerifierTests
         Ok = true,
         Action = action,
         TargetId = targetId,
+        TargetFieldId = targetId,
         TargetRole = role,
         TargetName = name,
         ExpectedValue = expectedValue,
@@ -853,6 +866,7 @@ public sealed class BrowserAutomationVerifierTests
         string value) => new()
     {
         Id = id,
+        FieldId = id,
         Role = role,
         AccessibleName = name,
         Value = value,

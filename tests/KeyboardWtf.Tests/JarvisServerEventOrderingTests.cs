@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 using KeyboardWtf.Services;
+using KeyboardWtf.Services.BrowserAutomationV2;
 using Xunit;
 
 namespace KeyboardWtf.Tests;
@@ -73,6 +74,69 @@ public sealed class JarvisServerEventOrderingTests
         await run.UserObserved.Task.WaitAsync(TimeSpan.FromSeconds(3));
         Assert.False(run.ToolEntered.Task.IsCompleted);
         Assert.False(run.Session.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task Explicit_browser_cancel_reaches_its_owner_before_an_unrelated_tool_finishes()
+    {
+        var coordinator = new BrowserAutomationCoordinator(null, null, null, null);
+        var runtimeType = typeof(BrowserAutomationCoordinator).GetNestedType("Runtime", BindingFlags.NonPublic)!;
+        var runtime = Activator.CreateInstance(runtimeType, nonPublic: true)!;
+        runtimeType.GetProperty("State")!.SetValue(runtime, BrowserTaskState.Executing);
+        typeof(BrowserAutomationCoordinator).GetField("_active", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(coordinator, runtime);
+        var commands = new CommandRegistry(null, null, null, null, null, browserAutomation: coordinator);
+        await using var run = new MessageRun();
+        run.ObserveControls(commands.ObserveImmediateJarvisControl);
+        run.Push(ToolCall("blocked-unrelated-action"));
+        await run.ToolEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        run.Push("""{"serverContent":{"inputTranscription":{"text":"Okay stop, cancel browser automation."}}}""");
+        Assert.Equal(BrowserTaskState.Cancelled, coordinator.Snapshot().State);
+        Assert.False(run.ToolToken.IsCancellationRequested); // Do not cancel the unrelated request.
+        Assert.False(run.Session.IsCancellationRequested);
+        Assert.False(run.UserObserved.Task.IsCompleted); // Its receipt is still ordered after the tool.
+        Assert.Null(commands.ObserveImmediateJarvisControl("cancel browser automation", run.Session.Token));
+
+        run.FinishTool();
+        await run.DrainAsync();
+        var field = typeof(CommandRegistry).GetField("_browserPreRouteReceipt", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var receipt = Assert.IsType<BrowserPreRouteReceipt>(field.GetValue(commands));
+        Assert.True(receipt.Ok);
+        Assert.Contains("cancelled", receipt.Message);
+        Assert.True(receipt.TryAcknowledgeOnce());
+        Assert.False(receipt.TryAcknowledgeOnce());
+        commands.ObserveJarvisTranscript("Okay stop, cancel browser automation.", run.Session.Token);
+        Assert.Same(receipt, field.GetValue(commands));
+        Assert.False(receipt.TryAcknowledgeOnce());
+        ((CancellationTokenSource)runtimeType.GetProperty("Cancellation")!.GetValue(runtime)!).Dispose();
+    }
+
+    [Fact]
+    public async Task Shutdown_drops_a_cancel_receipt_waiting_behind_a_tool()
+    {
+        await using var run = new MessageRun();
+        var committed = false;
+        run.ObserveControls((_, _) => () => committed = true);
+        run.Push(ToolCall("before-shutdown"));
+        await run.ToolEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        run.Push("""{"serverContent":{"inputTranscription":{"text":"cancel browser automation"}}}""");
+        run.Release();
+        await run.DrainAsync();
+        Assert.False(committed);
+    }
+
+    [Fact]
+    public async Task Combined_frame_keeps_authoritative_input_before_its_tool_execution()
+    {
+        await using var run = new MessageRun();
+        run.Push(JsonSerializer.Serialize(new
+        {
+            serverContent = new { inputTranscription = new { text = "Open the requested folder." } },
+            toolCall = new { functionCalls = new[] { new { id = "combined", name = "test_pending_action", args = new { } } } },
+        }));
+        await run.ToolEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.True(run.UserObservedBeforeTool);
     }
 
     [Fact]
@@ -161,6 +225,23 @@ public sealed class JarvisServerEventOrderingTests
         catch (OperationCanceledException) { }
     }
 
+    [Fact]
+    public async Task Completed_turn_releases_authority_after_its_tools_before_the_next_observation()
+    {
+        await using var run = new MessageRun();
+        var events = new List<string>();
+        run.ObserveTurnOrder(events);
+        run.Push("""{"serverContent":{"inputTranscription":{"text":"First request."}}}""");
+        run.Push(ToolCall("slow-first-action"));
+        await run.ToolEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        run.Push("""{"serverContent":{"turnComplete":true}}""");
+        run.Push("""{"serverContent":{"inputTranscription":{"text":"Next request."}}}""");
+        Assert.Equal(new[] { "First request." }, events);
+        run.FinishTool();
+        await run.DrainAsync();
+        Assert.Equal(new[] { "First request.", "completed", "Next request." }, events);
+    }
+
     private sealed class MessageRun : IAsyncDisposable
     {
         private readonly GeminiLiveConversationService _service = new(null, null, null);
@@ -172,6 +253,7 @@ public sealed class JarvisServerEventOrderingTests
         public TaskCompletionSource<bool> ToolEntered { get; } = NewSignal();
         public TaskCompletionSource<bool> ToolCancelled { get; } = NewSignal();
         public CancellationToken ToolToken { get; private set; }
+        public bool UserObservedBeforeTool { get; private set; }
         public TaskCompletionSource<bool> Ended { get; } = NewSignal();
         public TaskCompletionSource<bool> UserObserved { get; } = NewSignal();
 
@@ -191,6 +273,7 @@ public sealed class JarvisServerEventOrderingTests
             _service.SetUserTranscriptObserver((_, _) => UserObserved.TrySetResult(true));
             _service.SetToolExecutor(async (_, _, token) =>
             {
+                UserObservedBeforeTool = UserObserved.Task.IsCompletedSuccessfully;
                 ToolToken = token;
                 ToolEntered.TrySetResult(true);
                 try { await _release.Task.WaitAsync(token); }
@@ -217,6 +300,21 @@ public sealed class JarvisServerEventOrderingTests
 
         public void Push(string message) =>
             _handle.Invoke(_service, [message, NewSignal(), _diagnostics, Session.Token]);
+
+        public void ObserveControls(Func<string, CancellationToken, Action> observer) =>
+            _service.SetUserTranscriptObserver((_, _) => UserObserved.TrySetResult(true), observer);
+
+        public void ObserveTurnOrder(List<string> events) =>
+            _service.SetUserTranscriptObserver((text, _) => events.Add(text), userTurnCompletedObserver: () => events.Add("completed"));
+
+        public void FinishTool() => _release.TrySetResult(true);
+
+        public async Task DrainAsync()
+        {
+            var dispatcher = (LiveToolCallDispatcher)_diagnostics.GetType().GetProperty("ToolCalls")!.GetValue(_diagnostics);
+            if (dispatcher != null)
+                await dispatcher.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+        }
 
         public int PendingToolCount()
         {

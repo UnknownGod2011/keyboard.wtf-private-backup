@@ -186,22 +186,99 @@ public sealed class CommandRegistry
         return true;
     }
     public void ObserveJarvisTranscript(string text, CancellationToken token) =>
-        TryPreRouteJarvisTranscript(text, token);
+        RecordJarvisTranscript(text, token, fromLocalTextSubmission: false);
 
-    public bool TryPreRouteJarvisTranscript(string text, CancellationToken token, bool fromLocalTextSubmission = false)
+    public void ObserveSubmittedJarvisText(string text, CancellationToken token)
+    {
+        RecordJarvisTranscript(text, token, fromLocalTextSubmission: true);
+        ObserveImmediateJarvisControl(text, token)?.Invoke();
+    }
+
+    public void CompleteJarvisUserTurn()
+    {
+        // End action-routing authority, not deferred selection or diagnostic
+        // context. A later tool with no new transcript cannot reuse this turn.
+        lock (_browserPreRouteLock)
+        {
+            _browserPreRouteReceipt = null;
+            _browserPreRouteOwnsCurrentTurn = false;
+            _latestJarvisUserTurn = "";
+            _latestJarvisUserTurnUtc = default;
+            _awaitingLocalTextEcho = "";
+            _awaitingLocalTextEchoUtc = default;
+        }
+    }
+
+    // Called on the receive path: only explicit task control is allowed here.
+    // The existing coordinator owns cancellation/pause; this closure carries
+    // its immutable result into the normal ordered turn/result stream later.
+    public Action ObserveImmediateJarvisControl(string text, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        var userTurn = (text ?? "").Trim();
+        if (!TryControlActiveBrowserTask(userTurn, token, out var result))
+            return null;
+        return () =>
+        {
+            token.ThrowIfCancellationRequested();
+            _automation?.ObserveUserTranscript(userTurn);
+            lock (_browserPreRouteLock)
+            {
+                _latestJarvisUserTurn = BrowserAutomationText.Truncate(userTurn, 4000);
+                _latestJarvisUserTurnUtc = DateTime.UtcNow;
+                _awaitingLocalTextEcho = "";
+                RecordAuthoritativePreRoute(userTurn, "browser_automation_control", result);
+            }
+        };
+    }
+
+    private bool TryControlActiveBrowserTask(
+        string userTurn, CancellationToken token, out Dictionary<string, object> result)
+    {
+        result = null;
+        if (_browserAutomation == null
+            || !TryParseExplicitBrowserTaskStopOrPause(userTurn, out var action, out var explicitTarget)
+            || !explicitTarget)
+            return false;
+        var active = _browserAutomation.Snapshot();
+        if (!active.CanCancel)
+            return false;
+        token.ThrowIfCancellationRequested();
+        var accepted = action == "pause"
+            ? _browserAutomation.Pause()
+            : _browserAutomation.RequestCancel(announceOutcome: false);
+        result = ToolResult(accepted, accepted
+            ? action == "pause" ? "Browser automation paused." : "Browser automation cancelled."
+            : "No active browser task accepted that control command.");
+        AppLog.Info($"Browser task control accepted by local pre-route: task={active.TaskId} action={action} ok={accepted}");
+        return true;
+    }
+
+    private void RecordJarvisTranscript(string text, CancellationToken token, bool fromLocalTextSubmission)
     {
         token.ThrowIfCancellationRequested();
         _automation?.ObserveUserTranscript(text);
         var userTurn = (text ?? "").Trim();
         if (userTurn.Length == 0)
-            return false;
+            return;
 
-        // Text turns are first pre-routed locally, then echoed by Gemini Live
-        // as input transcription. Reuse that one receipt for the echo so a
-        // click/tab switch/browser start is never performed twice.
+        // Observation updates context, never executes an ordinary action.
+        // Keep a completed tool/control receipt across its transcription echo.
         lock (_browserPreRouteLock)
         {
             var now = DateTime.UtcNow;
+            if (!fromLocalTextSubmission
+                && _browserPreRouteReceipt?.Authoritative == true
+                && _browserPreRouteReceipt.ToolName == "browser_automation_control"
+                && _browserPreRouteReceipt.IsEchoOf(userTurn, now))
+            {
+                // A final transcript echo must retain the already-applied
+                // control receipt, not turn Cancelled into "no active task".
+                _browserPreRouteOwnsCurrentTurn = true;
+                _latestJarvisUserTurn = BrowserAutomationText.Truncate(userTurn, 4000);
+                _latestJarvisUserTurnUtc = now;
+                return;
+            }
             if (!fromLocalTextSubmission
                 && IsDurableMutationTool(_browserPreRouteReceipt?.ToolName)
                 && _browserPreRouteReceipt?.IsIncrementalContinuationOf(userTurn, now) == true)
@@ -209,7 +286,7 @@ public sealed class CommandRegistry
                 _browserPreRouteOwnsCurrentTurn = true;
                 _latestJarvisUserTurn = BrowserAutomationText.Truncate(userTurn, 4000);
                 _latestJarvisUserTurnUtc = now;
-                return true;
+                return;
             }
             if (!fromLocalTextSubmission
                 && string.Equals(
@@ -221,7 +298,7 @@ public sealed class CommandRegistry
                 _browserPreRouteOwnsCurrentTurn = true;
                 _latestJarvisUserTurn = BrowserAutomationText.Truncate(userTurn, 4000);
                 _latestJarvisUserTurnUtc = now;
-                return true;
+                return;
             }
             if (!fromLocalTextSubmission
                 && _browserPreRouteReceipt?.IsEchoOf(userTurn, now) == true
@@ -232,7 +309,7 @@ public sealed class CommandRegistry
                 _browserPreRouteOwnsCurrentTurn = true;
                 _latestJarvisUserTurn = BrowserAutomationText.Truncate(userTurn, 4000);
                 _latestJarvisUserTurnUtc = now;
-                return true;
+                return;
             }
 
             _browserPreRouteOwnsCurrentTurn = false;
@@ -249,6 +326,23 @@ public sealed class CommandRegistry
                 _awaitingLocalTextEcho = "";
             }
         }
+    }
+
+    private bool TryResolveAuthoritativeToolRoute(string selectedTool, CancellationToken token)
+    {
+        // The Live tool dispatcher is the sole ordinary execution owner. A
+        // transcript alone must not perform an action whose result the model
+        // never receives. Local cancel/farewell remain on the immediate path.
+        lock (_browserPreRouteLock)
+        {
+            if (_browserPreRouteReceipt != null)
+                return false;
+        }
+        var userTurn = RecentJarvisUserTurn();
+        var text = userTurn;
+        if (userTurn.Length == 0)
+            return false;
+        token.ThrowIfCancellationRequested();
 
         // Explicit durable corrections use the existing learned mapping or
         // browser preference store. Check them before workflow syntax because
@@ -295,7 +389,7 @@ public sealed class CommandRegistry
         {
             if (_automation.TryRememberWorkflowFromTranscript(
                     userTurn,
-                    completeTurn: fromLocalTextSubmission,
+                    completeTurn: true,
                     out var saveResult))
             {
                 var ok = saveResult.TryGetValue("ok", out var okValue)
@@ -576,35 +670,24 @@ public sealed class CommandRegistry
         }
         if (active.CanCancel)
         {
-            if (TryParseExplicitBrowserTaskStopOrPause(
-                    userTurn,
-                    out var controlAction,
-                    out var explicitlyTargetsBrowserTask)
-                && explicitlyTargetsBrowserTask)
+            if (TryControlActiveBrowserTask(userTurn, token, out var controlResult))
             {
-                var accepted = string.Equals(controlAction, "pause", StringComparison.Ordinal)
-                    ? _browserAutomation.Pause()
-                    : _browserAutomation.RequestCancel(announceOutcome: false);
-                var controlResult = ToolResult(
-                    accepted,
-                    accepted
-                        ? controlAction == "pause"
-                            ? "Browser automation paused."
-                            : "Browser automation cancelled."
-                        : "No active browser task accepted that control command.");
                 RecordAuthoritativePreRoute(
                     userTurn,
                     "browser_automation_control",
                     controlResult);
-                AppLog.Info(
-                    $"Browser task control accepted by local pre-route: task={active.TaskId} action={controlAction} ok={accepted}");
                 return true;
             }
 
-            // The coordinator already owns the paused task and validates that
-            // guidance is relevant to it. Accept that guidance locally so a
-            // short answer such as "continue" or "use Test User" resumes the
-            // same execution even if Live elects to answer conversationally.
+            // Semantic tool selection owns which task receives the turn.
+            // A direct or read-only tool must not be reinterpreted as Browser
+            // guidance merely because its text overlaps the current page.
+            // Explicit cancellation above remains locally authoritative.
+            if (selectedTool is not ("browser_automation" or "browser_automation_control"))
+                return false;
+
+            // The existing task owner validates the actual user's guidance;
+            // a model paraphrase cannot supply extra action authority.
             var guidanceReason = "";
             if (!IsExplicitBrowserTaskStopOrPause(userTurn)
                 && _browserAutomation.TryAddTaskGuidance(userTurn, out guidanceReason))
@@ -653,12 +736,10 @@ public sealed class CommandRegistry
         if (classification.Decision != BrowserAutomationDecision.BrowserAutomation)
             return false;
 
-        // Gemini Live input transcription arrives incrementally. An early
-        // "answer/solve" fragment can look like a page interaction before a
-        // later "selected/highlighted text" fragment arrives. Defer only that
-        // ambiguous voice pre-route to the completed Live turn. Explicit page
-        // mutation and explicit Browser Automation requests still start here.
-        if (ShouldDeferIncrementalBrowserPreRoute(userTurn, fromLocalTextSubmission)
+        // Context-dependent starts must reach the Browser tool with the
+        // captured context; do not start from the bare request before that
+        // tool has supplied its authoritative selected/deferred content.
+        if (ShouldDeferIncrementalBrowserPreRoute(userTurn, fromLocalTextSubmission: true)
             || ShouldDeferBrowserPreRouteForCapturedContext(
                 HasFreshCapturedBrowserContext(),
                 userTurn))
@@ -722,24 +803,34 @@ public sealed class CommandRegistry
     {
         action = "";
         explicitlyTargetsBrowserTask = false;
-        var match = Regex.Match(
-            (text ?? "").Trim(),
-            @"^\s*(?:(?:okay|ok|alright|yes|no)[,;:.!\s]+)?"
-            + @"(?:(?:please\s+)|(?:(?:can|could|would|will)\s+you\s+)|(?:i\s+(?:want|need|would\s+like)\s+you\s+to\s+))*"
-            + @"(?<action>pause|cancel|stop)"
-            + @"(?<target>\s+(?:the\s+)?(?:browser\s+automation|browser\s+task|automation\s+task|task))?"
-            + @"(?:\s+(?:(?:right\s+)?now|immediately))?"
-            + @"(?:\s*(?:[,;:.!?]|\band\b|\bthen\b).*)?$",
-            RegexOptions.IgnoreCase);
-        if (!match.Success)
-            return false;
-        action = match.Groups["action"].Value.Equals(
-            "pause",
-            StringComparison.OrdinalIgnoreCase)
-                ? "pause"
-                : "cancel";
-        explicitlyTargetsBrowserTask = match.Groups["target"].Success;
-        return true;
+        var remaining = (text ?? "").Trim();
+        // A bare preliminary control must not consume the explicitly targeted
+        // control that follows it. Reuse the same grammar for control clauses;
+        // do not search arbitrary quoted/discussed text for a stop keyword.
+        for (var clause = 0; clause < 8 && remaining.Length > 0; clause++)
+        {
+            var match = Regex.Match(
+                remaining,
+                @"^\s*(?:(?:okay|ok|alright|yes|no)[,;:.!\s]+)?"
+                + @"(?:(?:please\s+)|(?:(?:can|could|would|will)\s+you\s+)|(?:i\s+(?:want|need|would\s+like)\s+you\s+to\s+))*"
+                + @"(?<action>pause|cancel|stop)"
+                + @"(?<target>\s+(?:the\s+)?(?:browser\s+automation|browser\s+task|automation\s+task|task))?"
+                + @"(?:\s+(?:(?:right\s+)?now|immediately))?"
+                + @"(?:\s*(?:(?:[,;:.!?]|\band\b|\bthen\b)\s*)+(?<remaining>.*))?$",
+                RegexOptions.IgnoreCase);
+            if (!match.Success)
+                break;
+            action = match.Groups["action"].Value.Equals(
+                "pause",
+                StringComparison.OrdinalIgnoreCase)
+                    ? "pause"
+                    : "cancel";
+            explicitlyTargetsBrowserTask = match.Groups["target"].Success;
+            if (explicitlyTargetsBrowserTask)
+                return true;
+            remaining = match.Groups["remaining"].Value.Trim();
+        }
+        return action.Length > 0;
     }
 
     private async Task TogglePushToTalkAsync()
@@ -778,6 +869,11 @@ public sealed class CommandRegistry
 
         try
         {
+            // Exact tab handles are already semantically resolved. Do not
+            // reinterpret that set as a foreground close-tab shortcut.
+            var hasTabTargets = toolName == "browser_action" && args.ValueKind == JsonValueKind.Object && args.TryGetProperty("target_ids", out _);
+            if (!hasTabTargets)
+                TryResolveAuthoritativeToolRoute(toolName, token);
             if (TryGetPreRoutedToolResult(toolName, out var preRoutedResult))
                 return preRoutedResult;
 
@@ -802,6 +898,7 @@ public sealed class CommandRegistry
             if (toolName == "open_keyboard_wtf_settings")
                 return OpenKeyboardWtfSettings(GetString(args, "section"));
             if (toolName == "browser_action"
+                && !hasTabTargets
                 && _browserAutomation != null
                 && JarvisAutomationService.TryGetBrowserTabSelection(
                     GetString(args, "action"),
@@ -845,7 +942,7 @@ public sealed class CommandRegistry
             if (!_browserPreRouteOwnsCurrentTurn)
                 return false;
 
-            return _browserPreRouteReceipt?.BlocksCompetingTool(toolName, DateTime.UtcNow)
+            return _browserPreRouteReceipt?.BlocksCompetingTool(toolName, DateTime.UtcNow, ownsCurrentTurn: true)
                 ?? !IsBrowserTaskLifecycleTool(toolName);
         }
     }
@@ -956,7 +1053,7 @@ public sealed class CommandRegistry
         ResetActionCancellation();
         var token = _actionCts.Token;
         KeyboardWtfState.IsProcessingAi = true;
-        KeyboardWtfState.SetUi(VoiceUiPhase.Thinking, "Understanding command", "Gemini is planning the safest action.");
+        KeyboardWtfState.SetUi(VoiceUiPhase.Thinking, "Understanding command", "Planning the requested action...");
 
         try
         {
@@ -1010,7 +1107,7 @@ public sealed class CommandRegistry
             KeyboardWtfState.SetUi(
                 VoiceUiPhase.Thinking,
                 "Polishing",
-                "Gemini is turning your speech into writing.");
+                "Polishing your text...");
             AppLog.Info(
                 $"Smart Writing stage: operation={operation} stage=audio_ready recordingMs={capture.RecordingDurationMs} bytes={capture.WavData.Length}");
             var polishStarted = Stopwatch.GetTimestamp();
@@ -1036,7 +1133,7 @@ public sealed class CommandRegistry
                     ThrowIfSmartWritingOperationWasReplaced(ownedOperationId, actionToken);
                     segmentResult = FinalizeSmartWritingText(segmentResult);
                     if (string.IsNullOrWhiteSpace(segmentResult))
-                        throw new InvalidOperationException("Gemini returned no text for an audio segment.");
+                        throw new InvalidOperationException("No text was returned for an audio segment.");
                     polishedSegments.Add(segmentResult);
                     AppLog.Info(
                         $"Smart Writing stage: operation={operation} stage=segment_completed " +
@@ -1108,7 +1205,7 @@ public sealed class CommandRegistry
             ThrowIfSmartWritingOperationWasReplaced(ownedOperationId, actionToken);
             result = FinalizeSmartWritingText(result);
             if (string.IsNullOrWhiteSpace(result))
-                throw new InvalidOperationException("Gemini returned no text to insert.");
+                throw new InvalidOperationException("No text was returned to insert.");
             KeyboardWtfState.SetTranscript(result);
             var insertionStarted = Stopwatch.GetTimestamp();
             await DeliverTextAsync(result, actionToken, retainFinalTextOnClipboard: true);
@@ -2216,17 +2313,21 @@ public sealed class CommandRegistry
         lock (_browserPreRouteLock)
         {
             var receipt = _browserPreRouteReceipt;
-            if (receipt?.AppliesTo(toolName, DateTime.UtcNow) != true)
+            if (receipt?.AppliesTo(toolName, DateTime.UtcNow, _browserPreRouteOwnsCurrentTurn) != true)
             {
                 result = null;
                 return false;
             }
 
+            if (!receipt.TryAcknowledgeOnce())
+            {
+                result = SuppressedPreRouteResult(receipt);
+                return true;
+            }
+
             if (receipt.Result != null)
             {
-                result = receipt.TryAcknowledgeOnce()
-                    ? new Dictionary<string, object>(receipt.Result)
-                    : SuppressedPreRouteResult(receipt);
+                result = new Dictionary<string, object>(receipt.Result);
                 return true;
             }
 
@@ -2265,7 +2366,7 @@ public sealed class CommandRegistry
             if (!(receipt?.Authoritative == true
                     || string.Equals(receipt?.ToolName, "run_workflow", StringComparison.Ordinal)
                     || IsDurableMutationTool(receipt?.ToolName))
-                || receipt?.IsFresh(DateTime.UtcNow) != true
+                || (!_browserPreRouteOwnsCurrentTurn && receipt?.IsFresh(DateTime.UtcNow) != true)
                 || receipt.Result == null)
             {
                 result = null;
@@ -2529,13 +2630,13 @@ public sealed class CommandRegistry
         bool supported = true,
         bool needsClarification = false,
         string detail = null) => new()
-    {
-        ["ok"] = ok,
-        ["supported"] = supported,
-        ["needs_clarification"] = needsClarification,
-        ["message"] = message ?? "",
-        ["detail"] = detail ?? "",
-    };
+        {
+            ["ok"] = ok,
+            ["supported"] = supported,
+            ["needs_clarification"] = needsClarification,
+            ["message"] = message ?? "",
+            ["detail"] = detail ?? "",
+        };
 
     private static bool IsSafeHttpUrl(string url, out Uri uri)
     {
