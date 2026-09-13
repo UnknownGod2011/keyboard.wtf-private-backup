@@ -229,11 +229,33 @@ public sealed class LiveToolCallDispatcherTests
 
         Assert.Equal(1, actions);
         Assert.Equal(2, responses.Count);
-        var duplicate = JsonDocument.Parse(responses.Last()).RootElement
-            .GetProperty("toolResponse").GetProperty("functionResponses")[0].GetProperty("response");
+        var function = JsonDocument.Parse(responses.Last()).RootElement
+            .GetProperty("toolResponse").GetProperty("functionResponses")[0];
+        var duplicate = function.GetProperty("response");
         Assert.True(duplicate.GetProperty("duplicate_suppressed").GetBoolean());
-        Assert.Equal("SILENT", duplicate.GetProperty("scheduling").GetString());
+        Assert.Equal("SILENT", function.GetProperty("scheduling").GetString());
+        Assert.False(duplicate.TryGetProperty("scheduling", out _));
         Assert.Equal("", duplicate.GetProperty("message").GetString());
+    }
+
+    [Theory]
+    [InlineData(false, "WHEN_IDLE")]
+    [InlineData(true, "SILENT")]
+    public async Task Transport_scheduling_owns_normal_and_already_acknowledged_results(bool acknowledged, string scheduling)
+    {
+        var responses = new ConcurrentQueue<string>();
+        using var queue = Queue((_, _, _) => Task.FromResult(new Dictionary<string, object>
+        {
+            ["ok"] = true,
+            ["duplicate_suppressed"] = acknowledged,
+            ["message"] = acknowledged ? "" : "Done.",
+        }), responses);
+        queue.Enqueue(Call("one", "value"), new());
+        await queue.Completion.WaitAsync(AsyncTestTimeout);
+        var function = JsonDocument.Parse(Assert.Single(responses)).RootElement
+            .GetProperty("toolResponse").GetProperty("functionResponses")[0];
+        Assert.Equal(scheduling, function.GetProperty("scheduling").GetString());
+        Assert.False(function.GetProperty("response").TryGetProperty("scheduling", out _));
     }
 
     [Fact]

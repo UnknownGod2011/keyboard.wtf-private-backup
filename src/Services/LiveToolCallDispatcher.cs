@@ -134,13 +134,6 @@ internal sealed class LiveToolCallDispatcher : IDisposable
                         token.ThrowIfCancellationRequested();
                         guard.Record(call.Name, call.Args, response);
                     }
-                    else
-                    {
-                        // A Live function call still requires a protocol response
-                        // even when its effect already completed. Request silent
-                        // scheduling and keep the duplicate payload non-narrative.
-                        response["scheduling"] = "SILENT";
-                    }
                     token.ThrowIfCancellationRequested();
                     results.Add((call, response));
                 }
@@ -161,7 +154,19 @@ internal sealed class LiveToolCallDispatcher : IDisposable
             {
                 var responses = results
                     .Where(result => !result.Call.Cancellation.IsCancellationRequested)
-                    .Select(result => new { id = result.Call.Id, name = result.Call.Name, response = new Dictionary<string, object>(result.Response) })
+                    .Select(result => new
+                    {
+                        id = result.Call.Id,
+                        name = result.Call.Name,
+                        // Scheduling is protocol metadata, not tool output.
+                        // Vertex Live defaults to asynchronous tools; normal
+                        // results must not interrupt an in-progress model turn.
+                        // This also covers acknowledgements returned by the
+                        // existing command owner, not just guard-suppressed calls.
+                        scheduling = result.Response.TryGetValue("duplicate_suppressed", out var duplicate)
+                            && duplicate is true ? "SILENT" : "WHEN_IDLE",
+                        response = new Dictionary<string, object>(result.Response),
+                    })
                     .ToArray();
                 AnnotateReferentialGroup(responses.Select(result => result.response));
                 return responses.Length == 0 ? null : new { toolResponse = new { functionResponses = responses } };

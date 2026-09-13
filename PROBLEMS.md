@@ -13,17 +13,17 @@ Touches: Paid account refresh; Live startup transport.
 Protect: 2.37–3s happy path, microphone readiness, reliable connection.
 
 ## P02 — Exactly-once completion and action ownership
-Status: FIXED-SOURCE
+Status: INVESTIGATING
 Expected: One logical request may execute several actions but produces one coherent completion and no repeated mutation.
-Latest evidence: Failing→passing tests prove transcript-only mutation, cancelled/superseded request execution, scalar re-publication and receipt expiry within one logical request. Installed duplicate speech still requires replay.
-Root cause: Ordinary effects ran before a model tool owned their result; scalar receipts bypassed acknowledgement, and a 12s cache expiry also released still-current result authority.
-Fix: Keep observation read-only; execute through the existing tool dispatcher, acknowledge every receipt once, and release route authority on ordered turn completion/new input rather than a same-turn timeout.
-Evidence: 1,080 desktop/262 backend pass; isolated same-model success/failure probes choose saved-Link tools and ground their replies in returned outcomes. Full installed audible replay and multi-target follow-up remain pending.
+Latest evidence: Installed `3636587` altered-path retry reproduced through normal production billing/provider without microphone or OS effects. Actual dispatcher emits separate responses for streamed calls; identical retries are suppressed but changed arguments escape. Provider turnComplete precedes later tool/result speech.
+Root cause: Earlier eager effects/receipt expiry were corrected; the latest wire trace also proves duplicate scheduling was embedded in result data, not the provider's function-response metadata. Per-message result continuations remain broader than a logical request.
+Fix: Existing dispatcher now emits outer WHEN_IDLE for ordinary results and SILENT for both guard/command-owner duplicate acknowledgements. No new batching owner, timer, provider switch or cancellation path; remaining multi-target ownership unresolved.
+Evidence: Three wire assertions fail→pass; 1,138 desktop pass. Actual dirty-source production probe gives one opening completion and suppresses one repeated effect; close-both still fails. Developer 3.1 compatibility also completes. Evidence under `production-folder-trace/source-scheduling-20260913-b`; not installed acceptance.
 Touches: Transcript pre-routing; tool dispatch/result publication; action dedupe.
 Protect: Clarification/barge-in and multi-action batching.
 
 ## P03 — Jarvis popup topmost
-Status: VERIFIED-INSTALLED
+Status: PHYSICALLY VERIFIED
 Expected: A visible Jarvis overlay remains above ordinary apps without stealing focus.
 Latest evidence: Exact installed overlay retained `WS_EX_TOPMOST | WS_EX_NOACTIVATE` while Chrome kept foreground focus; prior TEST proof covered Chrome, Edge and Explorer transitions.
 Root cause: Topmost was only a managed property; recreated native handles did not carry the topmost extended style.
@@ -53,7 +53,7 @@ Touches: Live dispatch; command routing; trusted input.
 Protect: Direct-action speed and normal conversation.
 
 ## P06 — Deterministic Explorer close
-Status: VERIFIED-HUMAN
+Status: PHYSICALLY VERIFIED
 Expected: Close a fixed set of actual Explorer windows only, verify disappearance, never kill the shell or affect browsers.
 Latest evidence: Human close of two windows was immediate/correct; physical 1- and 3-window tests preserved Chrome.
 Root cause: Retired fallback used browser/foreground shortcuts instead of Explorer HWND ownership.
@@ -63,7 +63,7 @@ Touches: Native window closer.
 Protect: No blind Ctrl+W/Alt+F4 and no `explorer.exe` termination.
 
 ## P07 — Modifier and foreground safety
-Status: VERIFIED-INSTALLED
+Status: PHYSICALLY VERIFIED
 Expected: User-held modifiers, focus changes and cancellation cannot redirect or contaminate injected input.
 Latest evidence: Exact installed build passed balanced-input, HWND validation and 1,500 cancellation/race repetitions.
 Root cause: Earlier key injection lacked one authoritative key/target owner.
@@ -73,7 +73,7 @@ Touches: Trusted keyboard/input boundary.
 Protect: Fast explicit direct actions.
 
 ## P08 — Cancellation and stale-runtime safety
-Status: FIXED-SOURCE
+Status: FIXED
 Expected: Cancelled work cannot later open the microphone, post native input, publish results or overwrite a newer task.
 Latest evidence: Earlier installed startup-cancel proof remains valid, but recorder drain/recovery now changed this dependency. New failing-then-passing test prevents interrupted drain from overwriting Cancelled; affected installed replay is required.
 Root cause: Capture ownership was published only after blocking microphone startup, so cancel could not invalidate the in-flight start.
@@ -83,7 +83,7 @@ Touches: Voice capture operation ownership.
 Protect: Native/input/Live cancellation checks and fast voice-mode startup.
 
 ## P09 — Loud/full-scale PCM processing
-Status: FIXED-SOURCE
+Status: FIXED
 Expected: Valid loud PCM never throws or drops microphone chunks.
 Latest evidence: Installed Smart Writing microphone callbacks failed at 09:00:27 and 09:04:44 on September 10, leaving Listening visible.
 Root cause: Shared recorder and Settings meters still call Math.Abs(short.MinValue), which throws; previous Live arithmetic fix did not cover these paths. Recorder failure is only logged, not delivered to the capture owner.
@@ -93,7 +93,7 @@ Touches: AudioRecorderService, VoiceCaptureService, WebSettingsService.
 Protect: Audio quality, VAD and barge-in.
 
 ## P10 — Browser context and intent ownership
-Status: FIXED-SOURCE
+Status: FIXED
 Expected: Context-now/action-later waits; fresh selection replaces stale; selected-text reasoning stays conversational.
 Latest evidence: A later TEST turn supplied fresh clipboard text before an explicit selected-text task; the start owner initially accepted that wrong source. Task `d14cb8...` now attached the actual selected text and visibly completed the form without submission/reset.
 Root cause: Browser start first depended on an optional model capture, then treated any fresh captured source as satisfying an explicitly named source.
@@ -113,7 +113,7 @@ Touches: Browser coordinator/runtime generation.
 Protect: Never adopt unrelated foreground tabs automatically.
 
 ## P12 — Form write correctness
-Status: FIXED-SOURCE
+Status: FIXED
 Expected: Context values target the correct group once; replace/append explicit; no duplicate writes or unrequested Clear/Reset. Release proof spans different real-site DOMs, not fixtures alone.
 Latest evidence: Current source/current isolated Helper completed real Selenium and TestPages forms; native Reset→repeat passed. Exactly 4/3/3 input events, no duplicate writes, untouched unrelated fields, zero submits, terminal Helper/UI cleanup verified.
 Root cause: Exact unnamed controls scored 42 against a 45-point fuzzy-name threshold; adjacent visible labels were absent from the graph. Earlier write/group fixes remain protected.
@@ -123,7 +123,7 @@ Touches: Helper metadata; planner/executor/verification.
 Protect: Do not submit test forms.
 
 ## P13 — NeedsUserAction bridge
-Status: FIXED-SOURCE
+Status: FIXED
 Expected: Ask only for genuinely missing required data; relevant natural answer resumes the same task; optional skip works; unrelated talk is isolated.
 Latest evidence: Real TestPages task `07f29f79...` asked once, accepted optional skip on the same task, completed with default text unchanged and zero writes/submits. Cross-site handoff and subsequent cancellation also passed.
 Root cause: `973ef70` equated nonempty with the requested answer; exact optional-label matching also incorrectly required printed trailing punctuation.
@@ -133,7 +133,7 @@ Touches: Jarvis/Browser intervention bridge.
 Protect: Normal conversation while paused.
 
 ## P14 — Browser cancellation in every state
-Status: FIXED-SOURCE
+Status: FIXED
 Expected: Planning/Running/Waiting/NeedsUserAction/Partial cancel once, clear UI/task/intervention, and execute nothing stale.
 Latest evidence: Real isolated Chromium/native-bridge test reproduced a write after desktop cancellation when the renderer resumed at the mutation boundary; worker heartbeat stayed healthy and its task lease was already cleared.
 Root cause: Cancellation was checked before queuing the renderer commit, not at actual page mutation; queued work could outlive the worker/desktop waiter. Earlier human control/publication defects also remain in this coherent repair.
@@ -143,7 +143,7 @@ Touches: Browser coordinator/executor; Live/input boundary.
 Protect: Jarvis remains usable after cancel.
 
 ## P15 — Browser correctness constraints and visible completion
-Status: FIXED-SOURCE
+Status: FIXED
 Expected: Latest-by-publisher verifies publisher/freshness; useful page is preserved; Completed matches visible state.
 Latest evidence: Failing Selenium task `db996700...` preserved; repaired task `bd0b5de...` and two TestPages tasks reached Completed with independently matching field values and no submit/reset mistakes.
 Root cause: Verifier counted action words in labels as goals; Helper matched a select's stored value against its visible label. Both defects also exist in 1.4.17.
@@ -163,7 +163,7 @@ Touches: Direct-action intent/routing.
 Protect: Browser Automation still starts for real interactive webpage work.
 
 ## P17 — Production Browser credit capacity
-Status: VERIFIED-INSTALLED
+Status: PHYSICALLY VERIFIED
 Expected: Final bounded production Browser acceptance can reserve and settle normally.
 Latest evidence: User restored capacity; latest installed human session established paid Live and received successful HTTP 200 Browser plans. Later HTTP 409 rate limit is not insufficient-credit failure.
 Root cause: Acceptance account capacity, not Helper/native messaging.
@@ -173,7 +173,7 @@ Touches: Test execution only.
 Protect: Production billing rules and balances.
 
 ## P18 — Isolated Gemini/Jarvis/Browser test harness
-Status: VERIFIED-INSTALLED
+Status: PHYSICALLY VERIFIED
 Expected: Separate Ctrl+Alt+T TEST process/profile exercises real Jarvis UI/mic plus coordinator/executor/Helper without production billing/provider/data mutation.
 Latest evidence: The disposable TEST process exercised real Jarvis, Browser Automation, Helper and long Smart Writing while production executable/profile/native-host hashes and billing stayed unchanged; all TEST processes are now stopped.
 Root cause: Production credit reservation blocks repeated acceptance.
@@ -183,7 +183,7 @@ Touches: Compile-time TEST seam plus ignored test project only.
 Protect: Production auth, provider, Firestore and billing.
 
 ## P19 — No test provider in shipping artifacts
-Status: VERIFIED-INSTALLED
+Status: PHYSICALLY VERIFIED
 Expected: Final source/package/install/site/logs contain no test keys, hotkey, provider selector, URL or billing bypass.
 Latest evidence: Tracked source, package, installer and exact installed executable contain no TEST symbol/provider/hotkey or supplied test-key material.
 Root cause: Preventive release requirement.
@@ -203,7 +203,7 @@ Touches: Smart Writing transport/UI/clipboard/settlement.
 Protect: Existing writing quality.
 
 ## P21 — Learned mappings and workflows
-Status: FIXING
+Status: INVESTIGATING
 Expected: A selected URL or valid hostname plus a custom trigger stores one durable Link that executes after conversation/app restart and outranks generic lookup.
 Latest evidence: Durable selected-hostname mapping and execution remain proven, but newest human run executed a mapping while Jarvis denied knowing its destination. Reopen result/context ownership; preserve durable Link storage.
 Root cause: Eager local mapping execution could precede a model refusal; the open_url schema hid its existing alias capability and setup advertised workflows but not Links.
@@ -213,7 +213,7 @@ Touches: Learned mapping parser/store/route.
 Protect: Workflow/tombstone behavior.
 
 ## P22 — Live lease/resumption/accounting
-Status: VERIFIED-INSTALLED
+Status: PHYSICALLY VERIFIED
 Expected: 720s authoritative lifecycle, 120s cleanup grace, Cloud Run 900s, sequential resumption, no duplicate socket/409 and exactly-once settlement.
 Latest evidence: Current config/revision and long-session tests preserve post-1.4.17 lease fix; latest sessions settled cleanly.
 Root cause: 1.4.17-era reservation ownership used a retired short lifetime.
@@ -233,7 +233,7 @@ Touches: Production site Pricing CSS/JS/auth hydration.
 Protect: Razorpay identifiers and billing semantics.
 
 ## P24 — Public website/release still old
-Status: VERIFIED-INSTALLED
+Status: PHYSICALLY VERIFIED
 Expected: Public canonical/fallback/download/updater/GitHub latest use the original verified 1.4.17 installer until a repaired candidate is manually accepted.
 Latest evidence: Canonical and fallback live config/signed manifests plus GitHub latest now advertise 1.4.17. Actual canonical Download CTA downloaded 84,251,836 bytes matching original SHA 812aaa43...ded6cd; local 1.4.19 install preserved.
 Root cause: User rejected newer candidate and explicitly requested temporary public rollback only.
@@ -273,12 +273,12 @@ Touches: Whole project.
 Protect: No speculative rewrite.
 
 ## P28 — Exact current installer/install provenance
-Status: VERIFIED-INSTALLED
+Status: PHYSICALLY VERIFIED
 Expected: Installed bytes derive from the frozen source and exact hashed installer.
-Latest evidence: September 12 user installed repair `b82acc7...`; independent installed EXE hash equals packaged `FB199F81...50483`. Installer `D5B10779...BC413` is 84,293,105 bytes; running app restarted at 08:32 and owns the five production hotkeys.
+Latest evidence: September 13 assistant installed frozen `3636587...`, exit 0; EXE `7916E546...A8CA` is byte-identical to package. Installer `5B0CBB0A...9FA1` is 84,271,641 bytes. Physical Ctrl+Alt+, opens production Settings; account/profile/five hotkeys preserved.
 Root cause: Release-integrity requirement.
 Fix: Freeze source, build once, hash, install exact bytes and independently verify provenance.
-Evidence: `dist/verification/repair-b82acc7/provenance.json`; CI `34660974129`, clean-profile runtime and installed hash agree. Production settings hash unchanged; this verifies provenance only, not remaining behavioral acceptance.
+Evidence: `dist/verification/repair-3636587/provenance.json`; CI `34711933255`, 1,136 desktop/262 backend/12 real Firestore, clean-profile runtime and independent installed hash agree. Provenance is not final behavioral acceptance.
 Touches: Build/install/provenance.
 Protect: Do not rebuild without a source defect.
 
@@ -303,12 +303,12 @@ Touches: Test state and accounting inspection.
 Protect: Billing math, plan allowance and existing balances.
 
 ## P31 — Referential direct-action context
-Status: FIXED-SOURCE
+Status: OPEN
 Expected: A contextual close resolves the recent successfully opened target, asks once if ambiguous, and never broadens to unrelated windows.
-Latest evidence: Real isolated Live model, dispatcher, registry, Helper and Chrome opened/closed two-tab and four-tab workflow sets with one combined result per request; intervening conversation retained target context. Installed audible replay remains pending.
+Latest evidence: Installed `3636587` close-both clarification reproduced with the actual dispatcher/production provider: model omits scope, native selection returns two candidates, then model asks again. Boundary-batched probe instead omits target; native safety correctly refuses. Both remain failed acceptance.
 Root cause: Loss of structured outcome/target identity at workflow and batch publication boundaries; a URL is not an exact opened-tab handle.
 Fix: Retain successful workflow targets, annotate only uncancelled published results, and use the existing Helper command channel for Chrome tab handles/verified close sets without BA or foreground fallback.
-Evidence: `output/playwright/direct-tab-context/model-evidence.json`; exact tab read-back, manual-close/cancel/reset probes and full 1,108 desktop gate pass. No production credits or native-window changes; final installed proof pending.
+Evidence: Installed audio in `dist/verification/repair-3636587/p02-speaker-20260913-c`; production wire/tool receipts in `dist/verification/production-folder-trace/dispatcher-20260913`. Exact native folder identity is still lost to basename matching; preserve refusal rather than infer a broader close set. No human microphone claim.
 Touches: Live tool instruction/context; recent action ownership.
 Protect: Deterministic native Explorer close and general Gemini reasoning.
 
@@ -323,7 +323,7 @@ Touches: Logical session/provider-close UI boundary.
 Protect: 720s lease, 120s grace, paid sequential resumption, audio/VAD.
 
 ## P33 — Production/TEST hotkey ownership
-Status: VERIFIED-INSTALLED
+Status: PHYSICALLY VERIFIED
 Expected: Production owns its configured shortcuts; TEST owns only Ctrl+Alt+T and TEST cancel, and settings changes cannot cross that boundary.
 Latest evidence: run16 writes only `%LOCALAPPDATA%\keyboard.wtf-test`, registers only TEST cancel, and physical Ctrl+Alt+, opened production Settings on port 8091; Ctrl+Alt+T launched TEST Live through the isolated launcher.
 Root cause: TEST filtering exists only in initial registration; the settings replacement path bypasses it and registers production bindings.
@@ -333,7 +333,7 @@ Touches: `HotkeyService` TEST seam and focused tests.
 Protect: All production hotkey values and unrelated user settings.
 
 ## P34 — Active Browser task guidance and failure context
-Status: FIXED-SOURCE
+Status: FIXED
 Expected: Only relevant answers/corrections/guidance reach the same live task; terminal tasks lose routing authority, while concise diagnostic context still explains the latest failure.
 Latest evidence: Real isolated Live/registry/Helper task `ab1444a7...` remained paused on its form during one direct URL open, accepted skip on the same task, completed without writes/submission, and accurately explained the outcome. One result batch per turn.
 Root cause: Tool execution still let active-task heuristics override a semantically selected direct tool; URL punctuation plus broad page-word overlap could qualify as field guidance.
@@ -343,7 +343,7 @@ Touches: Existing CommandRegistry tool-routing boundary; Browser coordinator.
 Protect: Unrelated Jarvis turns, direct browser actions, cancellation and dead-task cleanup.
 
 ## P35 — Bounded personal memory
-Status: VERIFIED-INSTALLED
+Status: PHYSICALLY VERIFIED
 Expected: Store only explicit/useful concise non-sensitive facts and retrieve a small relevant subset; expose view/delete/clear, adding a disable toggle only if it remains a single clean owner.
 Latest evidence: Exact installed Settings exposes the existing bounded memory owner separately from four mappings and two workflows; one durable entry is loaded within a 20-entry/280-character cap.
 Root cause: This was an acceptance gap, not a missing architecture; the existing owner already enforces explicit save intent, bounded retrieval and same-key update.
@@ -353,7 +353,7 @@ Touches: Existing intent memory and Settings only.
 Protect: Startup latency, selected-text privacy, mappings/workflows and prompt bounds.
 
 ## P36 — Routine OS notification spam
-Status: VERIFIED-INSTALLED
+Status: PHYSICALLY VERIFIED
 Expected: Routine success stays in Jarvis UI/speech; only attention-worthy completion, warning or failure creates an OS notification.
 Latest evidence: Exact installed `e01f33a...` contains the single notification boundary; routine success has no system-publication path while explicit attention/failure retains one.
 Root cause: `NotificationService.Info` and `InfoTransient` unconditionally publish a Windows balloon regardless of purpose.
@@ -363,7 +363,7 @@ Touches: Notification publication boundary; timer and long Browser-task completi
 Protect: Jarvis status/speech, actionable NeedsUserAction/failure notices and persistent logging policy.
 
 ## P37 — Long Raw Dictation and capture failure recovery
-Status: FIXED-SOURCE
+Status: FIXED
 Expected: Meaningful long input preserves all captured audio/tail, returns usable partial output on failure, inserts once, and leaves no stale UI.
 Latest evidence: 823s/70-section prerecorded desktop replay and forced 412s interruption retain 70/35 sections, paste once at the cursor, preserve clipboard and clean UI. Short real speaker→mic recognition remains unreliable; final microphone proof pending.
 Root cause: Engine failures return empty text; exception-only preview recovery never sees them.
@@ -375,24 +375,24 @@ Protect: No arbitrary duration cap; no duplicate settlement or paste.
 ## P38 — Natural audio, barge-in and prompt/tool intelligence
 Status: OPEN
 Expected: Smooth speech/playback; compact consistent prompt/tools; semantic app/file/tab references and practical tool composition.
-Latest evidence: Both versions use 59 tools/same Live model; system text 13,133→15,166 chars, tools 23,867→25,147 bytes. Growth is not causation. Combined-frame stress test is defensive only: Google's documented server union does not promise such frames.
+Latest evidence: Both compiled clients use 59 tools and the same default model, but actual production rewrites setup to Vertex native-audio 2.5; developer probes used 3.1 preview. September 13 route/settled usage confirms that distinction. Prompt growth alone is not causation.
 Fix: Pending proven differential causes; no phrase grammars or competing owners.
-Evidence: Latest preserved log/history; full differential required.
+Evidence: `docs/regression-differential-1.4.17.md`; installed failed speaker run retained. Align diagnostic provider/setup before interpreting isolated reasoning passes; do not upgrade production to hide a test mismatch.
 Touches: Live prompt/tools/audio/dispatch and recent action context.
 Protect: Safe native actions, bounded memory, sequential resumption.
 
 ## P39 — Intermittent Helper availability
-Status: FIXED-SOURCE
+Status: FIXED
 Expected: Direct tabs/Browser tasks share the real Store Helper reliably; failures are truthful and cancellable.
-Latest evidence: Installed b82acc7 task 0514e3d4 failed before planner/page work: Store 2.1.26 lacks command-authority capability, despite Settings reporting actions available. Original isolated 2.1.27 cancellation/liveness proof remains valid; Store acceptance is blocked.
+Latest evidence: User reports the Store extension is updated/fixed. The update blocker is cleared; run normal installed Helper/Browser acceptance when its problem is next. Do not reopen Store delivery unless that test fails.
 Root cause: Page work blocked heartbeat/cancellation; capability checks also covered new sends but not advertised readiness or in-flight dispatch/result publication.
 Fix: Preserve heartbeat/waiter safety; the existing bridge requires the same capability for readiness, queued dispatch and result acceptance. Store 2.1.27 delivery/acceptance remains required.
-Evidence: Installed failure preserved in repair-b82acc7/installed-acceptance-20260912.json; readiness/capability-loss regressions fail→pass, 1,136 desktop + 262 backend pass. Source 2.1.27 isolated proof is not Store 2.1.26 acceptance.
+Evidence: Prior readiness/capability-loss tests fail→pass. User has now updated the extension; exact installed Browser replay remains pending, not a delivery blocker.
 Touches: Helper communication and action ownership only if proven.
 Protect: Protocol 2.1.21, native trust/registration, original 1.4.17 compatibility; do not publish unaccepted Helper bytes.
 
 ## P40 — Screen Analysis and provider-neutral UI
-Status: FIXED-SOURCE
+Status: FIXED
 Expected: Installed screen analysis works; ordinary progress says analyzing/polishing without internal provider branding.
 Latest evidence: VoiceCaptureService exposes 'Gemini is cleaning up your words'; full shipping UI search and screen acceptance pending.
 Fix: Removed provider branding from ordinary screen/writing/command progress and Jarvis voice labels; diagnostic model/config/log identities retained. Full screen acceptance pending.
@@ -419,18 +419,18 @@ Touches: Existing payment identity/config boundary only if proven.
 Protect: Firebase UID authority, account isolation, internal infrastructure URLs and existing billing semantics.
 
 ## P43 — One public support address
-Status: FIXED-SOURCE
+Status: FIXED
 Expected: Customer-facing app, site and Helper support references use only support@keyboardwtf.com; internal/admin identities remain unchanged.
-Latest evidence: Canonical support/privacy/refund/terms pages now use only the support address; fallback alias synchronized. Desktop resource and Helper listing changes await exact installed/Store verification.
+Latest evidence: Canonical/fallback support/privacy/refund/terms and exact installed `3636587` Settings visibly use only the support address. Live Store listing remains unverified; source listing text is corrected.
 Fix: Replace public contact links only; verify actual deployed pages and the next installed resource.
-Evidence: Twelve contact checks fail→pass; 18 site tests pass. Deployment DMSjeF3uQwj1A9BH5RMwheYLFgC2 changes four pages only; download config/signed stable manifest unchanged.
+Evidence: Twelve contact checks fail→pass; native installed Settings screenshot/read-back and real deployment DMSjeF3uQwj1A9BH5RMwheYLFgC2 pass. Four contact pages changed; download config/signed stable manifest unchanged.
 Touches: Public support text/links only.
 Protect: Auth/admin identities, payment settings, stable 1.4.17 public artifact and frozen candidate provenance.
 
 ## P44 — Inactive resource and credit cleanup
 Status: OPEN
 Expected: Stopped/dismissed Jarvis releases Live, microphone, work and reservations; quiet pauses in an active logical conversation preserve context.
-Latest evidence: Installed b82acc7 sessions ended on Cancel/test stop; latest Live usage settled at 16:14 September 12. Overnight read-back shows no new Live usage, no active Browser task and zero reserved credits; only normal auth refresh remains.
+Latest evidence: Installed `3636587` idle overnight through September 13 07:57: no new Live usage since September 12 16:14, no active Browser task, zero reserved credits; tray/hotkeys/Helper and ordinary auth refresh preserved. Active quiet-pause transport still unverified.
 Fix: Verify existing cleanup/restart ownership; do not add a silence-driven logical exit or alter billing/lifecycle policy.
 Evidence: September 12 socket/shutdown/account read-back; remaining exit paths and bounded restart acceptance pending.
 Touches: Existing session/resource lifecycle only if a failure is reproduced; test-resource cleanup.
