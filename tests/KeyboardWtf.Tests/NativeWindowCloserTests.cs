@@ -30,7 +30,7 @@ public sealed class NativeWindowCloserTests
     }
 
     [Fact]
-    public void Canonical_folder_path_resolves_only_its_matching_native_window_title()
+    public void Canonical_folder_path_never_degrades_to_an_unverified_native_title()
     {
         Window[] windows =
         [
@@ -42,7 +42,7 @@ public sealed class NativeWindowCloserTests
 
         var selected = NativeWindowCloser.Select(windows, target, false, null, (IntPtr)2);
 
-        Assert.Equal((IntPtr)1, Assert.Single(selected).Handle);
+        Assert.Empty(selected);
     }
 
     [Fact]
@@ -53,12 +53,75 @@ public sealed class NativeWindowCloserTests
     }
 
     [Fact]
+    public void Exact_folder_paths_distinguish_same_titles_without_closing_unrelated_tabs_or_browsers()
+    {
+        Window[] windows = [Explorer(1), Explorer(2), Explorer(3), Make(4, "chrome", "notes"), Explorer(5)];
+        var wanted = Path.Combine(Path.GetTempPath(), "A", "notes");
+        var other = Path.Combine(Path.GetTempPath(), "B", "notes");
+        var paths = new Dictionary<IntPtr, string[]>
+        {
+            [(IntPtr)1] = [wanted], [(IntPtr)2] = [other],
+            [(IntPtr)3] = [wanted, other], [(IntPtr)4] = [wanted], [(IntPtr)5] = [wanted, ""],
+        };
+        Assert.Equal((IntPtr)1, Assert.Single(NativeWindowCloser.Select(windows, wanted, true, null, (IntPtr)4, paths)).Handle);
+        Assert.Empty(NativeWindowCloser.Select(windows, wanted, true, "2", (IntPtr)4, paths));
+        Assert.Equal(4, NativeWindowCloser.Select(windows, "File Explorer", true, null, (IntPtr)4, paths).Length);
+    }
+
+    [Theory]
+    [InlineData("C:\\One\\notes\\", "c:/One/notes")]
+    [InlineData("C:\\One\\other\\..\\notes", "C:\\One\\notes")]
+    [InlineData("\\\\server\\share\\notes\\", "\\\\server\\share\\notes")]
+    public void Folder_identity_normalizes_separators_and_trailing_slash_without_changing_scope(string target, string actual)
+    {
+        Assert.True(NativeWindowCloser.TryNormalizeFolderPath(target, out var first));
+        Assert.True(NativeWindowCloser.TryNormalizeFolderPath(actual, out var second));
+        Assert.Equal(first, second, ignoreCase: true);
+    }
+
+    [Fact]
     public void All_requires_a_named_target_and_one_does_not_silently_choose_among_matches()
     {
         Window[] windows = [Explorer(1), Explorer(2)];
         Assert.Empty(NativeWindowCloser.Select(windows, "", true, null, (IntPtr)1));
         Assert.Equal(2, NativeWindowCloser.Select(windows, "File Explorer", false, null, (IntPtr)1).Length);
         Assert.Equal((IntPtr)2, Assert.Single(NativeWindowCloser.Select(windows, "File Explorer", false, "2", (IntPtr)1)).Handle);
+    }
+
+    [Fact]
+    public async Task Changed_folder_remains_open_and_is_not_reported_as_closed()
+    {
+        var target = Explorer(1);
+        var sent = 0;
+        var outcome = await NativeWindowCloser.CloseAsync([target], CancellationToken.None,
+            _ => target, _ => { sent++; return true; }, TimeSpan.Zero, _ => false);
+        Assert.False(outcome.Succeeded);
+        Assert.Single(outcome.Remaining);
+        Assert.Equal(0, sent);
+    }
+
+    [Fact]
+    public async Task Cancellation_during_folder_validation_prevents_the_native_close()
+    {
+        var target = Explorer(1);
+        using var cancellation = new CancellationTokenSource();
+        var sent = 0;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => NativeWindowCloser.CloseAsync(
+            [target], cancellation.Token, _ => target, _ => { sent++; return true; }, TimeSpan.Zero,
+            _ => { cancellation.Cancel(); return true; }));
+        Assert.Equal(0, sent);
+    }
+
+    [Fact]
+    public async Task Handle_recycled_during_folder_validation_never_receives_close()
+    {
+        var target = Explorer(1);
+        var current = target;
+        var sent = 0;
+        await NativeWindowCloser.CloseAsync([target], CancellationToken.None,
+            _ => current, _ => { sent++; return true; }, TimeSpan.Zero,
+            _ => { current = Make(1, "chrome", "Replacement") with { ProcessId = 999 }; return true; });
+        Assert.Equal(0, sent);
     }
 
     [Fact]

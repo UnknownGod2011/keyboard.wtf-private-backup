@@ -189,8 +189,10 @@ public sealed class JarvisAutomationService : IDisposable
         if (target.Length == 0)
             return;
 
+        if (kind == "path" && result.TryGetValue("target_kind", out var targetKind)
+            && string.Equals(targetKind?.ToString(), "folder", StringComparison.Ordinal)) kind = "folder";
         var nativeWindowTitle = "";
-        if (kind is "folder" or "path")
+        if (kind == "path")
         {
             var expanded = Environment.ExpandEnvironmentVariables(target)
                 .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -201,12 +203,13 @@ public sealed class JarvisAutomationService : IDisposable
         {
             ["kind"] = kind,
             ["target"] = target,
-            ["native_window_title"] = nativeWindowTitle,
             ["cardinality"] = "one",
             ["instruction"] = kind == "link"
                 ? "The destination opened but no exact tab handle was returned. Do not infer a tab or window close from its URL; clarify the target when needed."
                 : "Use this exact target for the next compatible referential follow-up unless the user names another target.",
         };
+        if (nativeWindowTitle.Length > 0)
+            ((Dictionary<string, object>)result["referential_target"])["native_window_title"] = nativeWindowTitle;
     }
 
     private async Task<Dictionary<string, object>> ExecuteCoreAsync(
@@ -691,7 +694,8 @@ public sealed class JarvisAutomationService : IDisposable
             return null;
         if (!SmartFileSearchService.TryOpenSafe(path, out var error))
             return Logged("open_folder", path, false, error, supported: false);
-        return Logged("open_folder", path, true, $"Opened {Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar))}.");
+        return Logged("open_folder", path, true, $"Opened {Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar))}.",
+            extras: new() { ["path"] = path });
     }
 
     private async Task<Dictionary<string, object>> OpenFolderAsync(
@@ -714,14 +718,16 @@ public sealed class JarvisAutomationService : IDisposable
                     "open_folder",
                     expanded,
                     true,
-                    $"Opened the folder containing {Path.GetFileName(expanded)}.");
+                    $"Opened the folder containing {Path.GetFileName(expanded)}.",
+                    extras: new() { ["path"] = Path.GetDirectoryName(expanded) });
             }
             return Logged("open_folder", expanded, false, containingError, supported: false);
         }
         if (Directory.Exists(expanded))
         {
             if (SmartFileSearchService.TryOpenSafe(expanded, out var error))
-                return Logged("open_folder", expanded, true, $"Opened {Path.GetFileName(expanded.TrimEnd(Path.DirectorySeparatorChar))}.");
+                return Logged("open_folder", expanded, true, $"Opened {Path.GetFileName(expanded.TrimEnd(Path.DirectorySeparatorChar))}.",
+                    extras: new() { ["path"] = expanded });
             return Logged("open_folder", expanded, false, error, supported: false);
         }
 
@@ -753,7 +759,8 @@ public sealed class JarvisAutomationService : IDisposable
                     "Opening executable, script, installer, shortcut, or registry files by path is blocked. Ask me to open an installed app by name instead.",
                     supported: false);
             if (SmartFileSearchService.TryOpenSafe(expanded, out var error))
-                return Logged("open_path", expanded, true, $"Opened {Path.GetFileName(expanded.TrimEnd(Path.DirectorySeparatorChar))}.");
+                return Logged("open_path", expanded, true, $"Opened {Path.GetFileName(expanded.TrimEnd(Path.DirectorySeparatorChar))}.",
+                    extras: new() { ["path"] = expanded, ["target_kind"] = Directory.Exists(expanded) ? "folder" : "file" });
             return Logged("open_path", expanded, false, error, supported: false);
         }
 
@@ -797,6 +804,7 @@ public sealed class JarvisAutomationService : IDisposable
                     extras: new()
                     {
                         ["path"] = search.Best.Path,
+                        ["target_kind"] = search.Best.IsDirectory ? "folder" : "file",
                         ["score"] = Math.Round(search.Best.Score, 3),
                         ["searched"] = search.SearchSummary,
                     });
@@ -851,18 +859,24 @@ public sealed class JarvisAutomationService : IDisposable
         if (normalized is "close" or "quit" or "exit")
         {
             var all = string.Equals(scope, "all", StringComparison.OrdinalIgnoreCase);
-            var targets = NativeWindowCloser.Select(NativeWindowCloser.Enumerate(), appName, all, windowId, GetForegroundWindow());
+            var windows = NativeWindowCloser.Enumerate();
+            var folderPaths = NativeWindowCloser.TryNormalizeFolderPath(appName, out _)
+                ? NativeWindowCloser.ReadExplorerFolderPaths(windows, token) : null;
+            var targets = NativeWindowCloser.Select(windows, appName, all, windowId, GetForegroundWindow(), folderPaths);
             if (targets.Length == 0 || (!all && targets.Length > 1))
                 return Result(false,
                     targets.Length == 0 ? "No matching native window was found. No browser tabs or other windows were changed."
                         : "Several windows match. Which window, or all matching windows, should I close?",
                     needsClarification: true,
                     extras: new() { ["windows"] = targets.Select(w => new { window_id = w.Id, w.Title, w.ProcessName }).ToArray() });
-            var outcome = await NativeWindowCloser.CloseAsync(targets, token);
+            var outcome = await NativeWindowCloser.CloseAsync(targets, token,
+                validateTarget: folderPaths == null ? null : target =>
+                    NativeWindowCloser.Select([target], appName, all, windowId, IntPtr.Zero,
+                        NativeWindowCloser.ReadExplorerFolderPaths([target], token)).Length == 1);
             AppLog.Info($"Jarvis native window close verified: targets={targets.Length} requested={outcome.Requested} remaining={outcome.Remaining.Length}");
             return Logged("window_action", $"close {appName}", outcome.Succeeded,
                 outcome.Succeeded ? $"Closed the {targets.Length} requested window(s)."
-                    : $"{targets.Length - outcome.Remaining.Length} of {targets.Length} requested windows closed; {outcome.Remaining.Length} remain open, possibly waiting for an application dialog.",
+                    : $"{targets.Length - outcome.Remaining.Length} of {targets.Length} requested windows closed; {outcome.Remaining.Length} remain open, possibly changed or waiting for an application dialog.",
                 extras: new()
                 {
                     ["requested_count"] = targets.Length,

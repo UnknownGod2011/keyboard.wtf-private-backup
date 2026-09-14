@@ -23,7 +23,7 @@ public sealed class JarvisShortcutTests
         var reference = Assert.IsType<Dictionary<string, object>>(result["referential_target"]);
         Assert.Equal("folder", reference["kind"]);
         Assert.Equal(path, reference["target"]);
-        Assert.Equal("Example Folder", reference["native_window_title"]);
+        Assert.DoesNotContain("native_window_title", reference.Keys);
         Assert.Equal("one", reference["cardinality"]);
     }
 
@@ -58,6 +58,18 @@ public sealed class JarvisShortcutTests
 
         Assert.DoesNotContain("referential_target", failed.Keys);
         Assert.DoesNotContain("referential_target", unrelated.Keys);
+    }
+
+    [Fact]
+    public void Open_path_folder_receipt_keeps_resolved_path_and_does_not_advertise_a_shared_title()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "A", "notes");
+        var result = new Dictionary<string, object> { ["ok"] = true, ["path"] = path, ["target_kind"] = "folder" };
+        JarvisAutomationService.AttachReferentialTarget("open_path", JsonSerializer.SerializeToElement(new { path = "notes" }), result);
+        var target = Assert.IsType<Dictionary<string, object>>(result["referential_target"]);
+        Assert.Equal("folder", target["kind"]);
+        Assert.Equal(path, target["target"]);
+        Assert.DoesNotContain("native_window_title", target.Keys);
     }
 
     [Theory]

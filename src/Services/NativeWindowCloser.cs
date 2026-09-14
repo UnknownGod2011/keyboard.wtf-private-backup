@@ -41,7 +41,8 @@ internal static class NativeWindowCloser
         return windows.ToArray();
     }
 
-    internal static Window[] Select(Window[] windows, string target, bool all, string windowId, IntPtr foreground)
+    internal static Window[] Select(Window[] windows, string target, bool all, string windowId, IntPtr foreground,
+        IReadOnlyDictionary<IntPtr, string[]> explorerPaths = null)
     {
         var name = (target ?? "").Trim().ToLowerInvariant();
         Window[] ById(IEnumerable<Window> candidates) => candidates
@@ -49,6 +50,14 @@ internal static class NativeWindowCloser
         if (name.Length == 0)
             return !string.IsNullOrWhiteSpace(windowId) ? ById(windows)
                 : all ? [] : windows.Where(w => w.Handle == foreground).ToArray();
+
+        // A folder path is identity, not a title hint. Never close another
+        // same-named folder, or a whole multi-tab window containing other paths.
+        if (TryNormalizeFolderPath(target, out var folderPath))
+            return ById(windows.Where(w => w.IsExplorer && explorerPaths != null
+                && explorerPaths.TryGetValue(w.Handle, out var paths) && paths.Length > 0
+                && paths.All(path => TryNormalizeFolderPath(path, out var actual)
+                    && string.Equals(folderPath, actual, StringComparison.OrdinalIgnoreCase))));
 
         // These are OS app identities, not natural-language command examples.
         var process = name switch
@@ -65,14 +74,7 @@ internal static class NativeWindowCloser
         if (byProcess.Length > 0)
             return ById(byProcess);
 
-        // A successful open receipt may carry the canonical local path while
-        // Explorer exposes only its basename as the native window title.
-        // Normalize that representation here; this remains title matching and
-        // never grants a path or webpage authority over a browser window.
-        var nativeTitle = (target ?? "").Trim()
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (nativeTitle.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]) >= 0)
-            nativeTitle = Path.GetFileName(nativeTitle);
+        var nativeTitle = (target ?? "").Trim();
 
         // A website title is not authority to close its entire browser window.
         // Resolve native titles only. Ambiguous matches are returned to the caller.
@@ -84,12 +86,83 @@ internal static class NativeWindowCloser
                         StringComparison.OrdinalIgnoreCase)))));
     }
 
+    internal static bool TryNormalizeFolderPath(string value, out string normalized)
+    {
+        normalized = "";
+        try
+        {
+            var expanded = Environment.ExpandEnvironmentVariables(value ?? "").Trim();
+            if (!Path.IsPathFullyQualified(expanded)) return false;
+            normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(expanded));
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    internal static IReadOnlyDictionary<IntPtr, string[]> ReadExplorerFolderPaths(Window[] snapshot, CancellationToken token)
+    {
+        var handles = snapshot.Where(w => w.IsExplorer).Select(w => w.Handle).ToHashSet();
+        var paths = new Dictionary<IntPtr, List<string>>();
+        if (handles.Count == 0) return new Dictionary<IntPtr, string[]>();
+        object shell = null, windows = null;
+        var timer = Stopwatch.StartNew();
+        void Check()
+        {
+            token.ThrowIfCancellationRequested();
+            if (timer.Elapsed > TimeSpan.FromSeconds(2))
+                throw new TimeoutException("Explorer folder identification took too long; no window was closed.");
+        }
+        try
+        {
+            Check();
+            shell = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application", throwOnError: true));
+            windows = ((dynamic)shell).Windows();
+            var count = (int)((dynamic)windows).Count;
+            for (var index = 0; index < count; index++)
+            {
+                object window = null;
+                try
+                {
+                    Check();
+                    window = ((dynamic)windows).Item(index);
+                    if (window == null) continue;
+                    var handle = new IntPtr(Convert.ToInt64(((dynamic)window).HWND));
+                    if (!handles.Contains(handle)) continue;
+                    if (!paths.TryGetValue(handle, out var locations)) paths[handle] = locations = [];
+                    // Unknown or virtual tabs must not authorize closing their
+                    // entire window merely because another tab matches.
+                    locations.Add("");
+                    var location = (string)((dynamic)window).LocationURL;
+                    locations[^1] = Uri.TryCreate(location, UriKind.Absolute, out var uri) && uri.IsFile
+                        ? uri.LocalPath : location;
+                    Check();
+                }
+                finally
+                {
+                    ReleaseShellObject(window);
+                }
+            }
+            Check();
+            return paths.ToDictionary(p => p.Key, p => p.Value.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+        }
+        finally { ReleaseShellObject(windows); ReleaseShellObject(shell); }
+    }
+
+    private static void ReleaseShellObject(object value)
+    {
+        if (value != null && Marshal.IsComObject(value)) Marshal.ReleaseComObject(value);
+    }
+
     internal static async Task<Outcome> CloseAsync(
         Window[] targets,
         CancellationToken token,
         Func<IntPtr, Window> read = null,
         Func<IntPtr, bool> requestClose = null,
-        TimeSpan? timeout = null)
+        TimeSpan? timeout = null,
+        Func<Window, bool> validateTarget = null)
     {
         read ??= Read;
         requestClose ??= handle => PostMessage(handle, 0x0010, IntPtr.Zero, IntPtr.Zero);
@@ -98,6 +171,8 @@ internal static class NativeWindowCloser
         foreach (var target in targets)
         {
             token.ThrowIfCancellationRequested();
+            if (validateTarget != null && !validateTarget(target))
+                continue; // The requested folder may have navigated elsewhere.
             if (!SameIdentity(target, read(target.Handle)))
                 continue; // Already closed, or handle recycled. Never touch its replacement.
             token.ThrowIfCancellationRequested();

@@ -35,7 +35,8 @@ public sealed class PaidLiveStartupPolicyTests
             source,
             StringComparison.OrdinalIgnoreCase);
         Assert.Contains("pronoun or demonstrative", source, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("path basename", source, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("preserve its full path", source, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("use its basename as app_name", source, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(
             "Never broaden a singular reference",
             source,
