@@ -328,7 +328,7 @@ public sealed class CommandRegistry
         }
     }
 
-    private bool TryResolveAuthoritativeToolRoute(string selectedTool, CancellationToken token)
+    private bool TryResolveAuthoritativeToolRoute(string selectedTool, JsonElement arguments, CancellationToken token)
     {
         // The Live tool dispatcher is the sole ordinary execution owner. A
         // transcript alone must not perform an action whose result the model
@@ -552,10 +552,15 @@ public sealed class CommandRegistry
         // A known keyboard.wtf Settings route is a complete local action. Run
         // it before browser classification and retain its authoritative receipt
         // so Gemini cannot launch a second browser task for the same turn.
-        if (SettingsSectionRegistry.TryResolveKeyboardWtfNavigationRequest(
-                userTurn,
-                out var settingsSection))
+        var localSettingsRequest = SettingsSectionRegistry.TryResolveKeyboardWtfNavigationRequest(
+            userTurn, out var settingsSection);
+        if (localSettingsRequest || selectedTool == "open_keyboard_wtf_settings")
         {
+            // Semantic tool selection can resolve a local section even when
+            // the user did not repeat the product/settings name. That same
+            // local owner must publish the result, not a second Browser task.
+            if (!localSettingsRequest)
+                settingsSection = GetString(arguments, "section");
             token.ThrowIfCancellationRequested();
             var settingsResult = OpenKeyboardWtfSettings(settingsSection);
             RecordAuthoritativePreRoute(
@@ -801,6 +806,45 @@ public sealed class CommandRegistry
         out string action,
         out bool explicitlyTargetsBrowserTask)
     {
+        if (TryParseBrowserTaskControlClause(text, out action, out explicitlyTargetsBrowserTask))
+            return true;
+
+        // A complete final imperative owns itself even after conversational
+        // context. Parse that sentence with the SAME control grammar, not a
+        // growing list of acknowledgements such as "never mind". Quoted text
+        // and colon-introduced discussion are not new command sentences.
+        var sentenceStart = 0;
+        var quoteEnd = '\0';
+        text ??= "";
+        for (var i = 0; i < text.Length; i++)
+        {
+            var character = text[i];
+            if (character is '\'' or '’' && i > 0 && i + 1 < text.Length
+                && char.IsLetterOrDigit(text[i - 1]) && char.IsLetterOrDigit(text[i + 1]))
+                continue; // Apostrophe within a word, not quotation.
+            if (quoteEnd != '\0')
+            {
+                if (character == quoteEnd) quoteEnd = '\0';
+                continue;
+            }
+            if (character is '"' or '\'' or '`' or '“' or '‘')
+                quoteEnd = character switch { '“' => '”', '‘' => '’', _ => character };
+            else if (character is '.' or '!' or '?' && i + 1 < text.Length && char.IsWhiteSpace(text[i + 1]))
+            {
+                var next = i + 1;
+                while (next < text.Length && char.IsWhiteSpace(text[next])) next++;
+                if (next < text.Length) sentenceStart = next;
+            }
+        }
+        return sentenceStart > 0 && quoteEnd == '\0'
+            && TryParseBrowserTaskControlClause(text[sentenceStart..], out action, out explicitlyTargetsBrowserTask);
+    }
+
+    private static bool TryParseBrowserTaskControlClause(
+        string text,
+        out string action,
+        out bool explicitlyTargetsBrowserTask)
+    {
         action = "";
         explicitlyTargetsBrowserTask = false;
         var remaining = (text ?? "").Trim();
@@ -873,7 +917,7 @@ public sealed class CommandRegistry
             // reinterpret that set as a foreground close-tab shortcut.
             var hasTabTargets = toolName == "browser_action" && args.ValueKind == JsonValueKind.Object && args.TryGetProperty("target_ids", out _);
             if (!hasTabTargets)
-                TryResolveAuthoritativeToolRoute(toolName, token);
+                TryResolveAuthoritativeToolRoute(toolName, args, token);
             if (TryGetPreRoutedToolResult(toolName, out var preRoutedResult))
                 return preRoutedResult;
 

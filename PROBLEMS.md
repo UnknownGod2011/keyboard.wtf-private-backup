@@ -135,30 +135,30 @@ Protect: Normal conversation while paused.
 ## P14 — Browser cancellation in every state
 Status: FIXED
 Expected: Planning/Running/Waiting/NeedsUserAction/Partial cancel once, clear UI/task/intervention, and execute nothing stale.
-Latest evidence: Real isolated Chromium/native-bridge test reproduced a write after desktop cancellation when the renderer resumed at the mutation boundary; worker heartbeat stayed healthy and its task lease was already cleared.
-Root cause: Cancellation was checked before queuing the renderer commit, not at actual page mutation; queued work could outlive the worker/desktop waiter. Earlier human control/publication defects also remain in this coherent repair.
-Fix: Parse existing control clauses, reach the existing coordinator immediately, queue only the receipt, and validate task/session/socket/turn ownership at publication; background notices cannot interrupt a live user turn.
-Evidence: Real isolated Chromium/native-bridge failing→passing paused-renderer replay; cancelled value never written, fresh task/replace/append/repeated groups pass with zero submit/reset. Source rejects stale Helper/content capabilities and wrong renderer identity. Desktop 1,071/backend 262 pass; installed Store/Jarvis acceptance remains open.
+Latest evidence: September 15 human reopens installed `8492daa`: “Never mind. Cancel browser automation.” was rejected at 21:31:57; actions continued until local cancel at 21:32:10.
+Root cause: The control parser required the entire utterance to begin with a control; ordinary preceding speech hid a complete final cancellation sentence. Earlier renderer mutation-boundary fix remains protected.
+Fix: Reuse the existing control grammar on the final unquoted sentence; no acknowledgement vocabulary, new cancellation owner or renderer change.
+Evidence: Three sentence-boundary cases failed before the fix; all 324 focused protocol/dispatch/screen cases now pass, including quoted/negated noncommands. Prior paused-renderer no-write proof retained; real installed first-cancel acceptance still OPEN.
 Touches: Browser coordinator/executor; Live/input boundary.
 Protect: Jarvis remains usable after cancel.
 
 ## P15 — Browser correctness constraints and visible completion
-Status: FIXED
+Status: INVESTIGATING
 Expected: Latest-by-publisher verifies publisher/freshness; useful page is preserved; Completed matches visible state.
-Latest evidence: Failing Selenium task `db996700...` preserved; repaired task `bd0b5de...` and two TestPages tasks reached Completed with independently matching field values and no submit/reset mistakes.
-Root cause: Verifier counted action words in labels as goals; Helper matched a select's stored value against its visible label. Both defects also exist in 1.4.17.
-Fix: Existing planner declares bounded final field checks; verifier checks every state on the current page, retaining earlier relevant receipts. Select evidence distinguishes selected label/value from available choices. Preserve first-navigation readiness fix.
-Evidence: `output/playwright/browser-real-sites`; 1,113 desktop/274 backend test cases pass; 11 adversarial field-state tests and Helper identity/label/option tests pass. Schema reduced after real-provider rejection, then both sites passed twice. Installed/Store acceptance pending.
+Latest evidence: September 15 human: real NASA oldest-video result reached, then repeated navigation before completion; Devpost prize-ranking task looped despite guidance. Real installed action trace preserved in `human-20260915-8492daa`; earlier form verifier fixes remain protected.
+Root cause: Ten checkpoints were joined into one 500-character planner entry, dropping newer progress; accepted guidance was also evicted by routine events. Contribution to the exact human loops still needs physical replay; prior field/option verifier fixes remain protected.
+Fix: Share the existing eight-entry/4,000-character budget between recent events, recent verified checkpoints and the latest accepted task guidance, including vision recovery. No larger prompt, new memory owner or completion heuristic.
+Evidence: Actual-payload checkpoint and guidance-loss failures reproduced then passed; reviewed full gates pass 1,163 desktop/262 backend. Earlier multi-site evidence remains in `output/playwright/browser-real-sites`; NASA/Devpost real task replay remains OPEN.
 Touches: Browser planner/coordinator/verifier.
 Protect: Generic behavior; no site-specific rules.
 
 ## P16 — Direct Settings and Browser opt-out
 Status: OPEN
 Expected: Internal Settings sections, URLs/apps/search/mappings remain direct; explicit Browser Automation opt-out is authoritative.
-Latest evidence: Exact installed `5d6d101` selected browser_action for last-tab plus explicit BA opt-out, with no Browser task. Command correctly failed the Helper capability check: Chrome still runs 2.1.26 although 2.1.27 is downloaded. Successful installed switch awaits Chrome relaunch (P39).
-Root cause: Browser-tab grammar was duplicated; both the direct parser and classifier missed a browser qualifier after the ordinal, so generic page-section routing won.
-Fix: Make the direct browser parser the classifier's single authority and accept an optional browser qualifier around an ordinal tab selection.
-Evidence: `repair-5d6d101/direct-browser-20260914` records one truthful spoken failure, no fallback action/BA task, clean shutdown and zero reservation. Prior TEST direct tab/search/URL/Settings proof retained; installed success still pending.
+Latest evidence: September 15 human: How to Use Jarvis Settings also started BA; 'close last 3 Chrome tabs' closed only one. Workflow exact-tab close passed; last-three selection remains OPEN, not permission for blind repeated Ctrl+W.
+Root cause: The model-selected internal Settings tool could be reclassified as webpage navigation when the transcript omitted product/settings words; its local result then lacked authoritative ownership.
+Fix: Resolve semantic Settings tool arguments through the existing local result owner, while explicit transcript section constraints retain precedence. Preserve earlier direct-tab parser correction and safe fixed-set closure.
+Evidence: Two real-owner tests failed before the fix and 271 routing/ownership/polish cases now pass. Installed local Settings→no-BA replay and last-three-tab handling remain OPEN.
 Touches: Direct-action intent/routing.
 Protect: Browser Automation still starts for real interactive webpage work.
 
@@ -275,10 +275,10 @@ Protect: No speculative rewrite.
 ## P28 — Exact current installer/install provenance
 Status: PHYSICALLY VERIFIED
 Expected: Installed bytes derive from the frozen source and exact hashed installer.
-Latest evidence: User installed frozen `5d6d101748008ee15dc6434e10ab2bf4d1dc59e8` after tool policy blocked unattended launch. EXE `51EA98FF...11637` matches package (314,813,902 bytes); installer `1F66AF29...4F4A67` is 84,293,690 bytes. Production profile hash remains `8506D843...5850`.
+Latest evidence: Installed frozen `8492daa5271d569f6d78f1187e5d69930a68a8d8` EXE `49D83807...CF7CD` matches package (314,817,998 bytes); installer `160DB01F...5C478` is 84,294,110 bytes. Production profile hash remains `8506D843...5850`.
 Root cause: Release-integrity requirement.
 Fix: Freeze source, build once, hash, install exact bytes and independently verify provenance.
-Evidence: `dist/verification/repair-5d6d101/provenance.json`; CI `34772211821`, 1,138 desktop/262 backend/12 real Firestore, clean-profile runtime and independent installed hash agree. Three installed folder/speaker samples plus clean conversation replay recorded; not final human acceptance.
+Evidence: `dist/verification/repair-8492daa/provenance.json`; CI `34855703571`, 1,146 desktop/262 backend/12 real Firestore, clean-profile runtime and independent installed hash agree. Physical P31 acceptance in progress; not final human acceptance.
 Touches: Build/install/provenance.
 Protect: Do not rebuild without a source defect.
 
@@ -309,7 +309,7 @@ Latest evidence: Dirty-source production-model replay resolves close-both to A/B
 Root cause: Native folder receipts/prompts reduce canonical paths to shared titles and window_action permits a missing target; distinct folders lose identity. Earlier workflow/tab receipt ownership fixes remain protected.
 Fix: Preserve canonical folder receipts; require explicit tool target; resolve full paths through Shell windows at the existing native owner, revalidate before posting close, and refuse mixed/unknown tabs. No basename fallback, new owner or routing grammar. Existing workflow/Chrome receipt fixes retained.
 Evidence: `production-folder-trace/current-source-20260914` uses real production model/billing and current dispatcher with simulated effects; native-path-read-three/native-path-close show actual paths and two verified closes, unrelated preserved, cancellation/cleanup pass. Shell also exposes the real Home+folder tabs, including unknown Home path. 112 focused and 1,146 desktop/262 backend/12 Firestore pass.
-Next: Freeze this coherent correction, install exact bytes, then repeat natural references/one completion with Chrome present; final microphone acceptance remains separate.
+Next: Frozen `8492daa` is installed byte-identically; repeat natural references/one completion with Chrome present. Final microphone acceptance remains separate.
 Touches: Live tool instruction/context; recent action ownership.
 Protect: Deterministic native Explorer close and general Gemini reasoning.
 
@@ -393,12 +393,13 @@ Touches: Helper communication and action ownership only if proven.
 Protect: Protocol 2.1.21, native trust/registration, original 1.4.17 compatibility; do not publish unaccepted Helper bytes.
 
 ## P40 — Screen Analysis and provider-neutral UI
-Status: FIXED
-Expected: Installed screen analysis works; ordinary progress says analyzing/polishing without internal provider branding.
-Latest evidence: VoiceCaptureService exposes 'Gemini is cleaning up your words'; full shipping UI search and screen acceptance pending.
-Fix: Removed provider branding from ordinary screen/writing/command progress and Jarvis voice labels; diagnostic model/config/log identities retained. Full screen acceptance pending.
-Evidence: Actual installed screen/writing UI proof required.
-Touches: User-facing resources/progress UI.
+Status: INVESTIGATING
+Expected: Screen inspection responds promptly and never blocks subsequent listening/conversation; progress remains provider-neutral.
+Latest evidence: Highest priority September 15 human: very slow screen analysis then silent/unresponsive conversation. Exact 8492daa request at 21:32:24 spent 70.75s in provider; local farewell at 21:33:29 cancelled before backend completed at 21:33:35.
+Root cause: Provider took 70.75s while the serial tool owner waited; 861 reasoning tokens left only 35 answer tokens within the 900-token allowance. Final farewell still reached the microphone/socket; no volume mutation is evidenced.
+Fix: Source bounds screen analysis to 20s and permits the existing server limit of 2,048 output tokens; the existing UI revision protects newer conversation state and ends stale analysis feedback. Fast successful production response and post-screen voice recovery remain OPEN.
+Evidence: `human-20260915-8492daa`: 900-token answers truncated; 2,048 completed in 8.16–10.03s. Developer-only lower-thinking probes completed in 5.32–5.79s; earlier 503s retained. Reviewed full gates pass 1,163 desktop/262 backend; no production model/config change or installed screen PASS claimed.
+Touches: Screen guidance and existing tool/conversation handoff only where proven.
 Protect: Internal logs, billing labels/prices and provider routing.
 
 ## P41 — Bounded model and long-term cost audit (after core repair)

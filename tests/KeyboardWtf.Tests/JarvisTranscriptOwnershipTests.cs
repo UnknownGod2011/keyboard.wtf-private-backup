@@ -9,6 +9,39 @@ namespace KeyboardWtf.Tests;
 public sealed class JarvisTranscriptOwnershipTests : IDisposable
 {
     [Theory]
+    [InlineData("Navigate to the How to Use Jarvis section.")]
+    [InlineData("Please open the hotkeys section.")]
+    public async Task Semantic_internal_settings_tool_retains_local_ownership(string text)
+    {
+        using var bridge = new BrowserHelperBridge();
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        typeof(BrowserHelperBridge).GetMethod("ProcessMessage", flags)!.Invoke(bridge,
+        [JsonSerializer.Serialize(new { type = "hello", helper = new {
+            extensionId = "gojdebdikepkpapmnggeljneamjdigbh",
+            serviceWorkerVersion = "2.1.21", contentScriptVersion = "2.1.21",
+            activeTabFresh = true, commandChannelReady = true, commandAuthoritySupported = true,
+            activeUrl = "https://example.org/", sessionId = "test-session",
+        } })]);
+        var settings = new SettingsService(Path.Combine(_directory, "local-only.json"));
+        settings.Current.BrowserAutomationEnabled = true;
+        settings.Current.BrowserAutomationConsentVersion = SettingsService.CurrentBrowserAutomationConsentVersion;
+        using var planner = new BrowserAutomationPlanner();
+        using var coordinator = new BrowserAutomationCoordinator(settings, new NotificationService(null), bridge, planner);
+        var commands = new CommandRegistry(null, null, null, settings, new NotificationService(null), browserAutomation: coordinator);
+        commands.ObserveJarvisTranscript(text, CancellationToken.None);
+        // Deliberately invalid section prevents a real Settings window opening
+        // in the unit test. Even a local validation failure cannot authorize BA.
+        var result = await commands.ExecuteJarvisToolAsync("open_keyboard_wtf_settings",
+            JsonSerializer.SerializeToElement(new { section = "nonexistent-test-section" }), CancellationToken.None);
+        Assert.False(coordinator.Snapshot().CanCancel);
+        Assert.Contains("section does not exist", result["message"].ToString());
+        var alternate = await commands.ExecuteJarvisToolAsync("browser_automation",
+            JsonSerializer.SerializeToElement(new { request = text }), CancellationToken.None);
+        Assert.Equal(true, alternate["duplicate_suppressed"]);
+        Assert.False(coordinator.Snapshot().CanCancel);
+    }
+
+    [Theory]
     [InlineData("open_url", "Separately, open https://example.org in a new tab. Leave the form task paused.")]
     [InlineData("open_url", "Could you also open https://example.org? Keep the form task on hold.")]
     [InlineData("browser_automation_status", "The project reference is https://example.org; what is the form status?")]

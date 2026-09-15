@@ -2693,6 +2693,37 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Accepted_task_guidance_survives_event_churn_within_the_same_prompt_budget()
+    {
+        var guidance = new[] { "User guidance: Use the site's ordering control rather than another search.",
+            "Authoritative user skip guidance: Leave the optional notes unchanged." };
+        var history = guidance.Concat(Enumerable.Range(1, 30).Select(index => $"history-{index}")).ToArray();
+        var checkpoints = Enumerable.Range(1, 6).Select(index => $"verified-step-{index}").ToArray();
+        var plannerHistory = BrowserAutomationCoordinator.BuildPlannerHistory(history, checkpoints);
+        var prompt = BrowserAutomationPlanner.BuildPrompt("Complete the page task", new(), plannerHistory, []);
+        foreach (var item in guidance) Assert.Contains(item, prompt);
+        Assert.Contains("history-30", prompt);
+        Assert.Contains("verified-step-6", prompt);
+        Assert.True(plannerHistory.Count <= 8);
+        Assert.True(plannerHistory.Sum(item => item.Length) <= 4000);
+    }
+
+    [Fact]
+    public void Actual_planner_payload_preserves_recent_checkpoints_without_growing_its_history_budget()
+    {
+        var checkpoints = Enumerable.Range(1, 8)
+            .Select(index => $"verified-step-{index}: " + new string((char)('a' + index), 300)).ToArray();
+        var history = Enumerable.Range(1, 20).Select(index => $"history-{index}").ToArray();
+        var plannerHistory = BrowserAutomationCoordinator.BuildPlannerHistory(history, checkpoints);
+        var prompt = BrowserAutomationPlanner.BuildPrompt("Open the requested ordered item", new(), plannerHistory, []);
+        foreach (var index in Enumerable.Range(5, 4))
+            Assert.Contains($"verified-step-{index}:", prompt);
+        Assert.Contains("history-20", prompt);
+        Assert.True(plannerHistory.Count <= 8);
+        Assert.True(plannerHistory.Sum(item => item.Length) <= 4000);
+    }
+
+    [Fact]
     public void Strong_verified_checkpoints_are_kept_in_every_planner_window()
     {
         var history = Enumerable.Range(1, 20).Select(index => $"history-{index}").ToArray();
@@ -2708,10 +2739,8 @@ public sealed class BrowserAutomationProtocolTests
 
         Assert.Equal(8, plannerHistory.Count);
         Assert.Contains("history-20", plannerHistory);
-        Assert.Contains(
-            plannerHistory,
-            item => item.Contains("range-start", StringComparison.Ordinal)
-                && item.Contains("range-end", StringComparison.Ordinal));
+        Assert.Contains(plannerHistory, item => item.Contains("range-start", StringComparison.Ordinal));
+        Assert.Contains(plannerHistory, item => item.Contains("range-end", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -3155,6 +3184,13 @@ public sealed class BrowserAutomationProtocolTests
     [InlineData("Stop; please pause the browser task.", true)]
     [InlineData("Cancel and stop the automation task.", true)]
     [InlineData("Stop. Then cancel the browser task.", true)]
+    [InlineData("Never mind. Cancel browser automation.", true)]
+    [InlineData("That didn't work. Please stop the browser task.", true)]
+    [InlineData("We have enough results! Pause browser automation.", true)]
+    [InlineData("She said 'Never mind. Cancel browser automation.'", false)]
+    [InlineData("Read this: \"Never mind. Cancel browser automation.\"", false)]
+    [InlineData("That didn't work. Don't cancel browser automation.", false)]
+    [InlineData("Should I say cancel browser automation?", false)]
     [InlineData("Stop, don't cancel browser automation.", false)]
     [InlineData("He said: cancel browser automation.", false)]
     [InlineData("Explain this: cancel browser automation.", false)]

@@ -12,6 +12,10 @@ using KeyboardWtf.Services.PaidStaging;
 
 public sealed class GeminiScreenGuidanceService : IDisposable
 {
+    // Thinking and visible output share this limit. 900 left only 35 answer
+    // tokens in the human failure; stay within the existing server route cap.
+    internal const int OutputTokenLimit = 2048;
+    internal static readonly TimeSpan AnalysisTimeout = TimeSpan.FromSeconds(20);
     private static readonly string[] ModelCandidates =
     [
         "gemini-2.5-flash",
@@ -35,19 +39,54 @@ public sealed class GeminiScreenGuidanceService : IDisposable
         KeyboardWtfState.SetUi(VoiceUiPhase.Executing, "Capturing screen", "One-time capture approved. Nothing is saved.");
         var image = CaptureScreenJpeg();
         token.ThrowIfCancellationRequested();
-        KeyboardWtfState.SetUi(VoiceUiPhase.Thinking, "Analyzing screen", "Analyzing your screen...");
+        return await CompleteAnalysisAsync(
+            analysisToken => AnalyzeCapturedImageAsync(request, image, analysisToken), token);
+    }
 
+    internal static async Task<string> CompleteAnalysisAsync(
+        Func<CancellationToken, Task<string>> analyze,
+        CancellationToken token,
+        TimeSpan? timeout = null)
+    {
+        token.ThrowIfCancellationRequested();
+        var uiRevision = KeyboardWtfState.SetUi(VoiceUiPhase.Thinking, "Analyzing screen", "Analyzing your screen...");
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(timeout ?? AnalysisTimeout);
+        try
+        {
+            // A slow provider must not hold the serial tool owner indefinitely.
+            // Only this waiter publishes UI; a late result cannot overwrite a
+            // newer conversation after cancellation/timeout.
+            var text = await analyze(deadline.Token).WaitAsync(deadline.Token);
+            deadline.Token.ThrowIfCancellationRequested();
+            KeyboardWtfState.TrySetUiIfRevision(uiRevision, VoiceUiPhase.Done, "Guidance ready", Limit(text, 120));
+            return text;
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested && deadline.IsCancellationRequested)
+        {
+            const string message = "Screen analysis took too long. Jarvis is still available; no screen action was performed.";
+            KeyboardWtfState.TrySetUiIfRevision(uiRevision, VoiceUiPhase.Error, "Screen analysis timed out", message);
+            throw new TimeoutException(message);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            KeyboardWtfState.TrySetUiIfRevision(uiRevision, VoiceUiPhase.Error, "Screen analysis failed", "The approved screen capture could not be analyzed.");
+            throw;
+        }
+    }
+
+    private async Task<string> AnalyzeCapturedImageAsync(string request, byte[] image, CancellationToken token)
+    {
         if (_paidAccount?.Enabled == true)
         {
             var response = await _paidAccount.GenerateAsync(
                 BuildPrompt(request),
                 null,
-                900,
+                OutputTokenLimit,
                 null,
                 new[] { new PaidInlineImage("image/jpeg", Convert.ToBase64String(image)) },
                 "screen-guidance",
                 token);
-            KeyboardWtfState.SetUi(VoiceUiPhase.Done, "Guidance ready", Limit(response.Text, 120));
             return response.Text;
         }
 
@@ -131,7 +170,7 @@ public sealed class GeminiScreenGuidanceService : IDisposable
             generationConfig = new
             {
                 temperature = 0.15,
-                maxOutputTokens = 900,
+                maxOutputTokens = OutputTokenLimit,
             },
         };
 
@@ -148,7 +187,6 @@ public sealed class GeminiScreenGuidanceService : IDisposable
         var text = ExtractText(responseBody);
         if (string.IsNullOrWhiteSpace(text))
             throw new InvalidDataException("Screen analysis returned no guidance.");
-        KeyboardWtfState.SetUi(VoiceUiPhase.Done, "Guidance ready", Limit(text, 120));
         return text;
     }
 

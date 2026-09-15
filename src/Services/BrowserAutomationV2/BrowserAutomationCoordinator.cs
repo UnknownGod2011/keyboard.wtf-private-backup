@@ -1165,7 +1165,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                     var visualDecision = await _planner.PlanWithVisionAsync(
                         runtime.Request,
                         runtime.Page,
-                        runtime.History,
+                        BuildPlannerHistory(runtime.History, runtime.VerifiedCheckpoints),
                         capture.ScreenshotDataUrl,
                         _settings.Current.BrowserAutomationModel,
                         token);
@@ -1968,13 +1968,24 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         IReadOnlyList<string> history,
         IReadOnlyList<string> verifiedCheckpoints)
     {
-        var result = (history ?? Array.Empty<string>()).TakeLast(7).ToList();
-        if (verifiedCheckpoints?.Count > 0)
-        {
-            result.Add(
-                "PRESERVED VERIFIED CHECKPOINTS — do not repeat, reset, or navigate behind these unless live evidence proves one is wrong: "
-                + string.Join(" | ", verifiedCheckpoints.TakeLast(10)));
-        }
+        // The planner accepts eight 500-character entries. Joining all
+        // checkpoints into one entry discarded the newest progress when that
+        // entry was truncated. Share the SAME budget between recent events
+        // and individual verified checkpoints instead of enlarging the prompt.
+        var checkpoints = (verifiedCheckpoints ?? Array.Empty<string>()).TakeLast(4).ToArray();
+        var events = history ?? Array.Empty<string>();
+        // These prefixes are written only by the existing accepted-guidance
+        // owner. Ordinary page/planner events must not evict the user's latest
+        // guidance; no raw conversation or new memory store is introduced.
+        static bool IsGuidance(string item) => item.StartsWith("User guidance:", StringComparison.Ordinal)
+            || item.StartsWith("Latest explicit user correction:", StringComparison.Ordinal)
+            || item.StartsWith("Authoritative user skip guidance:", StringComparison.Ordinal);
+        var guidance = events.Where(IsGuidance).TakeLast(2).ToArray();
+        var result = events.Where(item => !IsGuidance(item)).TakeLast(8 - checkpoints.Length - guidance.Length)
+            .Select(item => BrowserAutomationText.Truncate(item, 500)).ToList();
+        result.AddRange(checkpoints.Select(item => BrowserAutomationText.Truncate(
+            "Verified checkpoint — preserve unless live evidence disproves it: " + item, 500)));
+        result.AddRange(guidance.Select(item => BrowserAutomationText.Truncate(item, 500)));
         return result;
     }
 
