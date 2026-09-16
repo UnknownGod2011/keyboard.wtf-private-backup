@@ -113,12 +113,12 @@ Touches: Browser coordinator/runtime generation.
 Protect: Never adopt unrelated foreground tabs automatically.
 
 ## P12 — Form write correctness
-Status: INVESTIGATING
+Status: PHYSICALLY VERIFIED
 Expected: Context values target the correct group once; replace/append explicit; no duplicate writes or unrequested Clear/Reset. Release proof spans different real-site DOMs, not fixtures alone.
-Latest evidence: Exact installed `b4308aa` was asked to set an editable Selenium Text input and a disabled input. It set only the editable field, then falsely declared `Completed` and rewrote the summary as though leaving the disabled field unchanged had been requested. The screenshot and task trace retain the mismatch; no submit/reset occurred.
+Latest evidence: Exact installed `b4308aa` was asked to set an editable Selenium Text input and a disabled input. It set only the editable field, then falsely declared `Completed` and rewrote the summary as though leaving the disabled field unchanged had been requested. Exact rebuilt/installed `f3d043a` replayed the same two-field contract with a fresh value, set only the editable field, visibly left the disabled field unchanged, and truthfully terminated `Partial`: `Only 1 of 2 explicitly requested form mutation steps have distinct final-state checks.` No submit/reset occurred.
 Root cause: The form verifier proved every final-state check declared by the planner but did not compare that declared set with the user's explicit form-mutation clauses. Omitting a requested field therefore shrank the planner's own completion contract. Earlier field identity/write/group fixes remain protected.
 Fix: At the existing terminal verifier, require at least one distinct final-field check for each explicit form-mutation clause before validating the declared states. Count clauses rather than raw action words so labels such as `Dropdown (select)` and quoted payloads do not inflate the contract; no field-name grammar or new owner.
-Evidence: Installed failure `repair-b4308aa/p14-partial-disabled-attempt-b4308aa`; pre-fix regression fails and corrected source passes 44 verifier, 580 Browser/ownership/lifecycle and 1,180 desktop tests. Exact rebuilt/installed replay remains OPEN. Earlier real Selenium/TestPages and human Google Form proof retained; no submissions.
+Evidence: Installed failure `repair-b4308aa/p14-partial-disabled-attempt-b4308aa`; corrected exact-installed replay `repair-f3d043a/p12-omitted-disabled-field-replay` with state trace, visible screenshot and offline local Whisper transcript. Pre-fix regression fails and corrected source passes 44 verifier, 580 Browser/ownership/lifecycle and 1,180 desktop tests. Earlier real Selenium/TestPages and human Google Form proof retained; no submissions.
 Touches: Helper metadata; planner/executor/verification.
 Protect: Do not submit test forms.
 
@@ -133,22 +133,22 @@ Touches: Jarvis/Browser intervention bridge.
 Protect: Normal conversation while paused.
 
 ## P14 — Browser cancellation in every state
-Status: FIXED
+Status: PHYSICALLY VERIFIED
 Expected: Planning/Running/Waiting/NeedsUserAction/Partial cancel once, clear UI/task/intervention, and execute nothing stale.
-Latest evidence: Exact installed `b4308aa` cancelled Planning from the complete final sentence in 12ms and Settings-owned ReadingPage, Executing, WaitingForPage and NeedsUserAction in 10–12ms. Each remained Cancelled through a normal follow-up, cleared intervention/cancel authority, restored mute and reservations, and the Executing screenshot proves no pending text mutation landed.
+Latest evidence: Exact installed `b4308aa` cancelled Planning from the complete final sentence in 12ms and Settings-owned ReadingPage, Executing, WaitingForPage and NeedsUserAction in 10–12ms. Exact installed `f3d043a` cancelled a genuine `Partial` task in 9ms. Each remained Cancelled through a normal follow-up, cleared intervention/cancel authority, restored mute and reservations; the Executing screenshot proves no pending text mutation landed and the Partial replay remained terminal.
 Root cause: The control parser required the entire utterance to begin with a control; ordinary preceding speech hid a complete final cancellation sentence. Earlier renderer mutation-boundary fix remains protected.
 Fix: Reuse the existing control grammar on the final unquoted sentence; no acknowledgement vocabulary, new cancellation owner or renderer change.
-Evidence: `repair-b4308aa/p14-planning-final-sentence-b4308aa`, `p14-reading-page-b4308aa-r2`, `p14-executing-b4308aa`, `p14-waiting-page-b4308aa`, `p14-needs-user-action-b4308aa`; older `repair-5fddef4/*final-sentence`. Partial-state physical cancellation and human ASR remain OPEN; source matrix covers Partial and silent session cleanup.
+Evidence: `repair-b4308aa/p14-planning-final-sentence-b4308aa`, `p14-reading-page-b4308aa-r2`, `p14-executing-b4308aa`, `p14-waiting-page-b4308aa`, `p14-needs-user-action-b4308aa`; `repair-f3d043a/p12-omitted-disabled-field-replay` proves Partial cancellation plus continued Jarvis speech; older `repair-5fddef4/*final-sentence`. Human microphone ASR remains in final acceptance, not source/runtime cancellation ownership.
 Touches: Browser coordinator/executor; Live/input boundary.
 Protect: Jarvis remains usable after cancel.
 
 ## P15 — Browser correctness constraints and visible completion
 Status: INVESTIGATING
 Expected: Latest-by-publisher verifies publisher/freshness; useful page is preserved; Completed matches visible state.
-Latest evidence: Exact installed `b4308aa` NASA replay completed correctly in three plans, but the later disabled-field form task proved a distinct false `Completed` path: one of two explicit field outcomes was omitted from planner completion checks and never verified.
-Root cause: The NASA cross-sentence source extraction defect is fixed. The new generic form defect was planner-defined coverage: terminal verification validated all declared checks without proving that the declaration covered each explicit user mutation clause.
-Fix: Preserve the ordered-source correction and shared bounded history. At the same verifier boundary, require distinct declared form-state coverage for explicit mutation clauses before accepting the final page. No site-specific rule, prompt expansion or new owner.
-Evidence: NASA failure/pass: `repair-5fddef4/nasa-oldest-20260916`, `repair-b4308aa/nasa-oldest-p15-after`. False completion: `repair-b4308aa/p14-partial-disabled-attempt-b4308aa` plus failing→passing focused regression; corrected source passes 1,180 desktop and 580 Browser/ownership/lifecycle tests. Rebuilt exact-installed form replay and broader distinct-site acceptance remain OPEN.
+Latest evidence: Exact installed `b4308aa` NASA replay completed correctly in three plans. Exact installed `f3d043a` rejects the disabled-field false-completion path, but two Devpost prize-sort runs exposed a separate real identity defect: a plan declaring the `Prize amount` control carried a volatile ID that now identified `Student organization`; the coordinator silently replaced the declared name and clicked the wrong live control.
+Root cause: NASA source extraction and form coverage are fixed. At action grounding, an exact renderer ID outranked contradictory declared semantics. A recycled/stale ID could therefore redirect a correctly described action to an unrelated live control before receipt verification.
+Fix: Preserve ordered-source, history and form verification. At the existing action-identity boundary, accept a renderer ID only when its live semantic name is compatible; otherwise fall through to the existing unique name/role grounding and clear a contradicted ID when no semantic target exists. No site vocabulary, prompt expansion or new owner.
+Evidence: NASA failure/pass: `repair-5fddef4/nasa-oldest-20260916`, `repair-b4308aa/nasa-oldest-p15-after`. Form boundary: `repair-b4308aa/p14-partial-disabled-attempt-b4308aa`, `repair-f3d043a/p12-omitted-disabled-field-replay`. Devpost failures: `repair-f3d043a/p15-devpost-highest-prize`, `p15-devpost-prize-sort-explicit`; log receipt proves declared prize-sort action was grounded to `Student organization`. Two regressions fail before and pass after; 359 focused and 1,182 desktop tests pass. Rebuilt exact-installed Devpost replay remains OPEN.
 Touches: Browser planner/coordinator/verifier.
 Protect: Generic behavior; no site-specific rules.
 

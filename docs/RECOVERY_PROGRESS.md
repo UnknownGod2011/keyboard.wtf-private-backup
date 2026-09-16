@@ -1,8 +1,8 @@
 # Recovery progress
 
-- Checkpoint: `paid-staging` product source `b4308aa03840d131693df2da024764e593883ffb`; installer `D3D984C972DA11C384F02CEF19576DFD181DDEAE89F93522A20717E6F5524BD3`; installed/package EXE `7BE04C1B875CB120C7C339FF13BB424F657EA7438C5F1FBAD3273B3BEB1A4655`.
-- Current problem: P12/P15 omitted form-field completion coverage.
-- Proven root cause: terminal form verification accepted every planner-declared check but did not prove the planner declared each explicit user mutation clause; one of two requested Selenium fields was omitted and false `Completed` passed.
-- Fix made: dirty source requires distinct final-field checks to cover the conservative count of explicit form-mutation clauses; clause boundaries exclude navigation, quoted payloads and action words inside labels.
-- Verification: Exact installed `b4308aa` failure retained with screenshot/task/log. Regression fails before and passes after; 44 verifier, 580 Browser/ownership/lifecycle and 1,180 desktop tests pass. Rebuild/install/replay is next. P40 is physically verified. P14 installed Planning/Reading/Executing/Waiting/NeedsUserAction cancellation passes; Partial awaits the corrected candidate.
-- Remaining: finish P12/P15 installed replay; P14 Partial and P34 installed matrix; broader P10-P16 web/direct behavior; P21/P38; long real microphone P04/P08/P09/P20/P32/P37; P23/P43; P41/P42; final P25-P30/P44 audit, frozen candidate, and human acceptance.
+- Checkpoint: `paid-staging` source `f3d043aa8b1749ffb7b62d2960ccd0122ebd37e1`; installer `8703C1E27C2D2B900B72B58E6AD6561295F0996D5D11F769F8F108E7138BAE88`; installed/package EXE `EB6F5775F4A26ABEC76BE3C9F077D4D213FC97DF551597F23343E92A8B9B4E5A`.
+- Current problem: P15 Devpost distinct-site action identity, then P34 installed guidance matrix.
+- Proven root cause: a volatile renderer ID pointing to `Student organization` outranked the plan's declared `Prize amount` name; grounding silently rewrote the semantic identity and clicked the wrong live control.
+- Fix made: the existing identity boundary accepts an ID only when its live name is compatible, otherwise uniquely re-grounds by declared name/role and clears a contradicted ID with no semantic match.
+- Verification: Exact installed `f3d043a` failures retained; two regressions fail before and pass after; 359 focused and all 1,182 desktop tests pass. Rebuild/install/exact Devpost replay is next. P12/P14/P40 are physically verified.
+- Remaining: P15 distinct-site acceptance; P34 installed matrix; broader P10-P16 web/direct behavior; P21/P38; long real microphone P04/P08/P09/P20/P32/P37; P23/P43; P41/P42; final P25-P30/P44 audit, frozen candidate, and human acceptance.

@@ -2668,6 +2668,70 @@ public sealed class BrowserAutomationProtocolTests
         Assert.Equal("Monday, September 7, 2026", action.TargetName);
     }
 
+    [Fact]
+    public void Grounded_action_identity_does_not_let_a_stale_id_override_the_declared_control_name()
+    {
+        var wrong = new BrowserControl
+        {
+            Id = "volatile-control-1",
+            Role = "span",
+            AccessibleName = "Student organization",
+            Visible = true,
+            Enabled = true,
+        };
+        var prizeSort = new BrowserControl
+        {
+            Id = "volatile-control-2",
+            Role = "button",
+            AccessibleName = "Prize amount",
+            Visible = true,
+            Enabled = true,
+        };
+        var page = new BrowserPageSnapshot { Controls = [wrong, prizeSort] };
+        var action = new BrowserPlannerAction
+        {
+            Type = "click",
+            TargetId = wrong.Id,
+            TargetRole = "button",
+            TargetName = "Prize amount",
+        };
+
+        var control = BrowserAutomationCoordinator.GroundActionIdentity(page, action);
+
+        Assert.Same(prizeSort, control);
+        Assert.Equal(prizeSort.Id, action.TargetId);
+        Assert.Equal(prizeSort.AccessibleName, action.TargetName);
+    }
+
+    [Fact]
+    public void Grounded_action_identity_rejects_a_stale_id_when_no_semantic_target_exists()
+    {
+        var page = new BrowserPageSnapshot
+        {
+            Controls =
+            [
+                new BrowserControl
+                {
+                    Id = "volatile-control-1",
+                    Role = "span",
+                    AccessibleName = "Student organization",
+                    Visible = true,
+                    Enabled = true,
+                },
+            ],
+        };
+        var action = new BrowserPlannerAction
+        {
+            Type = "click",
+            TargetId = "volatile-control-1",
+            TargetRole = "button",
+            TargetName = "Prize amount",
+        };
+
+        Assert.Null(BrowserAutomationCoordinator.GroundActionIdentity(page, action));
+        Assert.Empty(action.TargetId);
+    }
+
     [Theory]
     [InlineData("Find round-trip flights.", "Done. Search for one-way flights")]
     [InlineData("Play the oldest video.", "Latest")]
