@@ -13,12 +13,12 @@ Touches: Paid account refresh; Live startup transport.
 Protect: 2.37–3s happy path, microphone readiness, reliable connection.
 
 ## P02 — Exactly-once completion and action ownership
-Status: INVESTIGATING
+Status: PHYSICALLY VERIFIED
 Expected: One logical request may execute several actions but produces one coherent completion and no repeated mutation.
-Latest evidence: Exact installed `5d6d101` speaker capture: two named folders opened/closed once with one completion per request; same-title pair opened once with one completion, but natural close-both still failed P31. Explicit same-title close then closed both with one completion; all test windows/Live cleaned, reservations zero.
+Latest evidence: Exact installed `8492daa` speaker capture and native receipts: ambiguous same-name A/B folders opened once each, unrelated conversation preserved context, close-both closed A/B once with one final spoken completion; unrelated same-name folder and Chrome survived.
 Root cause: Earlier eager effects/receipt expiry were corrected; the latest wire trace also proves duplicate scheduling was embedded in result data, not the provider's function-response metadata. Per-message result continuations remain broader than a logical request.
 Fix: Existing dispatcher now emits outer WHEN_IDLE for ordinary results and SILENT for both guard/command-owner duplicate acknowledgements. No new batching owner, timer, provider switch or cancellation path; remaining multi-target ownership unresolved.
-Evidence: `repair-5d6d101/p02-installed-assessment.json` plus original audio/receipts: no duplicate/contradictory speech in three installed samples. 1,138 desktop/262 backend/12 staging Firestore and CI `34772211821` pass. Scheduling correction has real installed proof, but original natural multi-target flow remains OPEN through P31; not human microphone proof.
+Evidence: `repair-8492daa/p31-ambiguous-pair` original speaker recording, offline transcript, exact action receipts and `p31-observed-mid` native windows; no second completion, no late action, reserved zero. Earlier three installed samples retained. Final candidate mixed/microphone acceptance remains P26/P38.
 Touches: Transcript pre-routing; tool dispatch/result publication; action dedupe.
 Protect: Clarification/barge-in and multi-action batching.
 
@@ -53,9 +53,9 @@ Touches: Live dispatch; command routing; trusted input.
 Protect: Direct-action speed and normal conversation.
 
 ## P06 — Deterministic Explorer close
-Status: FIXED
+Status: PHYSICALLY VERIFIED
 Expected: Close a fixed set of actual Explorer windows only, verify disappearance, never kill the shell or affect browsers.
-Latest evidence: Existing app-wide native close remains human/physically verified. P31 changes path selection: real-source test closed A/B and preserved a same-title third, with pre-post cancellation; exact-installed repair and browser-witness replay remain required.
+Latest evidence: Exact installed `8492daa` natural close-both closed only A/B paths; same-title third and two Chrome windows remained. Latest human confirms immediate correct Explorer closure.
 Root cause: Retired fallback used browser/foreground shortcuts instead of Explorer HWND ownership.
 Fix: Fixed native Explorer handle snapshot, identity validation, native close and verification.
 Evidence: Human session; `native-window-acceptance` including mid-close/pre-cancel cases; `production-folder-trace/native-path-close-20260914` (no visible browser during this sample, not installed P31 proof).
@@ -138,17 +138,17 @@ Expected: Planning/Running/Waiting/NeedsUserAction/Partial cancel once, clear UI
 Latest evidence: September 15 human reopens installed `8492daa`: “Never mind. Cancel browser automation.” was rejected at 21:31:57; actions continued until local cancel at 21:32:10.
 Root cause: The control parser required the entire utterance to begin with a control; ordinary preceding speech hid a complete final cancellation sentence. Earlier renderer mutation-boundary fix remains protected.
 Fix: Reuse the existing control grammar on the final unquoted sentence; no acknowledgement vocabulary, new cancellation owner or renderer change.
-Evidence: Three sentence-boundary cases failed before the fix; all 324 focused protocol/dispatch/screen cases now pass, including quoted/negated noncommands. Prior paused-renderer no-write proof retained; real installed first-cancel acceptance still OPEN.
+Evidence: Exact installed `5fddef4` queued/executing final-text cancellation reached Cancelled in 23/11ms observation; stale ReadingPage rejected, intervention cleared, no resurrection, speaker confirmed cancellation then answered conversation. `repair-5fddef4/*final-sentence`; reserved zero/mute restored. Full state matrix and human ASR remain OPEN.
 Touches: Browser coordinator/executor; Live/input boundary.
 Protect: Jarvis remains usable after cancel.
 
 ## P15 — Browser correctness constraints and visible completion
 Status: INVESTIGATING
 Expected: Latest-by-publisher verifies publisher/freshness; useful page is preserved; Completed matches visible state.
-Latest evidence: September 15 human: real NASA oldest-video result reached, then repeated navigation before completion; Devpost prize-ranking task looped despite guidance. Real installed action trace preserved in `human-20260915-8492daa`; earlier form verifier fixes remain protected.
-Root cause: Ten checkpoints were joined into one 500-character planner entry, dropping newer progress; accepted guidance was also evicted by routine events. Contribution to the exact human loops still needs physical replay; prior field/option verifier fixes remain protected.
-Fix: Share the existing eight-entry/4,000-character budget between recent events, recent verified checkpoints and the latest accepted task guidance, including vision recovery. No larger prompt, new memory owner or completion heuristic.
-Evidence: Actual-payload checkpoint and guidance-loss failures reproduced then passed; reviewed full gates pass 1,163 desktop/262 backend. Earlier multi-site evidence remains in `output/playwright/browser-real-sites`; NASA/Devpost real task replay remains OPEN.
+Latest evidence: Exact installed `5fddef4` NASA replay again opened Mercury 7 then repeated channel/sort/video, reaching ten plans before agent cancellation. New failing test proves the verifier invents a publisher from the later instruction sentences; source-history fix alone was insufficient.
+Root cause: Checkpoint/guidance truncation corrected, but ordered-source extraction can consume text across sentences and demand an impossible publisher identity. Exact replay request reproduces this deterministically; older human task may have additional causes.
+Fix: Keep the existing shared eight-entry/4,000-character history budget; accept publication-attribution wording and reject cross-sentence source capture inside the existing verifier. Publisher, collection and ordering verification remain mandatory; no site-specific rule, new owner or prompt expansion.
+Evidence: `repair-5fddef4/nasa-oldest-20260916` preserves the failed real Store/Chrome loop. Pre-fix extraction tests fail as expected; dirty source passes 1,173 desktop, 547 Browser-focused and a fresh 38-case verifier review. Exact packaged/installed NASA replay remains OPEN.
 Touches: Browser planner/coordinator/verifier.
 Protect: Generic behavior; no site-specific rules.
 
@@ -158,7 +158,7 @@ Expected: Internal Settings sections, URLs/apps/search/mappings remain direct; e
 Latest evidence: September 15 human: How to Use Jarvis Settings also started BA; 'close last 3 Chrome tabs' closed only one. Workflow exact-tab close passed; last-three selection remains OPEN, not permission for blind repeated Ctrl+W.
 Root cause: The model-selected internal Settings tool could be reclassified as webpage navigation when the transcript omitted product/settings words; its local result then lacked authoritative ownership.
 Fix: Resolve semantic Settings tool arguments through the existing local result owner, while explicit transcript section constraints retain precedence. Preserve earlier direct-tab parser correction and safe fixed-set closure.
-Evidence: Two real-owner tests failed before the fix and 271 routing/ownership/polish cases now pass. Installed local Settings→no-BA replay and last-three-tab handling remain OPEN.
+Evidence: Exact installed `5fddef4` local Settings pre-route resolved how-to-use once; speaker confirmed opening and answered follow-up, BA stayed OFF, zero reservations/mute restored (`settings-direct-20260916`). Settings page itself was not foreground in the screenshot, so visible navigation and last-three-tab handling remain OPEN. Two owner tests failed before source fix.
 Touches: Direct-action intent/routing.
 Protect: Browser Automation still starts for real interactive webpage work.
 
@@ -275,10 +275,10 @@ Protect: No speculative rewrite.
 ## P28 — Exact current installer/install provenance
 Status: PHYSICALLY VERIFIED
 Expected: Installed bytes derive from the frozen source and exact hashed installer.
-Latest evidence: Installed frozen `8492daa5271d569f6d78f1187e5d69930a68a8d8` EXE `49D83807...CF7CD` matches package (314,817,998 bytes); installer `160DB01F...5C478` is 84,294,110 bytes. Production profile hash remains `8506D843...5850`.
+Latest evidence: Installed frozen `5fddef4068b45677d7aa209203d9d22790d94c14` EXE `CDADCC46FB51939F74DF4FD503A2AFCF61B25FCBBB2A3C2BFBAE3C3A5BDCEB44` matches the package (314,822,094 bytes); installer `3050590E42B079505E1265ED92FD323601459FD61D1B4039AFEE60D46ED93706` is 84,286,392 bytes. The dirty P15 correction is not packaged.
 Root cause: Release-integrity requirement.
 Fix: Freeze source, build once, hash, install exact bytes and independently verify provenance.
-Evidence: `dist/verification/repair-8492daa/provenance.json`; CI `34855703571`, 1,146 desktop/262 backend/12 real Firestore, clean-profile runtime and independent installed hash agree. Physical P31 acceptance in progress; not final human acceptance.
+Evidence: `dist/verification/repair-5fddef4/provenance.json`; CI `34979469331`, 1,163 desktop/262 backend/12 real Firestore, clean-profile runtime and independent installed hash agree. Partial physical acceptance only; not final human acceptance.
 Touches: Build/install/provenance.
 Protect: Do not rebuild without a source defect.
 
@@ -295,7 +295,7 @@ Protect: Ship one candidate only.
 ## P30 — Accounting and test-state cleanup
 Status: OPEN
 Expected: No active/orphan test task/session; reservations settle once or are validly reclaimable; no test secrets/config remain.
-Latest evidence: Runtime/test state is clean; seven expired Live reservations are explicitly quarantined and exactly equal the 10.7325-credit reserved balance.
+Latest evidence: Current signed-in account reports zero reserved credits, no active Browser task and a connected Store Helper. Historical evidence still records seven explicitly quarantined expired Live reservations; the older 10.7325-credit snapshot is not a current account balance and requires final audited reconciliation review.
 Root cause: Pre-`bd1d248` Live shutdown cancelled in-flight Firestore budget/checkpoint transactions after provider dispatch, leaving no final completion evidence.
 Fix: Preserve the deployed shutdown-safe accounting fix; resolve historical quarantines only through audited operator reconciliation with provider evidence.
 Evidence: Firestore/account totals match exactly; all seven traces show cancelled accounting RPCs, and the healthy six-hour maintenance job reports seven quarantines rather than silently releasing them.
@@ -303,13 +303,13 @@ Touches: Test state and accounting inspection.
 Protect: Billing math, plan allowance and existing balances.
 
 ## P31 — Referential direct-action context
-Status: FIXED
+Status: PHYSICALLY VERIFIED
 Expected: A contextual close resolves the recent successfully opened target, asks once if ambiguous, and never broadens to unrelated windows.
-Latest evidence: Dirty-source production-model replay resolves close-both to A/B full paths with one completion; real Windows path lookup/close preserves an unrelated same-title third. Exact installed replay remains open; 5d6 still lacks this correction.
+Latest evidence: Exact installed `8492daa` ambiguity→open both→unrelated conversation→close both resolves A/B full paths once; same-title unrelated window and two Chrome windows survive. Original speaker recording confirms one final open/close completion.
 Root cause: Native folder receipts/prompts reduce canonical paths to shared titles and window_action permits a missing target; distinct folders lose identity. Earlier workflow/tab receipt ownership fixes remain protected.
 Fix: Preserve canonical folder receipts; require explicit tool target; resolve full paths through Shell windows at the existing native owner, revalidate before posting close, and refuse mixed/unknown tabs. No basename fallback, new owner or routing grammar. Existing workflow/Chrome receipt fixes retained.
 Evidence: `production-folder-trace/current-source-20260914` uses real production model/billing and current dispatcher with simulated effects; native-path-read-three/native-path-close show actual paths and two verified closes, unrelated preserved, cancellation/cleanup pass. Shell also exposes the real Home+folder tabs, including unknown Home path. 112 focused and 1,146 desktop/262 backend/12 Firestore pass.
-Next: Frozen `8492daa` is installed byte-identically; repeat natural references/one completion with Chrome present. Final microphone acceptance remains separate.
+Next: Protected installed evidence: `repair-8492daa/p31-ambiguous-pair` and `p31-observed-mid`; reservations zero, input mute restored. Final mixed/microphone acceptance remains P26/P38; latest uncertain duplicate-folder report is not yet a proven new defect.
 Touches: Live tool instruction/context; recent action ownership.
 Protect: Deterministic native Explorer close and general Gemini reasoning.
 
@@ -395,10 +395,10 @@ Protect: Protocol 2.1.21, native trust/registration, original 1.4.17 compatibili
 ## P40 — Screen Analysis and provider-neutral UI
 Status: INVESTIGATING
 Expected: Screen inspection responds promptly and never blocks subsequent listening/conversation; progress remains provider-neutral.
-Latest evidence: Highest priority September 15 human: very slow screen analysis then silent/unresponsive conversation. Exact 8492daa request at 21:32:24 spent 70.75s in provider; local farewell at 21:33:29 cancelled before backend completed at 21:33:35.
+Latest evidence: Exact installed `5fddef4` real production screen call completed in 10.12s, spoke the public form description, answered the next conversational turn, and stopped on goodbye. Recovery passed this sample; successful latency remains too slow, not CLOSED.
 Root cause: Provider took 70.75s while the serial tool owner waited; 861 reasoning tokens left only 35 answer tokens within the 900-token allowance. Final farewell still reached the microphone/socket; no volume mutation is evidenced.
 Fix: Source bounds screen analysis to 20s and permits the existing server limit of 2,048 output tokens; the existing UI revision protects newer conversation state and ends stale analysis feedback. Fast successful production response and post-screen voice recovery remain OPEN.
-Evidence: `human-20260915-8492daa`: 900-token answers truncated; 2,048 completed in 8.16–10.03s. Developer-only lower-thinking probes completed in 5.32–5.79s; earlier 503s retained. Reviewed full gates pass 1,163 desktop/262 backend; no production model/config change or installed screen PASS claimed.
+Evidence: `repair-5fddef4/screen-recovery-20260916`: actual speaker/next-turn response, Speaking above Chrome, one inspect receipt, no mutations, zero reservations/mute restored; startup 2.014s. Second-image isolated test: default 17.14s, LOW 23.87s, MINIMAL 503; earlier 5.32–5.79s samples do not justify production change. Human ASR, forced installed recovery and speed remain OPEN.
 Touches: Screen guidance and existing tool/conversation handoff only where proven.
 Protect: Internal logs, billing labels/prices and provider routing.
 

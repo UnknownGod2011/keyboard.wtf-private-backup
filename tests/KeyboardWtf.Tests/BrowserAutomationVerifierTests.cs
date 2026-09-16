@@ -188,6 +188,10 @@ public sealed class BrowserAutomationVerifierTests
     [InlineData("Open the latest video by Acme Studio on the media site.")]
     [InlineData("Open Acme Studio's newest upload on the media site.")]
     [InlineData("Play the most recent Acme Studio video.")]
+    [InlineData("Open the oldest video by Acme Studio. Verify the publisher and oldest ordering. Stop once the video is open.")]
+    [InlineData("Open the oldest video by Acme Studio. Verify the oldest ordering! Stop once the video is open.")]
+    [InlineData("Open the oldest video published by Acme Studio. Verify the oldest ordering. Stop once the video is open.")]
+    [InlineData("Open the newest article posted by Acme Studio. Stop when the article is open.")]
     public void Ordered_content_requests_extract_the_named_source(string request)
     {
         Assert.Equal(
@@ -205,6 +209,42 @@ public sealed class BrowserAutomationVerifierTests
         Assert.Equal(
             "contoso labs",
             BrowserAutomationVerifier.ExtractOrderedSourceIdentity(corrected));
+    }
+
+    [Fact]
+    public void Ordered_source_does_not_invent_a_publisher_from_later_instructions()
+    {
+        var request = "Use Browser Automation to open https://www.youtube.com/@NASA/videos and open the oldest video published by NASA. Verify the publisher and oldest ordering. Stop once the video is open; do not repeat navigation.";
+        var source = BrowserAutomationVerifier.ExtractOrderedSourceIdentity(request);
+        Assert.Equal("nasa", source);
+    }
+
+    [Theory]
+    [InlineData("Check the oldest ordering. Stop when the video is open.")]
+    [InlineData("Check the latest ordering. Stop when the article is open.")]
+    public void Unnamed_source_is_not_synthesized_across_sentence_boundaries(string request)
+    {
+        Assert.Equal("", BrowserAutomationVerifier.ExtractOrderedSourceIdentity(request));
+    }
+
+    [Theory]
+    [InlineData("Acme Studio", true, true)]
+    [InlineData("Other Studio", true, false)]
+    [InlineData("Acme Studio", false, false)]
+    public void Published_source_still_requires_both_collection_and_final_publisher(
+        string publisher, bool collectionVerified, bool expected)
+    {
+        var result = _verifier.VerifyTerminal(
+            "Open the oldest video published by Acme Studio. Verify the oldest ordering. Stop once the video is open.",
+            new BrowserPlannerDecision { Done = true, ResultSummary = "Opened the requested video." },
+            new BrowserPageSnapshot
+            {
+                Url = "https://www.youtube.com/watch?v=example",
+                Controls = [PublisherLink(publisher)],
+            },
+            [new BrowserActionReceipt { Ok = true, Action = "click", TargetName = "Oldest", SelectedChanged = true }],
+            orderedSourceCollectionVerified: collectionVerified);
+        Assert.Equal(expected, result.Verified);
     }
 
     [Fact]

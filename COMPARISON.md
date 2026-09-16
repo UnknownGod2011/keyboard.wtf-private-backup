@@ -1,6 +1,6 @@
 # 1.4.17 → current stability decisions
 
-Reference: stable 1.4.17 commit `6a2c0fcbc5ade96bc6feb4717ab284e83b874d04` (source-equivalent parent `63beae98...`). Human-rejected baseline: `785a48a...`; current private installed repair: `8492daa...`, not human-accepted. Earlier receipts are subsystem evidence, not release acceptance. 1.4.17 is a reference, not a development restore target; its original installer remains public stable.
+Reference: stable 1.4.17 commit `6a2c0fcbc5ade96bc6feb4717ab284e83b874d04` (source-equivalent parent `63beae98...`). Human-rejected baseline: `785a48a...`; current private installed repair: `5fddef4...`, not human-accepted. Earlier receipts are subsystem evidence, not release acceptance. 1.4.17 is a reference, not a development restore target; its original installer remains public stable.
 
 Measured differential and unresolved hypotheses: [regression differential](docs/regression-differential-1.4.17.md).
 

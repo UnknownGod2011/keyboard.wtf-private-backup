@@ -723,7 +723,7 @@ public sealed class BrowserAutomationVerifier
         var patterns = new[]
         {
             @"\b(?<source>[\p{L}\p{N}][\p{L}\p{N} .&_-]{0,80}?)['’]s\s+(?:oldest|latest|newest|most\s+recent)\s+" + contentKind,
-            @"\b(?:oldest|latest|newest|most\s+recent)\s+" + contentKind + @"\s+(?:by|from)\s+(?<source>[^,.;!?]{1,80}?)(?=\s+(?:on|at|in|via)\b|[,.;!?]|$)",
+            @"\b(?:oldest|latest|newest|most\s+recent)\s+" + contentKind + @"\s+(?:(?:published|created|uploaded|posted|released)\s+)?(?:by|from)\s+(?<source>[^,.;!?]{1,80}?)(?=\s+(?:on|at|in|via)\b|[,.;!?]|$)",
             @"\b(?:oldest|latest|newest|most\s+recent)\s+(?<source>[\p{L}\p{N}][\p{L}\p{N} .&_-]{0,80}?)\s+(?:video|upload|post|article|episode|release|content|item)\b",
         };
         var matches = patterns
@@ -735,6 +735,11 @@ public sealed class BrowserAutomationVerifier
             .OrderByDescending(match => match.Index);
         foreach (var match in matches)
         {
+            // A source name may contain punctuation (e.g. a hostname), but
+            // cannot absorb the next sentence's task instructions. Otherwise
+            // the verifier demands an invented publisher and drives retries.
+            if (Regex.IsMatch(match.Groups["source"].Value, @"[.!?]\s+"))
+                continue;
             var source = Regex.Replace(
                 match.Groups["source"].Value.Trim(),
                 @"^(?:(?:please\s+)|(?:(?:can|could|would|will)\s+you\s+)|(?:open|play|find|show|watch|visit)\s+|the\s+)+"
