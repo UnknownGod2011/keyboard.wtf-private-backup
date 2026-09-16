@@ -440,6 +440,89 @@ public sealed class BrowserAutomationVerifierTests
     }
 
     [Fact]
+    public void Form_completion_rejects_planner_checks_that_omit_an_explicit_field_mutation()
+    {
+        const string request =
+            "Use Browser Automation on the current form. Set Text input to Boundary Gamma, "
+            + "then set Disabled input to Enabled Value. Leave every other field unchanged and do not submit or reset.";
+        var result = _verifier.VerifyTerminal(
+            request,
+            new BrowserPlannerDecision
+            {
+                Done = true,
+                ResultSummary = "Set Text input and left Disabled input unchanged as requested.",
+                CompletionChecks =
+                [
+                    FinalCheck("text", "textbox", "Text input", "type", "Boundary Gamma"),
+                ],
+            },
+            new BrowserPageSnapshot
+            {
+                Url = "https://example.test/form",
+                Controls =
+                [
+                    Field("text", "textbox", "Text input", "Boundary Gamma"),
+                    new BrowserControl
+                    {
+                        Id = "disabled",
+                        FieldId = "disabled",
+                        Role = "textbox",
+                        AccessibleName = "Disabled input",
+                        Value = "Disabled input",
+                        Visible = true,
+                        Enabled = false,
+                    },
+                ],
+            },
+            [
+                Changed(
+                    "type",
+                    "text",
+                    "textbox",
+                    "Text input",
+                    "Boundary Gamma",
+                    valueMatches: true),
+            ]);
+
+        Assert.False(result.Verified);
+        Assert.Contains("explicitly requested form", result.Error, StringComparison.OrdinalIgnoreCase);
+
+        var duplicateCheck = _verifier.VerifyTerminal(
+            request,
+            new BrowserPlannerDecision
+            {
+                Done = true,
+                ResultSummary = "Done.",
+                CompletionChecks =
+                [
+                    FinalCheck("text", "textbox", "Text input", "type", "Boundary Gamma"),
+                    FinalCheck("text", "textbox", "Text input", "type", "Boundary Gamma"),
+                ],
+            },
+            new BrowserPageSnapshot
+            {
+                Url = "https://example.test/form",
+                Controls = [Field("text", "textbox", "Text input", "Boundary Gamma")],
+            },
+            [Changed("type", "text", "textbox", "Text input", "Boundary Gamma", valueMatches: true)]);
+
+        Assert.False(duplicateCheck.Verified);
+        Assert.Contains("1 of 2", duplicateCheck.Error);
+    }
+
+    [Theory]
+    [InlineData("Open https://example.test/form and fill Text input with Delta.", 1)]
+    [InlineData("Set Name to Ada, then set Email to ada@example.test.", 2)]
+    [InlineData("Choose Blue, check Updates, and clear Notes.", 3)]
+    [InlineData("Set Notes to \"set check select\".", 1)]
+    [InlineData("Fill the current form from the provided context.", 1)]
+    [InlineData("Set Text input to A. Select Two in Dropdown (select). Check Default checkbox.", 3)]
+    public void Explicit_form_mutation_count_excludes_navigation_and_quoted_payloads(
+        string request,
+        int expected) =>
+        Assert.Equal(expected, BrowserAutomationVerifier.CountRequestedFormMutationSteps(request));
+
+    [Fact]
     public void Form_completion_rejects_dropdown_opening_without_a_selected_option()
     {
         var result = _verifier.VerifyTerminal(

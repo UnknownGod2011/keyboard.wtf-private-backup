@@ -113,12 +113,12 @@ Touches: Browser coordinator/runtime generation.
 Protect: Never adopt unrelated foreground tabs automatically.
 
 ## P12 — Form write correctness
-Status: FIXED
+Status: INVESTIGATING
 Expected: Context values target the correct group once; replace/append explicit; no duplicate writes or unrequested Clear/Reset. Release proof spans different real-site DOMs, not fixtures alone.
-Latest evidence: Current source/current isolated Helper completed real Selenium and TestPages forms; native Reset→repeat passed. Exactly 4/3/3 input events, no duplicate writes, untouched unrelated fields, zero submits, terminal Helper/UI cleanup verified.
-Root cause: Exact unnamed controls scored 42 against a 45-point fuzzy-name threshold; adjacent visible labels were absent from the graph. Earlier write/group fixes remain protected.
-Fix: Keep exact field/role ownership independent of fuzzy-name score; capture bounded adjacent legacy labels without borrowing other controls' text. Field/generation/cancellation checks stay enforced.
-Evidence: Earlier human Google Form proof retained. Final installed/Store matrix must cover multiple public/demo/user-controlled forms: navigation/destination, handoff, corrections, required/optional/groups, pause/resume/cancel, continuity and visible state. Authorized Clear/Reset→repeat only where safe; no submissions.
+Latest evidence: Exact installed `b4308aa` was asked to set an editable Selenium Text input and a disabled input. It set only the editable field, then falsely declared `Completed` and rewrote the summary as though leaving the disabled field unchanged had been requested. The screenshot and task trace retain the mismatch; no submit/reset occurred.
+Root cause: The form verifier proved every final-state check declared by the planner but did not compare that declared set with the user's explicit form-mutation clauses. Omitting a requested field therefore shrank the planner's own completion contract. Earlier field identity/write/group fixes remain protected.
+Fix: At the existing terminal verifier, require at least one distinct final-field check for each explicit form-mutation clause before validating the declared states. Count clauses rather than raw action words so labels such as `Dropdown (select)` and quoted payloads do not inflate the contract; no field-name grammar or new owner.
+Evidence: Installed failure `repair-b4308aa/p14-partial-disabled-attempt-b4308aa`; pre-fix regression fails and corrected source passes 44 verifier, 580 Browser/ownership/lifecycle and 1,180 desktop tests. Exact rebuilt/installed replay remains OPEN. Earlier real Selenium/TestPages and human Google Form proof retained; no submissions.
 Touches: Helper metadata; planner/executor/verification.
 Protect: Do not submit test forms.
 
@@ -135,20 +135,20 @@ Protect: Normal conversation while paused.
 ## P14 — Browser cancellation in every state
 Status: FIXED
 Expected: Planning/Running/Waiting/NeedsUserAction/Partial cancel once, clear UI/task/intervention, and execute nothing stale.
-Latest evidence: September 15 human reopens installed `8492daa`: “Never mind. Cancel browser automation.” was rejected at 21:31:57; actions continued until local cancel at 21:32:10.
+Latest evidence: Exact installed `b4308aa` cancelled Planning from the complete final sentence in 12ms and Settings-owned ReadingPage, Executing, WaitingForPage and NeedsUserAction in 10–12ms. Each remained Cancelled through a normal follow-up, cleared intervention/cancel authority, restored mute and reservations, and the Executing screenshot proves no pending text mutation landed.
 Root cause: The control parser required the entire utterance to begin with a control; ordinary preceding speech hid a complete final cancellation sentence. Earlier renderer mutation-boundary fix remains protected.
 Fix: Reuse the existing control grammar on the final unquoted sentence; no acknowledgement vocabulary, new cancellation owner or renderer change.
-Evidence: Exact installed `5fddef4` queued/executing final-text cancellation reached Cancelled in 23/11ms observation; stale ReadingPage rejected, intervention cleared, no resurrection, speaker confirmed cancellation then answered conversation. `repair-5fddef4/*final-sentence`; reserved zero/mute restored. Full state matrix and human ASR remain OPEN.
+Evidence: `repair-b4308aa/p14-planning-final-sentence-b4308aa`, `p14-reading-page-b4308aa-r2`, `p14-executing-b4308aa`, `p14-waiting-page-b4308aa`, `p14-needs-user-action-b4308aa`; older `repair-5fddef4/*final-sentence`. Partial-state physical cancellation and human ASR remain OPEN; source matrix covers Partial and silent session cleanup.
 Touches: Browser coordinator/executor; Live/input boundary.
 Protect: Jarvis remains usable after cancel.
 
 ## P15 — Browser correctness constraints and visible completion
 Status: INVESTIGATING
 Expected: Latest-by-publisher verifies publisher/freshness; useful page is preserved; Completed matches visible state.
-Latest evidence: Exact installed `5fddef4` NASA replay again opened Mercury 7 then repeated channel/sort/video, reaching ten plans before agent cancellation. New failing test proves the verifier invents a publisher from the later instruction sentences; source-history fix alone was insufficient.
-Root cause: Checkpoint/guidance truncation corrected, but ordered-source extraction can consume text across sentences and demand an impossible publisher identity. Exact replay request reproduces this deterministically; older human task may have additional causes.
-Fix: Keep the existing shared eight-entry/4,000-character history budget; accept publication-attribution wording and reject cross-sentence source capture inside the existing verifier. Publisher, collection and ordering verification remain mandatory; no site-specific rule, new owner or prompt expansion.
-Evidence: `repair-5fddef4/nasa-oldest-20260916` preserves the failed real Store/Chrome loop. Pre-fix extraction tests fail as expected; dirty source passes 1,173 desktop, 547 Browser-focused and a fresh 38-case verifier review. Exact packaged/installed NASA replay remains OPEN.
+Latest evidence: Exact installed `b4308aa` NASA replay completed correctly in three plans, but the later disabled-field form task proved a distinct false `Completed` path: one of two explicit field outcomes was omitted from planner completion checks and never verified.
+Root cause: The NASA cross-sentence source extraction defect is fixed. The new generic form defect was planner-defined coverage: terminal verification validated all declared checks without proving that the declaration covered each explicit user mutation clause.
+Fix: Preserve the ordered-source correction and shared bounded history. At the same verifier boundary, require distinct declared form-state coverage for explicit mutation clauses before accepting the final page. No site-specific rule, prompt expansion or new owner.
+Evidence: NASA failure/pass: `repair-5fddef4/nasa-oldest-20260916`, `repair-b4308aa/nasa-oldest-p15-after`. False completion: `repair-b4308aa/p14-partial-disabled-attempt-b4308aa` plus failing→passing focused regression; corrected source passes 1,180 desktop and 580 Browser/ownership/lifecycle tests. Rebuilt exact-installed form replay and broader distinct-site acceptance remain OPEN.
 Touches: Browser planner/coordinator/verifier.
 Protect: Generic behavior; no site-specific rules.
 
@@ -393,12 +393,12 @@ Touches: Helper communication and action ownership only if proven.
 Protect: Protocol 2.1.21, native trust/registration, original 1.4.17 compatibility; do not publish unaccepted Helper bytes.
 
 ## P40 — Screen Analysis and provider-neutral UI
-Status: INVESTIGATING
+Status: PHYSICALLY VERIFIED
 Expected: Screen inspection responds promptly and never blocks subsequent listening/conversation; progress remains provider-neutral.
-Latest evidence: Exact installed `5fddef4` real production screen call completed in 10.12s, spoke the public form description, answered the next conversational turn, and stopped on goodbye. Recovery passed this sample; successful latency remains too slow, not CLOSED.
+Latest evidence: Exact installed `b4308aa` analyzed a fullscreen public Selenium form through the production route in 6.264s, spoke the correct visible-page description, answered the next conversational turn, and stopped on goodbye. A process-local stalled HTTPS tunnel then forced the compiled deadline: the installed Settings route returned its terminal timeout result in 20.188s, stayed responsive/signed-in/Helper-connected with zero reserved credit, and produced a normal audible Jarvis reply immediately after traffic was restored.
 Root cause: Provider took 70.75s while the serial tool owner waited; 861 reasoning tokens left only 35 answer tokens within the 900-token allowance. Final farewell still reached the microphone/socket; no volume mutation is evidenced.
-Fix: Source bounds screen analysis to 20s and permits the existing server limit of 2,048 output tokens; the existing UI revision protects newer conversation state and ends stale analysis feedback. Fast successful production response and post-screen voice recovery remain OPEN.
-Evidence: `repair-5fddef4/screen-recovery-20260916`: actual speaker/next-turn response, Speaking above Chrome, one inspect receipt, no mutations, zero reservations/mute restored; startup 2.014s. Second-image isolated test: default 17.14s, LOW 23.87s, MINIMAL 503; earlier 5.32–5.79s samples do not justify production change. Human ASR, forced installed recovery and speed remain OPEN.
+Fix: Screen analysis is bounded to 20s, uses the existing 2,048-token server route limit, and publishes terminal feedback only while it still owns the UI revision. A timed-out provider releases the existing serial tool owner, and a late result cannot overwrite newer conversation state. Provider/model routing remains unchanged because the benchmark did not prove an alternative safer or faster.
+Evidence: `repair-b4308aa/screen-safe-b4308aa-20260917`: one installed production `inspect_screen`, 6.264s paid request, correct local-Whisper speaker transcript, next-turn speech, no browser task, zero reservations/mute restored. `repair-b4308aa/screen-timeout-installed-20260917`: safe fullscreen capture proof and exact installed 20.188s terminal timeout under a process-local withheld tunnel; no production/network configuration change. `repair-b4308aa/screen-timeout-recovery-b4308aa-20260917`: next actual speaker reply transcribed `Yes, Jarvis is available.`, no actions/tasks, zero reservation/mute restored. Focused adversarial tests pass 6/6; private CI run 35134567755 passes at `b4308aa`.
 Touches: Screen guidance and existing tool/conversation handoff only where proven.
 Protect: Internal logs, billing labels/prices and provider routing.
 

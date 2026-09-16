@@ -1,8 +1,8 @@
 # Recovery progress
 
-- Checkpoint: `paid-staging` HEAD `5fddef4068b45677d7aa209203d9d22790d94c14`; preserved dirty P15 verifier/tests; installed EXE is still pre-fix `CDADCC46FB51939F74DF4FD503A2AFCF61B25FCBBB2A3C2BFBAE3C3A5BDCEB44`.
-- Current problem: P15 ordered-content Browser Automation completion.
-- Proven root cause: source extraction crossed a sentence boundary and invented a publisher, so correct NASA visible completion could not satisfy terminal verification and navigation repeated.
-- Fix: accept publication-attribution wording and reject cross-sentence source captures inside the existing verifier; retain collection and final-publisher checks.
-- Verification: preserved pre-fix failures; dirty-source 1,173/1,173 desktop and 547/547 Browser tests; fresh verifier review 38/38. Packaging, install, and exact Store/Chrome replay pending.
-- Remaining: P40; P14/P34 installed matrix; broader P10-P16 web/direct behavior; P21/P38; long real microphone P04/P08/P09/P20/P32/P37; P23/P43; P41/P42; final P25-P30/P44 audit, frozen candidate, and human acceptance.
+- Checkpoint: `paid-staging` product source `b4308aa03840d131693df2da024764e593883ffb`; installer `D3D984C972DA11C384F02CEF19576DFD181DDEAE89F93522A20717E6F5524BD3`; installed/package EXE `7BE04C1B875CB120C7C339FF13BB424F657EA7438C5F1FBAD3273B3BEB1A4655`.
+- Current problem: P12/P15 omitted form-field completion coverage.
+- Proven root cause: terminal form verification accepted every planner-declared check but did not prove the planner declared each explicit user mutation clause; one of two requested Selenium fields was omitted and false `Completed` passed.
+- Fix made: dirty source requires distinct final-field checks to cover the conservative count of explicit form-mutation clauses; clause boundaries exclude navigation, quoted payloads and action words inside labels.
+- Verification: Exact installed `b4308aa` failure retained with screenshot/task/log. Regression fails before and passes after; 44 verifier, 580 Browser/ownership/lifecycle and 1,180 desktop tests pass. Rebuild/install/replay is next. P40 is physically verified. P14 installed Planning/Reading/Executing/Waiting/NeedsUserAction cancellation passes; Partial awaits the corrected candidate.
+- Remaining: finish P12/P15 installed replay; P14 Partial and P34 installed matrix; broader P10-P16 web/direct behavior; P21/P38; long real microphone P04/P08/P09/P20/P32/P37; P23/P43; P41/P42; final P25-P30/P44 audit, frozen candidate, and human acceptance.

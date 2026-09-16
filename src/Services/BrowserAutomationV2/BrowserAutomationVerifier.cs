@@ -160,6 +160,7 @@ public sealed class BrowserAutomationVerifier
         }
 
         var requestedMutationSteps = CountRequestedMutationSteps(text);
+        var requestedFormMutationSteps = CountRequestedFormMutationSteps(text);
         var destinationEditorTransfer = Regex.IsMatch(
                 text,
                 @"\b(paste|insert|type|write|place|put)\b")
@@ -202,6 +203,28 @@ public sealed class BrowserAutomationVerifier
                 if (!IsFinalFieldCheck(check))
                     return Failed("A final field check needs an exact field identity and a state type appropriate to its control role.");
                 declared.Add(ExpectedFieldState(check));
+            }
+
+            // Completion checks come from the planner, so they cannot define
+            // their own coverage contract. Require at least one distinct live
+            // field check for every explicit form-mutation clause in the
+            // user's request before validating the declared states. This is a
+            // conservative lower bound, not a field-name grammar.
+            var declaredFormMutationSteps = declared
+                .GroupBy(
+                    receipt => string.Join(
+                        "|",
+                        receipt.TargetFieldId,
+                        receipt.TargetRole,
+                        receipt.TargetRole.Equals("radio", StringComparison.OrdinalIgnoreCase)
+                            ? ""
+                            : Normalize(receipt.TargetName)),
+                    StringComparer.OrdinalIgnoreCase)
+                .Count();
+            if (declaredFormMutationSteps < requestedFormMutationSteps)
+            {
+                return Failed(
+                    $"Only {declaredFormMutationSteps} of {requestedFormMutationSteps} explicitly requested form mutation steps have distinct final-state checks.");
             }
 
             // Task coverage is semantic: words in labels/values are not an
@@ -302,6 +325,21 @@ public sealed class BrowserAutomationVerifier
             text,
             @"\b(?:click|press|choose|select|check|uncheck|fill|type|paste|set|close|dismiss|replace|search|navigate|open)\b",
             RegexOptions.IgnoreCase).Count;
+    }
+
+    internal static int CountRequestedFormMutationSteps(string request)
+    {
+        var text = IntentText(request);
+        const string mutation =
+            @"(?:fill|type|paste|set|replace|choose|select|check|uncheck|clear|enter|place|put)";
+        return Regex.Split(
+                text,
+                $@"[.;!?]+|,\s*|\bthen\b|\band\b(?=\s+{mutation}\b)",
+                RegexOptions.IgnoreCase)
+            .Count(clause => Regex.IsMatch(
+                clause,
+                $@"\b{mutation}\b",
+                RegexOptions.IgnoreCase));
     }
 
     internal static bool RequestsGroundedInformation(string request)
