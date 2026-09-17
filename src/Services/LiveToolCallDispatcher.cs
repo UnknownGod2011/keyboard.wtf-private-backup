@@ -154,17 +154,15 @@ internal sealed class LiveToolCallDispatcher : IDisposable
             {
                 var responses = results
                     .Where(result => !result.Call.Cancellation.IsCancellationRequested)
+                    // These declarations use the provider's default blocking
+                    // behavior. Scheduling metadata belongs only to explicitly
+                    // NON_BLOCKING calls; adding it here can defer a dependency
+                    // and replay an already-completed effect. Keep the plain
+                    // response shape used by 1.4.17 and the blocking contract.
                     .Select(result => new
                     {
                         id = result.Call.Id,
                         name = result.Call.Name,
-                        // Scheduling is protocol metadata, not tool output.
-                        // Vertex Live defaults to asynchronous tools; normal
-                        // results must not interrupt an in-progress model turn.
-                        // This also covers acknowledgements returned by the
-                        // existing command owner, not just guard-suppressed calls.
-                        scheduling = result.Response.TryGetValue("duplicate_suppressed", out var duplicate)
-                            && duplicate is true ? "SILENT" : "WHEN_IDLE",
                         response = new Dictionary<string, object>(result.Response),
                     })
                     .ToArray();

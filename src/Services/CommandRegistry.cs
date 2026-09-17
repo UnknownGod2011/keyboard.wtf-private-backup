@@ -2587,7 +2587,6 @@ public sealed class CommandRegistry
             ["ok"] = receipt?.Ok == true,
             ["supported"] = true,
             ["duplicate_suppressed"] = true,
-            ["scheduling"] = "SILENT",
             ["message"] = "",
         };
 

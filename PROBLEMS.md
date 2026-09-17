@@ -13,12 +13,12 @@ Touches: Paid account refresh; Live startup transport.
 Protect: 2.37–3s happy path, microphone readiness, reliable connection.
 
 ## P02 — Exactly-once completion and action ownership
-Status: PHYSICALLY VERIFIED
+Status: OPEN
 Expected: One logical request may execute several actions but produces one coherent completion and no repeated mutation.
-Latest evidence: Exact installed `8492daa` speaker capture and native receipts: ambiguous same-name A/B folders opened once each, unrelated conversation preserved context, close-both closed A/B once with one final spoken completion; unrelated same-name folder and Chrome survived.
-Root cause: Earlier eager effects/receipt expiry were corrected; the latest wire trace also proves duplicate scheduling was embedded in result data, not the provider's function-response metadata. Per-message result continuations remain broader than a logical request.
-Fix: Existing dispatcher now emits outer WHEN_IDLE for ordinary results and SILENT for both guard/command-owner duplicate acknowledgements. No new batching owner, timer, provider switch or cancellation path; remaining multi-target ownership unresolved.
-Evidence: `repair-8492daa/p31-ambiguous-pair` original speaker recording, offline transcript, exact action receipts and `p31-observed-mid` native windows; no second completion, no late action, reserved zero. Earlier three installed samples retained. Final candidate mixed/microphone acceptance remains P26/P38.
+Latest evidence: Exact installed `c52b9df` captured the fresh second selection and copied the correct result, then repeated the identical successful `copy_text` mutation six times about 4–5 seconds apart until Jarvis was stopped. Earlier exact-installed `8492daa` multi-target evidence remains valid but does not cover this provider continuation shape.
+Root cause: Post-1.4.17 commit `5d6d101` added WHEN_IDLE/SILENT scheduling metadata to every blocking Live function response. Production rewrites the desktop setup to Gemini 2.5 native audio, which supports both blocking and explicitly NON_BLOCKING calls; these declarations have no NON_BLOCKING behavior, so the plain tool response is the blocking continuation and scheduling does not belong on it. The developer 3.1 route is synchronous-only. The mixed contract deferred ownership and permitted repeated/downstream effects.
+Fix: Dirty source restores the plain synchronous function-response shape and removes nested scheduling data while retaining the existing serialized dispatcher, cancellation and duplicate guard. Rebuild/install verification pending.
+Evidence: Installed action history/logs and `installed-c52b9df-r1`; isolated developer-provider selected-context control with the plain response emitted one capture and one copy; Google Live tool documentation limits scheduling to NON_BLOCKING declarations. Focused protocol/routing tests 58/58 and full desktop tests 1,206/1,206; exact installed replay pending.
 Touches: Transcript pre-routing; tool dispatch/result publication; action dedupe.
 Protect: Clarification/barge-in and multi-action batching.
 

@@ -122,6 +122,22 @@ public sealed class JarvisRoutingAndTtsRegressionTests
     }
 
     [Fact]
+    public void Live_tool_declarations_use_the_default_blocking_contract()
+    {
+        var buildTools = typeof(GeminiLiveConversationService).GetMethod(
+            "BuildTools",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(buildTools);
+
+        var declarations = JsonSerializer.SerializeToElement(buildTools.Invoke(null, null))[0]
+            .GetProperty("functionDeclarations")
+            .EnumerateArray();
+
+        Assert.All(declarations, declaration =>
+            Assert.False(declaration.TryGetProperty("behavior", out _)));
+    }
+
+    [Fact]
     public void Deterministic_tool_failure_is_not_executed_twice_in_one_turn()
     {
         var guard = new ToolAttemptGuard();
