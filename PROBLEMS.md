@@ -95,10 +95,10 @@ Protect: Audio quality, VAD and barge-in.
 ## P10 — Browser context and intent ownership
 Status: INVESTIGATING
 Expected: Context-now/action-later waits; fresh selection replaces stale; selected-text reasoning stays conversational.
-Latest evidence: Browser-task selected-source ownership remains fixed (`d14cb8...`). New manual installed failure: a request to polish selected text and copy it instead copied a paraphrase of the instruction itself. This direct selected-reasoning/clipboard regression is release-blocking and its source capture, freshness, model payload and clipboard ownership are under investigation against 1.4.17.
-Root cause: The earlier Browser start bug was accepting the wrong fresh source. The newly reported direct selected-text failure has not yet been attributed; do not assume it is the same route.
-Fix: Existing Browser source-identity guard remains. No direct selected-text correction is claimed yet.
-Evidence: Browser failure `5d631d...` and corrected task `d14cb8...` remain valid. New direct installed human failure is the active reproduction; generic physical matrix required before closure.
+Latest evidence: Exact installed `2f8793e` freshly captured/analyzed the first 120-character selection, preserved the clipboard, then produced one correct transformed copy with no repeat beyond 30 seconds. After the fixture foregrounded a different 111-character selection, the next request captured the prior 120 characters and transformed the wrong source.
+Root cause: Post-1.4.17 async scheduling (`5d6d101`) broke blocking result continuation and exposed instruction/repeated-output failures. Independently, the pre-existing `9d0d98f` 90-second same-window selection fallback could promote an earlier selection to `current_selection` after transient fresh-capture failure. Fixture timestamps/hashes plus the installed 120-vs-111 capture prove this fallback path; `7a2a21e` deferred Browser context was a separate guarded hazard.
+Fix: `5bc9bc4`/`c52b9df` bind direct output to same-turn selected context and reject instruction echoes; `2f8793e` restores blocking Live responses. Dirty source now invalidates the automation selection fallback on every new non-empty user turn, retaining only same-turn retry value. Existing Browser source-identity/deferred-context guards remain.
+Evidence: Browser failure `5d631d...` and corrected task `d14cb8...`; selected-context `installed-c52b9df-r1` and `installed-2f8793e-r1`. Corrected selection/adjacent matrix 234/234 and full desktop 1,207/1,207; rebuild, two-selection installed replay and clipboard restoration proof pending.
 Touches: Command routing; selected context; Browser coordinator.
 Protect: Direct actions and selected-text reasoning.
 

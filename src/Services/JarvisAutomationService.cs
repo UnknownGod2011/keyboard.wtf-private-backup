@@ -410,10 +410,21 @@ public sealed class JarvisAutomationService : IDisposable
 
     public void ObserveUserTranscript(string text)
     {
+        var userTurn = (text ?? "").Trim();
+        if (userTurn.Length > 0)
+        {
+            // A same-window selection is not evidence that its contents still
+            // match a new request. Keep the cache only for retries within the
+            // current turn; a later turn must capture the current selection or
+            // fail closed instead of silently resurrecting older text.
+            lock (_selectionLock)
+                _lastSelection = null;
+        }
+
         PendingJarvisAction pending;
         lock (_pendingLock)
         {
-            _latestUserTranscript = Limit((text ?? "").Trim(), 1000);
+            _latestUserTranscript = Limit(userTurn, 1000);
             _latestUserTranscriptAt = DateTimeOffset.UtcNow;
             pending = _pending;
         }

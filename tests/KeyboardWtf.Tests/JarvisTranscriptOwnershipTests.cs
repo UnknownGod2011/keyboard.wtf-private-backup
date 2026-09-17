@@ -96,6 +96,27 @@ public sealed class JarvisTranscriptOwnershipTests : IDisposable
     }
 
     [Fact]
+    public void A_new_user_turn_invalidates_the_previous_same_window_selection_fallback()
+    {
+        var field = typeof(JarvisAutomationService).GetField(
+            "_lastSelection",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        field.SetValue(_automation, new SelectionSnapshot(
+            "older selected text",
+            DateTimeOffset.UtcNow,
+            (IntPtr)42,
+            "fixture",
+            "Selection fixture"));
+
+        _commands.ObserveJarvisTranscript(
+            "Rewrite my newly selected text and copy the result.",
+            CancellationToken.None);
+
+        Assert.Null(field.GetValue(_automation));
+    }
+
+    [Fact]
     public void Observing_a_durable_request_does_not_save_or_act_before_a_model_tool_call()
     {
         _commands.ObserveJarvisTranscript(Request, CancellationToken.None);
