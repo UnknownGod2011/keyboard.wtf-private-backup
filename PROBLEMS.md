@@ -334,12 +334,12 @@ Touches: `HotkeyService` TEST seam and focused tests.
 Protect: All production hotkey values and unrelated user settings.
 
 ## P34 — Active Browser task guidance and failure context
-Status: FIXED
+Status: PHYSICALLY VERIFIED
 Expected: Only relevant answers/corrections/guidance reach the same live task; terminal tasks lose routing authority, while concise diagnostic context still explains the latest failure.
-Latest evidence: Real isolated Live/registry/Helper task `ab1444a7...` remained paused on its form during one direct URL open, accepted skip on the same task, completed without writes/submission, and accurately explained the outcome. One result batch per turn.
+Latest evidence: Exact installed `d4cbd11` with the production Store Helper kept task `5ddfd01c...` paused and skippable while one unrelated `open_url` to `https://example.net/` executed exactly once, then accepted the explicit optional-field skip on that same task and completed. Fresh UI inspection proved every fixture field remained unchanged and the form remained `Not submitted`; Jarvis was stopped immediately and both reservation counters were zero.
 Root cause: Tool execution still let active-task heuristics override a semantically selected direct tool; URL punctuation plus broad page-word overlap could qualify as field guidance.
 Fix: Let only Browser start/control tools enter active-task guidance; keep immediate local cancellation and read-only recent outcome context. No additional phrase grammar.
-Evidence: Failure `27c075eb...` preserved in `dist/verification/p34-*`; corrected model trace in `output/playwright/browser-model-guidance`; 355 focused cases pass. Muted audio/text input is not installed microphone proof; final installed replay pending.
+Evidence: Failure `27c075eb...` is preserved in `dist/verification/p34-*`; corrected isolated model trace is in `output/playwright/browser-model-guidance`; 355 focused cases pass. The installed replay also proved the safety boundary: an earlier skip against a metadata-unknown `contenteditable` was rejected without mutation, while the native optional field exposed `interventionCanSkip=true` and completed through the intended ownership path.
 Touches: Existing CommandRegistry tool-routing boundary; Browser coordinator.
 Protect: Unrelated Jarvis turns, direct browser actions, cancellation and dead-task cleanup.
 
