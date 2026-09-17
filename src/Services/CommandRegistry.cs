@@ -963,8 +963,40 @@ public sealed class CommandRegistry
             if (_automation == null)
                 return ToolResult(false, $"{toolName} is not a supported keyboard.wtf action yet.", supported: false);
 
-            if (toolName == "copy_text"
+            var latestUserTurn = RecentJarvisUserTurn();
+            var hasCurrentSelectedContext = HasCurrentSelectedContextForTurn();
+            if (RequiresFreshSelectedContextBeforeMutation(
+                    toolName,
+                    latestUserTurn,
+                    hasCurrentSelectedContext))
+            {
+                var capture = await _automation.ExecuteAsync(
+                    "get_selected_text",
+                    JsonSerializer.SerializeToElement(new { include_text = true }),
+                    token);
+                token.ThrowIfCancellationRequested();
+                if (!TryGetCapturedContextText(capture, out var selectedText))
+                    return BrowserContextCaptureRequired(capture);
+
+                RecordCapturedBrowserContext("get_selected_text", capture);
+                AppLog.Info(
+                    $"Jarvis captured fresh selected context before {toolName} could publish a result; characters={selectedText.Length}");
+                var captureRequired = ToolResult(
+                    false,
+                    "Fresh selected text was captured before the requested output mutation. The clipboard and selection were left unchanged. "
+                    + "Use selected_text as the source content, produce the requested result, then retry the output tool with only that final result.",
+                    needsClarification: false);
+                captureRequired["clipboard_unchanged"] = true;
+                captureRequired["selection_unchanged"] = true;
+                captureRequired["selected_context_result_required"] = true;
+                captureRequired["selected_text"] = selectedText;
+                captureRequired["source"] = "current_selection";
+                return captureRequired;
+            }
+
+            if (toolName is "copy_text" or "replace_selected_text"
                 && TryRejectSelectedContextInstructionEcho(
+                    toolName,
                     GetString(args, "text"),
                     out var selectedContextRejection))
             {
@@ -2255,7 +2287,8 @@ public sealed class CommandRegistry
     }
 
     private bool TryRejectSelectedContextInstructionEcho(
-        string proposedCopy,
+        string toolName,
+        string proposedText,
         out Dictionary<string, object> result)
     {
         result = null;
@@ -2279,21 +2312,46 @@ public sealed class CommandRegistry
             selection = _capturedBrowserContextText;
         }
 
-        if (!IsSelectedContextInstructionEcho(proposedCopy, request, selection))
+        if (!IsSelectedContextInstructionEcho(proposedText, request, selection))
             return false;
 
         AppLog.Warning(
-            "Jarvis blocked a selected-context copy payload that resembled the current instruction instead of the captured selection result; "
-            + $"requestCharacters={request.Length} selectionCharacters={selection.Length} proposedCharacters={(proposedCopy ?? "").Length}");
+            $"Jarvis blocked a selected-context {toolName} payload that resembled the current instruction instead of the captured selection result; "
+            + $"requestCharacters={request.Length} selectionCharacters={selection.Length} proposedCharacters={(proposedText ?? "").Length}");
         result = ToolResult(
             false,
-            "The proposed clipboard text restates the user's instruction instead of providing a result derived from the selected content. "
-            + "Leave the clipboard unchanged, transform or analyze the selected text returned by get_selected_text, then call copy_text with only that final result.",
+            "The proposed output text restates the user's instruction instead of providing a result derived from the selected content. "
+            + $"Leave the clipboard and selection unchanged, transform or analyze the selected text returned by get_selected_text, then call {toolName} with only that final result.",
             needsClarification: false);
         result["clipboard_unchanged"] = true;
+        result["selection_unchanged"] = true;
         result["selected_context_result_required"] = true;
         return true;
     }
+
+    private bool HasCurrentSelectedContextForTurn()
+    {
+        lock (_browserPreRouteLock)
+        {
+            return CapturedBrowserContextIsFreshLocked()
+                && string.Equals(
+                    _capturedBrowserContextSource,
+                    "selected text",
+                    StringComparison.OrdinalIgnoreCase)
+                && IsSameJarvisUserTurn(
+                    _capturedBrowserContextUserTurn,
+                    _latestJarvisUserTurn);
+        }
+    }
+
+    internal static bool RequiresFreshSelectedContextBeforeMutation(
+        string toolName,
+        string request,
+        bool hasCurrentSelectedContext) =>
+        !hasCurrentSelectedContext
+        && (toolName == "replace_selected_text"
+            || (toolName == "copy_text"
+                && BrowserAutomationTaskClassifier.ReferencesSelectedUserContext(request)));
 
     private static bool IsSameJarvisUserTurn(string capturedTurn, string currentTurn)
     {

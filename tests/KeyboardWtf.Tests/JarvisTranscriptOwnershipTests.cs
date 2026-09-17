@@ -146,8 +146,10 @@ public sealed class JarvisTranscriptOwnershipTests : IDisposable
         Assert.Empty(_mappings.Snapshot());
     }
 
-    [Fact]
-    public async Task Current_selected_context_rejects_an_instruction_echo_before_clipboard_execution()
+    [Theory]
+    [InlineData("copy_text")]
+    [InlineData("replace_selected_text")]
+    public async Task Current_selected_context_rejects_an_instruction_echo_before_output_execution(string toolName)
     {
         const string request =
             "I've selected some text. I need you to polish the English and copy the revised version to my clipboard, keeping the original meaning intact.";
@@ -170,12 +172,13 @@ public sealed class JarvisTranscriptOwnershipTests : IDisposable
             ]);
 
         var result = await _commands.ExecuteJarvisToolAsync(
-            "copy_text",
+            toolName,
             JsonSerializer.SerializeToElement(new { text = request }),
             CancellationToken.None);
 
         Assert.Equal(false, result["ok"]);
         Assert.Equal(true, result["clipboard_unchanged"]);
+        Assert.Equal(true, result["selection_unchanged"]);
         Assert.Equal(true, result["selected_context_result_required"]);
         Assert.Contains("selected content", result["message"].ToString(), StringComparison.OrdinalIgnoreCase);
     }

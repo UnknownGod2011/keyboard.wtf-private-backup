@@ -370,6 +370,9 @@ public sealed class BrowserAutomationTaskClassifier
             + @"|\b(?:use|from|with|based\s+on)\b.{0,60}\b(?:the|that|my|previous|provided|supplied|captured)\s+(?:selection|selected\s+text|clipboard|context|details|information|data)\b",
             RegexOptions.IgnoreCase);
 
+    internal static bool ReferencesSelectedUserContext(string text) =>
+        ExplicitSelectedContext.IsMatch(text ?? "");
+
     internal static bool RequiresFreshUserContextCapture(string text) =>
         ReferencesCapturedUserContext(text)
         && (RequiresPageMutation(text)

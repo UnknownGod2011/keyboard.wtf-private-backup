@@ -77,6 +77,26 @@ public sealed class JarvisRoutingAndTtsRegressionTests
             selection));
     }
 
+    [Theory]
+    [InlineData("copy_text", "Polish my selected paragraph and copy the result.", false, true)]
+    [InlineData("replace_selected_text", "Rewrite the highlighted sentence in professional English.", false, true)]
+    [InlineData("copy_text", "Polish my selected paragraph and copy the result.", true, false)]
+    [InlineData("copy_text", "Copy this final answer to my clipboard.", false, false)]
+    [InlineData("type_text", "Polish my selected paragraph and type the result.", false, false)]
+    public void Selected_context_output_mutation_requires_a_same_turn_capture(
+        string toolName,
+        string request,
+        bool hasCurrentSelectedContext,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            CommandRegistry.RequiresFreshSelectedContextBeforeMutation(
+                toolName,
+                request,
+                hasCurrentSelectedContext));
+    }
+
     [Fact]
     public void Link_alias_tool_allows_the_existing_selection_fallback()
     {
