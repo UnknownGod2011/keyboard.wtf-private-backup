@@ -53,8 +53,9 @@ public sealed class CommandRegistry
     private DateTime _latestJarvisUserTurnUtc;
     // One conversation-scoped capture, replaced by every newer explicit
     // selection/clipboard read and cleared when Jarvis ends. It is never saved
-    // as memory and is attached to a browser task only when the user asks to
-    // use that context (or explicitly asked to retain it for a later action).
+    // as memory. Browser tasks may consume it when explicitly authorized; the
+    // direct selected-text path also uses it to prevent an instruction echo
+    // from being published as the requested result.
     private string _capturedBrowserContextText = "";
     private string _capturedBrowserContextSource = "";
     private string _capturedBrowserContextUserTurn = "";
@@ -961,6 +962,14 @@ public sealed class CommandRegistry
 
             if (_automation == null)
                 return ToolResult(false, $"{toolName} is not a supported keyboard.wtf action yet.", supported: false);
+
+            if (toolName == "copy_text"
+                && TryRejectSelectedContextInstructionEcho(
+                    GetString(args, "text"),
+                    out var selectedContextRejection))
+            {
+                return selectedContextRejection;
+            }
 
             var result = await _automation.ExecuteAsync(toolName, args, token);
             if (toolName is "get_selected_text" or "get_clipboard_text")
@@ -2244,6 +2253,87 @@ public sealed class CommandRegistry
         AppLog.Info(
             $"Jarvis captured ephemeral {_capturedBrowserContextSource} for explicit same-conversation use; characters={_capturedBrowserContextText.Length}");
     }
+
+    private bool TryRejectSelectedContextInstructionEcho(
+        string proposedCopy,
+        out Dictionary<string, object> result)
+    {
+        result = null;
+        string request;
+        string selection;
+        lock (_browserPreRouteLock)
+        {
+            if (!CapturedBrowserContextIsFreshLocked()
+                || !string.Equals(
+                    _capturedBrowserContextSource,
+                    "selected text",
+                    StringComparison.OrdinalIgnoreCase)
+                || !IsSameJarvisUserTurn(
+                    _capturedBrowserContextUserTurn,
+                    _latestJarvisUserTurn))
+            {
+                return false;
+            }
+
+            request = _latestJarvisUserTurn;
+            selection = _capturedBrowserContextText;
+        }
+
+        if (!IsSelectedContextInstructionEcho(proposedCopy, request, selection))
+            return false;
+
+        AppLog.Warning(
+            "Jarvis blocked a selected-context copy payload that resembled the current instruction instead of the captured selection result; "
+            + $"requestCharacters={request.Length} selectionCharacters={selection.Length} proposedCharacters={(proposedCopy ?? "").Length}");
+        result = ToolResult(
+            false,
+            "The proposed clipboard text restates the user's instruction instead of providing a result derived from the selected content. "
+            + "Leave the clipboard unchanged, transform or analyze the selected text returned by get_selected_text, then call copy_text with only that final result.",
+            needsClarification: false);
+        result["clipboard_unchanged"] = true;
+        result["selected_context_result_required"] = true;
+        return true;
+    }
+
+    private static bool IsSameJarvisUserTurn(string capturedTurn, string currentTurn)
+    {
+        var captured = (capturedTurn ?? "").Trim();
+        var current = (currentTurn ?? "").Trim();
+        return captured.Length > 0
+            && current.Length > 0
+            && (string.Equals(captured, current, StringComparison.OrdinalIgnoreCase)
+                || current.StartsWith(captured + " ", StringComparison.OrdinalIgnoreCase));
+    }
+
+    internal static bool IsSelectedContextInstructionEcho(
+        string proposedCopy,
+        string request,
+        string selection)
+    {
+        var candidateTokens = SemanticTokens(proposedCopy);
+        var requestTokens = SemanticTokens(request);
+        var selectionTokens = SemanticTokens(selection);
+        if (candidateTokens.Count < 5
+            || requestTokens.Count < 5
+            || selectionTokens.Count == 0)
+        {
+            return false;
+        }
+
+        var requestCoverage = candidateTokens.Count(requestTokens.Contains)
+            / (double)candidateTokens.Count;
+        var selectionCoverage = candidateTokens.Count(selectionTokens.Contains)
+            / (double)candidateTokens.Count;
+        return requestCoverage >= 0.55
+            && selectionCoverage <= 0.35
+            && requestCoverage - selectionCoverage >= 0.30;
+    }
+
+    private static HashSet<string> SemanticTokens(string value) =>
+        Regex.Matches((value ?? "").ToLowerInvariant(), @"[\p{L}\p{N}]+")
+            .Select(match => match.Value)
+            .Where(token => token.Length >= 3 || token.All(char.IsDigit))
+            .ToHashSet(StringComparer.Ordinal);
 
     private bool TryAttachCapturedBrowserContext(
         string request,

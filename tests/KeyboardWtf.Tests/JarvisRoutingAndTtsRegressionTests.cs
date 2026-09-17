@@ -39,6 +39,45 @@ public sealed class JarvisRoutingAndTtsRegressionTests
     }
 
     [Fact]
+    public void Selected_context_copy_rejects_an_instruction_paraphrase_instead_of_mutating_the_clipboard()
+    {
+        const string request =
+            "I've selected some text. I need you to polish the English and copy the revised version to my clipboard, keeping the original meaning intact.";
+        const string selection =
+            "Yesterday the engineering team review the incident and they decides that the cache policy need clearer ownership. The change reduce duplicate work while keeping every customer-visible behavior the same.";
+        const string proposedCopy =
+            "I've selected some text. I need you to polish the English and copy the revised version to my clipboard, keeping the original meaning intact.";
+
+        Assert.True(CommandRegistry.IsSelectedContextInstructionEcho(
+            proposedCopy,
+            request,
+            selection));
+    }
+
+    [Theory]
+    [InlineData(
+        "Yesterday, the engineering team reviewed the incident and decided that the cache policy needs clearer ownership. The change reduces duplicate work while keeping every customer-visible behavior the same.",
+        "Polish the selected text and copy the result.")]
+    [InlineData(
+        "The passage argues that clearer cache ownership reduces duplicate engineering work without changing customer-visible behavior.",
+        "Analyze my selected text and copy your conclusion.")]
+    [InlineData(
+        "Bonjour, tout le monde.",
+        "Translate the selected sentence to French and copy only the translation.")]
+    public void Selected_context_copy_allows_actual_results(
+        string proposedCopy,
+        string request)
+    {
+        const string selection =
+            "Yesterday the engineering team review the incident and they decides that the cache policy need clearer ownership. The change reduce duplicate work while keeping every customer-visible behavior the same.";
+
+        Assert.False(CommandRegistry.IsSelectedContextInstructionEcho(
+            proposedCopy,
+            request,
+            selection));
+    }
+
+    [Fact]
     public void Link_alias_tool_allows_the_existing_selection_fallback()
     {
         var buildTools = typeof(GeminiLiveConversationService).GetMethod(

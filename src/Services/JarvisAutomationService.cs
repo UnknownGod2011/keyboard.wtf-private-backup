@@ -1311,6 +1311,8 @@ public sealed class JarvisAutomationService : IDisposable
         Result(true, fresh ? "Selected text captured." : "Used the recent selection from this same window.", extras: new()
         {
             ["text"] = Limit(text, 6000),
+            ["source"] = "current_selection",
+            ["content_role"] = "user_selected_source_content",
             ["truncated"] = text.Length > 6000,
             ["fresh"] = fresh,
         });

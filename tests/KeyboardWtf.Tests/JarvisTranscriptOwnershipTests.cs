@@ -146,6 +146,40 @@ public sealed class JarvisTranscriptOwnershipTests : IDisposable
         Assert.Empty(_mappings.Snapshot());
     }
 
+    [Fact]
+    public async Task Current_selected_context_rejects_an_instruction_echo_before_clipboard_execution()
+    {
+        const string request =
+            "I've selected some text. I need you to polish the English and copy the revised version to my clipboard, keeping the original meaning intact.";
+        const string selection =
+            "Yesterday the engineering team review the incident and they decides that the cache policy need clearer ownership. The change reduce duplicate work while keeping every customer-visible behavior the same.";
+        _commands.ObserveJarvisTranscript(request, CancellationToken.None);
+
+        typeof(CommandRegistry).GetMethod(
+                "RecordCapturedBrowserContext",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .Invoke(_commands,
+            [
+                "get_selected_text",
+                new Dictionary<string, object>
+                {
+                    ["ok"] = true,
+                    ["text"] = selection,
+                    ["fresh"] = true,
+                },
+            ]);
+
+        var result = await _commands.ExecuteJarvisToolAsync(
+            "copy_text",
+            JsonSerializer.SerializeToElement(new { text = request }),
+            CancellationToken.None);
+
+        Assert.Equal(false, result["ok"]);
+        Assert.Equal(true, result["clipboard_unchanged"]);
+        Assert.Equal(true, result["selected_context_result_required"]);
+        Assert.Contains("selected content", result["message"].ToString(), StringComparison.OrdinalIgnoreCase);
+    }
+
     public void Dispose()
     {
         _automation.Dispose();
