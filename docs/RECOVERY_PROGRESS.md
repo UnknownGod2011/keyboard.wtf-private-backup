@@ -1,8 +1,8 @@
 # Recovery progress
 
-- Checkpoint: installed `d444221ad25ac6250b1bfb227b7c7d2123abab13`; installer `A1E27181713C0DF0BA663F65471487D4E31785B14DA1F746CFB202D2CA132A13`; installed/package EXE `87711C523744EDC506ED077071C94B8B2BCA8E036CB97272D8C225BE9EC681AB`; final P15 delayed-link correction is dirty.
-- Current problem: P15 Devpost distinct-site action identity, then P34 installed guidance matrix.
-- Proven root cause: after identity fixes selected the correct RevenueCat card, its real same-tab link took over five seconds to commit; the immediate no-change receipt caused replanning from the old list and a guessed wrong slug.
-- Fix made: retain both identity guards; additionally reconcile only a successful no-change link click against an observed URL change on the same exact owned tab, with an eight-second bound.
-- Verification: exact installed `d444221` proves all wrong-control mutations are gone; Playwright proves the correct live href and delayed commit; delayed-link tests, 671 Browser tests and all 1,188 desktop tests pass. Rebuild/install/exact replay is next. P12/P14/P40 are physically verified.
-- Remaining: P15 distinct-site acceptance; P34 installed matrix; broader P10-P16 web/direct behavior; P21/P38; long real microphone P04/P08/P09/P20/P32/P37; P23/P43; bounded Screen Analysis Gemini 3.5/3.8 latency-cost benchmark; P41/P42; final P25-P30/P44 audit, frozen candidate, and human acceptance.
+- Checkpoint: installed private `ce707f4eb9f3bde9d45bc12f089066a76523f4c0`; installer `AFC20E475A7F43D9530566BD3A15E76C59C79F15E18D8847C4BA929F15771A5A`; installed/package EXE `796C30578F9DD32EE4E30C8D11693F88B23AF8DBD424607532B3178BBDD4A25E`. Public 1.4.17 untouched.
+- Current problem: P10 high-priority direct selected-text transformation/clipboard regression.
+- Proven root cause: pending. Manual installed result copied a paraphrase of the instruction instead of transforming the actual selection; capture/freshness/payload/tool/clipboard ownership and 1.4.17 differential must be traced.
+- Fix made: none yet. Preserve the existing Browser selected-source identity guard.
+- Verification: P15 is physically verified at `repair-ce707f4/p15-devpost-terminal-final`; correct live `$740,000` card, `…-2026` destination, Completed, stable follow-up, audible success, input restored, reserved zero; 1,194 desktop tests pass.
+- Remaining: selected-context blocker; P34 installed matrix; broader P10-P16 web/direct behavior; P21/P38; long real microphone P04/P08/P09/P20/P32/P37; P23/P43; bounded Gemini 3.5/3.8 Screen Analysis benchmark; P41/P42; final P25-P30/P44 audit/freeze/install/hash/human acceptance.

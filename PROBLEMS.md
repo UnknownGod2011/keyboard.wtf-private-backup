@@ -93,12 +93,12 @@ Touches: AudioRecorderService, VoiceCaptureService, WebSettingsService.
 Protect: Audio quality, VAD and barge-in.
 
 ## P10 — Browser context and intent ownership
-Status: FIXED
+Status: INVESTIGATING
 Expected: Context-now/action-later waits; fresh selection replaces stale; selected-text reasoning stays conversational.
-Latest evidence: A later TEST turn supplied fresh clipboard text before an explicit selected-text task; the start owner initially accepted that wrong source. Task `d14cb8...` now attached the actual selected text and visibly completed the form without submission/reset.
-Root cause: Browser start first depended on an optional model capture, then treated any fresh captured source as satisfying an explicitly named source.
-Fix: The existing Browser start owner captures the explicitly named source and retained context is accepted only when its source identity matches the request.
-Evidence: Failure task `5d631d...`; corrected real-Helper task `d14cb8...` carried `AUTHORITATIVE ... SELECTED TEXT`, filled all known fields with correct group identity, skipped the optional field, and matched the visible page; 466 focused tests pass. Final production-installed verification pending.
+Latest evidence: Browser-task selected-source ownership remains fixed (`d14cb8...`). New manual installed failure: a request to polish selected text and copy it instead copied a paraphrase of the instruction itself. This direct selected-reasoning/clipboard regression is release-blocking and its source capture, freshness, model payload and clipboard ownership are under investigation against 1.4.17.
+Root cause: The earlier Browser start bug was accepting the wrong fresh source. The newly reported direct selected-text failure has not yet been attributed; do not assume it is the same route.
+Fix: Existing Browser source-identity guard remains. No direct selected-text correction is claimed yet.
+Evidence: Browser failure `5d631d...` and corrected task `d14cb8...` remain valid. New direct installed human failure is the active reproduction; generic physical matrix required before closure.
 Touches: Command routing; selected context; Browser coordinator.
 Protect: Direct actions and selected-text reasoning.
 
@@ -143,12 +143,12 @@ Touches: Browser coordinator/executor; Live/input boundary.
 Protect: Jarvis remains usable after cancel.
 
 ## P15 — Browser correctness constraints and visible completion
-Status: INVESTIGATING
+Status: PHYSICALLY VERIFIED
 Expected: Latest-by-publisher verifies publisher/freshness; useful page is preserved; Completed matches visible state.
-Latest evidence: Exact installed `b4308aa` NASA replay completed correctly. Installed `f3d043a`/`5cc2767` exposed goal/target mismatch, `e651fba` the vision bypass, and `ef90e48` a recycled ID. Installed `d444221` eliminated those wrong targets and selected the real RevenueCat `$740,000` card, but its slow same-tab link navigation was reported as immediate no-change; replanning from the old page then guessed the wrong direct URL and ended Partial.
-Root cause: NASA source extraction and form coverage are fixed. Devpost exposed three independent timing/identity failures: planner goal versus declared target, volatile ID versus live control, and a link navigation that commits after the immediate content-script receipt. Separate Playwright inspection proved the live card's correct `…-2026.devpost.com` href and that its same-tab navigation remains pending beyond five seconds before loading successfully.
-Fix: Preserve ordered-source, history and form verification. Enforce goal/live-control identity in normal and vision paths; require renderer ID and declared name to agree or uniquely re-ground/clear it. At the same action-receipt boundary, a successful no-change link click waits boundedly for that exact owned tab's URL to change and records the observed URL as navigation. No guessed URL, site vocabulary, prompt, Helper publication or new owner.
-Evidence: NASA: `repair-5fddef4/nasa-oldest-20260916`, `repair-b4308aa/nasa-oldest-p15-after`. Form: `repair-b4308aa/p14-partial-disabled-attempt-b4308aa`, `repair-f3d043a/p12-omitted-disabled-field-replay`. Devpost: `repair-f3d043a/p15-devpost-highest-prize`, `p15-devpost-prize-sort-explicit`, `repair-5cc2767/p15-devpost-prize-sort-after`, `repair-e651fba/p15-devpost-prize-sort-guard`, `repair-ef90e48/p15-devpost-prize-sort-vision-guard`, `repair-d444221/p15-devpost-prize-sort-recycled-id-guard`. Delayed-link focused/adversarial checks, 671 Browser tests and all 1,188 desktop tests pass. Rebuild/install/exact replay remains OPEN.
+Latest evidence: Exact installed `ce707f4` opened the live RevenueCat `$740,000` card from the prize-sorted Devpost page, reconciled its delayed same-tab navigation to `revenuecat-shipaton-2026.devpost.com`, and reached truthful `Completed`. A later diagnostic left the same terminal task unchanged; speaker output announced success; mute restored and reserved credits returned to zero.
+Root cause: NASA source extraction and form coverage were fixed earlier. Devpost exposed planner/target disagreement, volatile renderer IDs, delayed link navigation, usable documents whose background resources kept Chrome in `loading`, and terminal action counting that mistook a descriptive final state (`is open`) for another mutation.
+Fix: Preserve ordered-source/history/form verification; require declared goal, ID and live control to agree or uniquely re-ground. Reconcile only exact-owned-tab delayed links and exact-URL readable navigation timeouts. Count imperative mutations rather than described states, and accept terminal link navigation only when the exact final URL and live target/entity agree. No guessed URL, site vocabulary, Helper change or new owner.
+Evidence: Earlier NASA/form/Devpost traces remain above. Final exact-installed evidence: `dist/verification/repair-ce707f4/p15-devpost-terminal-final` (task `d6af490...`, transcript and run); `84ea8f0` preceding trace proves the correct page while exposing the false 3-step terminal count. Focused/adversarial tests and all 1,194 desktop tests pass.
 Touches: Browser planner/coordinator/verifier.
 Protect: Generic behavior; no site-specific rules.
 
@@ -275,10 +275,10 @@ Protect: No speculative rewrite.
 ## P28 — Exact current installer/install provenance
 Status: PHYSICALLY VERIFIED
 Expected: Installed bytes derive from the frozen source and exact hashed installer.
-Latest evidence: Installed frozen `5fddef4068b45677d7aa209203d9d22790d94c14` EXE `CDADCC46FB51939F74DF4FD503A2AFCF61B25FCBBB2A3C2BFBAE3C3A5BDCEB44` matches the package (314,822,094 bytes); installer `3050590E42B079505E1265ED92FD323601459FD61D1B4039AFEE60D46ED93706` is 84,286,392 bytes. The dirty P15 correction is not packaged.
+Latest evidence: Installed private checkpoint `ce707f4eb9f3bde9d45bc12f089066a76523f4c0` EXE `796C30578F9DD32EE4E30C8D11693F88B23AF8DBD424607532B3178BBDD4A25E` matches the package (314,830,286 bytes); installer `AFC20E475A7F43D9530566BD3A15E76C59C79F15E18D8847C4BA929F15771A5A` is 84,289,274 bytes. This remains private and is not the final frozen candidate.
 Root cause: Release-integrity requirement.
 Fix: Freeze source, build once, hash, install exact bytes and independently verify provenance.
-Evidence: `dist/verification/repair-5fddef4/provenance.json`; CI `34979469331`, 1,163 desktop/262 backend/12 real Firestore, clean-profile runtime and independent installed hash agree. Partial physical acceptance only; not final human acceptance.
+Evidence: Exact build/install hashes above, clean-profile runtime gate, unchanged settings/mappings/memory/history across install, and `repair-ce707f4/p15-devpost-terminal-final`. Final whole-system gates and provenance record remain pending.
 Touches: Build/install/provenance.
 Protect: Do not rebuild without a source defect.
 
