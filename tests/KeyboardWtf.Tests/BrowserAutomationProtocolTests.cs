@@ -2669,6 +2669,71 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Grounded_action_identity_prefers_the_declared_name_over_a_recycled_id()
+    {
+        var wrong = new BrowserControl
+        {
+            Id = "volatile-control-1",
+            Role = "link",
+            AccessibleName = "Resources",
+            Visible = true,
+            Enabled = true,
+        };
+        var prizeSort = new BrowserControl
+        {
+            Id = "volatile-control-2",
+            Role = "link",
+            AccessibleName = "Prize amount",
+            Visible = true,
+            Enabled = true,
+        };
+        var action = new BrowserPlannerAction
+        {
+            Type = "click",
+            TargetId = wrong.Id,
+            TargetRole = "link",
+            TargetName = "Prize amount",
+        };
+
+        var control = BrowserAutomationCoordinator.GroundActionIdentity(
+            new BrowserPageSnapshot { Controls = [wrong, prizeSort] },
+            action);
+
+        Assert.Same(prizeSort, control);
+        Assert.Equal(prizeSort.Id, action.TargetId);
+        Assert.Equal(prizeSort.AccessibleName, action.TargetName);
+    }
+
+    [Fact]
+    public void Grounded_action_identity_clears_a_recycled_id_when_the_declared_target_is_absent()
+    {
+        var action = new BrowserPlannerAction
+        {
+            Type = "click",
+            TargetId = "volatile-control-1",
+            TargetRole = "link",
+            TargetName = "Prize amount",
+        };
+        var page = new BrowserPageSnapshot
+        {
+            Controls =
+            [
+                new BrowserControl
+                {
+                    Id = action.TargetId,
+                    Role = "link",
+                    AccessibleName = "Resources",
+                    Visible = true,
+                    Enabled = true,
+                },
+            ],
+        };
+
+        Assert.Null(BrowserAutomationCoordinator.GroundActionIdentity(page, action));
+        Assert.Empty(action.TargetId);
+    }
+
+    [Fact]
     public void Quoted_immediate_goal_rejects_an_unrelated_live_click_target()
     {
         var control = new BrowserControl

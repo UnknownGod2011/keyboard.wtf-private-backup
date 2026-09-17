@@ -2042,7 +2042,20 @@ public sealed class BrowserAutomationCoordinator : IDisposable
 
         var live = FindMatchingControl(page, action);
         if (live == null)
+        {
+            var idControl = page.Controls.FirstOrDefault(control =>
+                string.Equals(control.Id, action.TargetId, StringComparison.Ordinal));
+            if (idControl != null
+                && Normalize(action.TargetName).Length > 0
+                && Normalize(ControlName(idControl)).Length > 0
+                && NameScore(
+                    Normalize(action.TargetName),
+                    Normalize(ControlName(idControl))) < 2)
+            {
+                action.TargetId = "";
+            }
             return null;
+        }
 
         action.TargetId = live.Id;
         if (!string.IsNullOrWhiteSpace(live.Role))
@@ -5631,9 +5644,26 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         var byId = page.Controls.FirstOrDefault(control =>
             string.Equals(control.Id, action.TargetId, StringComparison.Ordinal));
         if (byId != null)
-            return string.IsNullOrWhiteSpace(action.TargetFieldId)
-                || string.Equals(byId.FieldId, action.TargetFieldId, StringComparison.Ordinal)
-                    ? byId : null;
+        {
+            if (!string.IsNullOrWhiteSpace(action.TargetFieldId)
+                && !string.Equals(byId.FieldId, action.TargetFieldId, StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            var declaredName = Normalize(action.TargetName);
+            var liveName = Normalize(ControlName(byId));
+            if (declaredName.Length == 0
+                || liveName.Length == 0
+                || NameScore(declaredName, liveName) >= 2)
+            {
+                return byId;
+            }
+
+            // Renderer ids are volatile. A recycled id cannot override the
+            // planner's declared semantic target with another live control.
+            // Fall through to the existing unique name/role grounding.
+        }
 
         var wanted = Normalize(action.TargetName);
         var candidates = page.Controls
