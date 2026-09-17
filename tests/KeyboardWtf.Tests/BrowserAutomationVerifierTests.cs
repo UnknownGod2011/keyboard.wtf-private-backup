@@ -698,6 +698,81 @@ public sealed class BrowserAutomationVerifierTests
     }
 
     [Fact]
+    public void Final_open_state_is_not_counted_as_a_third_browser_mutation()
+    {
+        const string request =
+            "Open https://example.test/hackathons?order_by=prize. "
+            + "Identify the first hackathon and its prize, then open that card using its live link. "
+            + "Verify the destination is the same hackathon and stop once it is open.";
+        var destination = "https://revenuecat-shipaton-2026.example.test/";
+        var result = _verifier.VerifyTerminal(
+            request,
+            new BrowserPlannerDecision { Done = true, ResultSummary = "Opened RevenueCat Shipaton 2026." },
+            new BrowserPageSnapshot
+            {
+                TabId = 42,
+                Url = destination,
+                Title = "RevenueCat Shipaton 2026",
+                PageText = "$740,000 in prizes",
+            },
+            new[]
+            {
+                new BrowserActionReceipt
+                {
+                    Ok = true,
+                    Action = "navigate",
+                    Navigation = true,
+                    BeforeUrl = "https://example.test/",
+                    AfterUrl = "https://example.test/hackathons?order_by=prize",
+                    TabId = 42,
+                },
+                new BrowserActionReceipt
+                {
+                    Ok = true,
+                    Action = "click",
+                    TargetRole = "link",
+                    TargetName = "RevenueCat Shipaton 2026 $740,000 in prizes",
+                    Navigation = true,
+                    BeforeUrl = "https://example.test/hackathons?order_by=prize",
+                    AfterUrl = destination,
+                    TabId = 42,
+                },
+            });
+
+        Assert.Equal(2, BrowserAutomationVerifier.CountRequestedMutationSteps(request));
+        Assert.True(result.Verified);
+    }
+
+    [Fact]
+    public void Navigated_link_target_cannot_verify_a_different_final_entity()
+    {
+        var result = _verifier.VerifyTerminal(
+            "Open the first hackathon card.",
+            new BrowserPlannerDecision { Done = true, ResultSummary = "Opened the first hackathon." },
+            new BrowserPageSnapshot
+            {
+                Url = "https://other-hackathon.example.test/",
+                Title = "Other Hackathon",
+                PageText = "$10 in prizes",
+            },
+            new[]
+            {
+                new BrowserActionReceipt
+                {
+                    Ok = true,
+                    Action = "click",
+                    TargetRole = "link",
+                    TargetName = "RevenueCat Shipaton 2026 $740,000 in prizes",
+                    Navigation = true,
+                    BeforeUrl = "https://example.test/hackathons",
+                    AfterUrl = "https://other-hackathon.example.test/",
+                },
+            });
+
+        Assert.False(result.Verified);
+    }
+
+    [Fact]
     public void Summary_to_editor_requires_verified_destination_write()
     {
         const string request = "Summarize this page and paste the result into the Draft editor.";

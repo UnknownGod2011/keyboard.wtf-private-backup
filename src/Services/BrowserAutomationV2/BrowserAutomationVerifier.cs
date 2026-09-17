@@ -300,6 +300,11 @@ public sealed class BrowserAutomationVerifier
         }
 
         var lastChange = receipts.LastOrDefault(receipt => receipt.Ok && !receipt.NoVisibleChange);
+        if (FinalPageMatchesNavigatedLinkTarget(page, lastChange))
+        {
+            return Passed(
+                "The final live page matches the task's last verified link navigation.");
+        }
         if (lastChange != null)
         {
             var requestedControl = ExtractBetween(
@@ -324,7 +329,64 @@ public sealed class BrowserAutomationVerifier
         return Regex.Matches(
             text,
             @"\b(?:click|press|choose|select|check|uncheck|fill|type|paste|set|close|dismiss|replace|search|navigate|open)\b",
-            RegexOptions.IgnoreCase).Count;
+            RegexOptions.IgnoreCase)
+            .Cast<Match>()
+            .Count(match => !DescribesExistingState(text, match));
+    }
+
+    private static bool DescribesExistingState(string text, Match mutation)
+    {
+        if (mutation == null || mutation.Index <= 0)
+            return false;
+        var preceding = Regex.Match(
+            text[..mutation.Index],
+            @"(?<word>[\p{L}]+)\s*$",
+            RegexOptions.IgnoreCase);
+        return preceding.Success
+            && Regex.IsMatch(
+                preceding.Groups["word"].Value,
+                @"^(?:is|are|was|were|be|been|being|remain|remains|stay|stays)$",
+                RegexOptions.IgnoreCase);
+    }
+
+    private static bool FinalPageMatchesNavigatedLinkTarget(
+        BrowserPageSnapshot page,
+        BrowserActionReceipt receipt)
+    {
+        if (page == null
+            || receipt?.Ok != true
+            || receipt.Stale
+            || !receipt.Navigation
+            || !string.Equals(receipt.TargetRole, "link", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(receipt.TargetName)
+            || !SamePageUrl(receipt.AfterUrl, page.Url))
+        {
+            return false;
+        }
+
+        var targetTokens = MeaningfulTokens(receipt.TargetName);
+        return targetTokens.Length > 0
+            && ContainsMeaningfulTokens(
+                $"{page.Title} {page.PageText}",
+                receipt.TargetName,
+                minimumMatches: Math.Min(2, targetTokens.Length));
+    }
+
+    private static bool SamePageUrl(string firstUrl, string secondUrl)
+    {
+        if (!Uri.TryCreate(firstUrl, UriKind.Absolute, out var first)
+            || !Uri.TryCreate(secondUrl, UriKind.Absolute, out var second))
+        {
+            return false;
+        }
+
+        return first.Scheme.Equals(second.Scheme, StringComparison.OrdinalIgnoreCase)
+            && first.Host.Equals(second.Host, StringComparison.OrdinalIgnoreCase)
+            && first.Port == second.Port
+            && first.AbsolutePath.TrimEnd('/').Equals(
+                second.AbsolutePath.TrimEnd('/'),
+                StringComparison.OrdinalIgnoreCase)
+            && first.Query.Equals(second.Query, StringComparison.OrdinalIgnoreCase);
     }
 
     internal static int CountRequestedFormMutationSteps(string request)
