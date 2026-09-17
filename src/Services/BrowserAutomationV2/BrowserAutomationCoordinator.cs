@@ -2702,6 +2702,31 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             };
             receipt = await _bridge.ExecuteAsync(request, token);
         }
+        if (ShouldReconcileUsableTimedOutNavigation(effectiveActionType, receipt))
+        {
+            try
+            {
+                var fresh = await _bridge.ObserveAsync(
+                    runtime.TaskId,
+                    requestedTabId,
+                    token);
+                if (TryReconcileUsableTimedOutNavigation(
+                        runtime.Page,
+                        action.Url,
+                        requestedTabId,
+                        fresh,
+                        receipt))
+                {
+                    runtime.History.Add(
+                        "Reconciled a navigation load timeout from the exact owned tab after its live document became readable at the requested URL.");
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                runtime.History.Add(
+                    $"The timed-out navigation could not be read back safely: {Short(ex.Message, 180)}");
+            }
+        }
         if (ShouldAwaitDelayedLinkNavigation(effectiveActionType, receipt))
         {
             SetState(
@@ -3992,6 +4017,60 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         && string.Equals(receipt.TargetRole, "link", StringComparison.OrdinalIgnoreCase)
         && !string.IsNullOrWhiteSpace(receipt.BeforeUrl)
         && SameLivePage(receipt.BeforeUrl, receipt.AfterUrl);
+
+    internal static bool ShouldReconcileUsableTimedOutNavigation(
+        string actionType,
+        BrowserActionReceipt receipt) =>
+        string.Equals(actionType, "navigate", StringComparison.Ordinal)
+        && receipt != null
+        && !receipt.Ok
+        && !receipt.Cancelled
+        && !receipt.Stale
+        && (receipt.Error ?? "").Contains(
+            "page did not finish loading in time",
+            StringComparison.OrdinalIgnoreCase);
+
+    internal static bool TryReconcileUsableTimedOutNavigation(
+        BrowserPageSnapshot before,
+        string requestedUrl,
+        int expectedTabId,
+        BrowserPageSnapshot fresh,
+        BrowserActionReceipt receipt)
+    {
+        if (!ShouldReconcileUsableTimedOutNavigation("navigate", receipt)
+            || before == null
+            || fresh == null
+            || before.TabId != expectedTabId
+            || fresh.TabId != expectedTabId
+            || !Uri.TryCreate(requestedUrl, UriKind.Absolute, out var requested)
+            || (requested.Scheme != Uri.UriSchemeHttp
+                && requested.Scheme != Uri.UriSchemeHttps)
+            || !SameLivePage(requestedUrl, fresh.Url)
+            || (string.IsNullOrWhiteSpace(fresh.Title)
+                && string.IsNullOrWhiteSpace(fresh.PageText)
+                && (fresh.Controls?.Length ?? 0) == 0))
+        {
+            return false;
+        }
+
+        receipt.Ok = true;
+        receipt.Error = "";
+        receipt.Action = "navigate";
+        receipt.TargetId = fresh.Url;
+        receipt.TargetRole = "document";
+        receipt.TargetName = fresh.Title;
+        receipt.BeforeUrl = before.Url;
+        receipt.AfterUrl = fresh.Url;
+        receipt.BeforeFingerprint = before.Fingerprint;
+        receipt.AfterFingerprint = fresh.Fingerprint;
+        receipt.Navigation = !SameLivePage(before.Url, fresh.Url);
+        receipt.NoVisibleChange = !receipt.Navigation;
+        receipt.WindowId = fresh.WindowId;
+        receipt.TabId = fresh.TabId;
+        receipt.GraphVersion = fresh.GraphVersion;
+        receipt.DomEpoch = fresh.DomEpoch;
+        return true;
+    }
 
     internal static bool TryReconcileDelayedLinkNavigation(
         int expectedTabId,

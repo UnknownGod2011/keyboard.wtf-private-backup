@@ -2163,6 +2163,83 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Timed_out_navigation_is_reconciled_only_from_a_readable_exact_owned_destination()
+    {
+        var before = new BrowserPageSnapshot
+        {
+            WindowId = 7,
+            TabId = 42,
+            Url = "https://example.test/hackathons",
+            Title = "Hackathons",
+            Fingerprint = "before",
+        };
+        var fresh = new BrowserPageSnapshot
+        {
+            WindowId = 7,
+            TabId = 42,
+            Url = "https://example.test/hackathons?order_by=prize-amount",
+            Title = "Sorted hackathons",
+            PageText = "Prize amount",
+            Fingerprint = "after",
+            GraphVersion = 9,
+            DomEpoch = "epoch-2",
+        };
+        var receipt = new BrowserActionReceipt
+        {
+            Ok = false,
+            Action = "navigate",
+            Error = "The page did not finish loading in time.",
+        };
+
+        Assert.True(BrowserAutomationCoordinator.TryReconcileUsableTimedOutNavigation(
+            before,
+            fresh.Url,
+            42,
+            fresh,
+            receipt));
+        Assert.True(receipt.Ok);
+        Assert.True(receipt.Navigation);
+        Assert.Equal(fresh.Url, receipt.AfterUrl);
+        Assert.Equal("", receipt.Error);
+    }
+
+    [Theory]
+    [InlineData(43, "https://example.test/hackathons?order_by=prize-amount", "The page did not finish loading in time.")]
+    [InlineData(42, "https://example.test/hackathons?order_by=recent", "The page did not finish loading in time.")]
+    [InlineData(42, "https://example.test/hackathons?order_by=prize-amount", "The Chrome Helper disconnected.")]
+    public void Timed_out_navigation_never_adopts_another_tab_url_or_failure(
+        int freshTabId,
+        string freshUrl,
+        string error)
+    {
+        var receipt = new BrowserActionReceipt
+        {
+            Ok = false,
+            Action = "navigate",
+            Error = error,
+        };
+
+        Assert.False(BrowserAutomationCoordinator.TryReconcileUsableTimedOutNavigation(
+            new BrowserPageSnapshot
+            {
+                WindowId = 7,
+                TabId = 42,
+                Url = "https://example.test/hackathons",
+            },
+            "https://example.test/hackathons?order_by=prize-amount",
+            42,
+            new BrowserPageSnapshot
+            {
+                WindowId = 7,
+                TabId = freshTabId,
+                Url = freshUrl,
+                Title = "Hackathons",
+            },
+            receipt));
+        Assert.False(receipt.Ok);
+    }
+
+    [Fact]
     public void Delayed_link_reconciliation_never_adopts_another_tab()
     {
         var receipt = new BrowserActionReceipt
