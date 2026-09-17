@@ -2696,6 +2696,33 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Quoted_immediate_goal_uses_the_live_control_over_stale_planner_metadata()
+    {
+        var control = new BrowserControl
+        {
+            Id = "featured-sort",
+            Role = "link",
+            AccessibleName = "Featured",
+            Visible = true,
+            Enabled = true,
+        };
+        var action = new BrowserPlannerAction
+        {
+            Type = "click",
+            TargetId = control.Id,
+            TargetRole = control.Role,
+            TargetName = "Prize amount",
+        };
+
+        Assert.True(BrowserAutomationCoordinator.TryGetDeclaredGoalTargetConflict(
+            "Click the 'Prize amount' sort option.",
+            action,
+            control,
+            out var reason));
+        Assert.Contains("featured", reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Quoted_immediate_goal_accepts_a_longer_live_card_name()
     {
         var control = new BrowserControl

@@ -1206,6 +1206,39 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         continue;
                     }
 
+                    var visualControl = GroundActionIdentity(
+                        runtime.Page,
+                        visualDecision.Action);
+                    if (TryGetDeclaredGoalTargetConflict(
+                            visualDecision.NextGoal,
+                            visualDecision.Action,
+                            visualControl,
+                            out var visualConstraintConflict)
+                        || TryGetExplicitConstraintConflict(
+                            runtime.Request,
+                            visualDecision.Action,
+                            visualControl,
+                            out visualConstraintConflict))
+                    {
+                        runtime.ConsecutiveRejectedStrategies++;
+                        runtime.History.Add(
+                            $"Visually grounded action rejected: {visualConstraintConflict} "
+                            + "Re-plan from the current live page without undoing verified checkpoints.");
+                        SetState(
+                            runtime,
+                            BrowserTaskState.Planning,
+                            "Rejecting a visual control that contradicts the requested outcome");
+                        if (runtime.ConsecutiveRejectedStrategies >= 3)
+                        {
+                            Fail(
+                                runtime,
+                                BrowserAutomationOutcome.Partial,
+                                "The browser remains at the last useful state, but the available visually grounded actions conflict with an explicit task constraint.");
+                            return;
+                        }
+                        continue;
+                    }
+
                     SetState(
                         runtime,
                         BrowserTaskState.Executing,
@@ -2125,9 +2158,8 @@ public sealed class BrowserAutomationCoordinator : IDisposable
 
         var liveTarget = NormalizeControlText(string.Join(
             " ",
-            action.TargetName,
-            action.Option,
-            control == null ? "" : ControlName(control),
+            control == null ? action.TargetName : ControlName(control),
+            action.Type == "select_option" ? action.Option : "",
             control?.NearbyLabel));
         if (liveTarget.Length == 0
             || quotedTargets.Any(target =>
