@@ -2128,6 +2128,67 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
+    public void Successful_no_change_link_click_waits_for_a_delayed_same_tab_navigation()
+    {
+        var receipt = new BrowserActionReceipt
+        {
+            Ok = true,
+            Action = "click",
+            TargetRole = "link",
+            TargetName = "RevenueCat Shipaton 2026",
+            BeforeUrl = "https://devpost.com/hackathons?order_by=prize-amount",
+            AfterUrl = "https://devpost.com/hackathons?order_by=prize-amount",
+            NoVisibleChange = true,
+        };
+
+        Assert.True(BrowserAutomationCoordinator.ShouldAwaitDelayedLinkNavigation(
+            "click",
+            receipt));
+        Assert.True(BrowserAutomationCoordinator.TryReconcileDelayedLinkNavigation(
+            17,
+            receipt,
+            new BrowserHelperStatus
+            {
+                TabId = 17,
+                WindowId = 4,
+                ActiveUrl = "https://revenuecat-shipaton-2026.devpost.com/",
+            }));
+        Assert.True(receipt.Navigation);
+        Assert.False(receipt.NoVisibleChange);
+        Assert.Equal(
+            "https://revenuecat-shipaton-2026.devpost.com/",
+            receipt.AfterUrl);
+        Assert.Equal(17, receipt.TabId);
+        Assert.Equal(4, receipt.WindowId);
+    }
+
+    [Fact]
+    public void Delayed_link_reconciliation_never_adopts_another_tab()
+    {
+        var receipt = new BrowserActionReceipt
+        {
+            Ok = true,
+            Action = "click",
+            TargetRole = "link",
+            BeforeUrl = "https://example.test/list",
+            AfterUrl = "https://example.test/list",
+            NoVisibleChange = true,
+        };
+
+        Assert.False(BrowserAutomationCoordinator.TryReconcileDelayedLinkNavigation(
+            17,
+            receipt,
+            new BrowserHelperStatus
+            {
+                TabId = 18,
+                ActiveUrl = "https://example.test/detail",
+            }));
+        Assert.False(receipt.Navigation);
+        Assert.True(receipt.NoVisibleChange);
+        Assert.Equal("https://example.test/list", receipt.AfterUrl);
+    }
+
+    [Fact]
     public void Healthy_command_channel_does_not_surface_a_stale_bridge_error()
     {
         var error = BrowserHelperBridge.ResolveStatusError(

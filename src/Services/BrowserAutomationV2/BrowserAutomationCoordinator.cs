@@ -2702,6 +2702,27 @@ public sealed class BrowserAutomationCoordinator : IDisposable
             };
             receipt = await _bridge.ExecuteAsync(request, token);
         }
+        if (ShouldAwaitDelayedLinkNavigation(effectiveActionType, receipt))
+        {
+            SetState(
+                runtime,
+                BrowserTaskState.WaitingForPage,
+                "Waiting for the selected link to finish opening");
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(8);
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                if (TryReconcileDelayedLinkNavigation(
+                        runtime.Page.TabId,
+                        receipt,
+                        _bridge.Status))
+                {
+                    runtime.History.Add(
+                        "Reconciled a link click whose same-tab navigation began after the immediate page receipt.");
+                    break;
+                }
+                await Task.Delay(TimeSpan.FromMilliseconds(250), token);
+            }
+        }
         LogActionReceipt(runtime.TaskId, receipt);
         if (effectiveActionType == "open_tab"
             && receipt.Ok
@@ -3960,6 +3981,38 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         && string.Equals(actionType, "navigate", StringComparison.Ordinal)
         && receipt?.Ok == true
         && receipt.Navigation;
+
+    internal static bool ShouldAwaitDelayedLinkNavigation(
+        string actionType,
+        BrowserActionReceipt receipt) =>
+        string.Equals(actionType, "click", StringComparison.Ordinal)
+        && receipt?.Ok == true
+        && !receipt.Stale
+        && receipt.NoVisibleChange
+        && string.Equals(receipt.TargetRole, "link", StringComparison.OrdinalIgnoreCase)
+        && !string.IsNullOrWhiteSpace(receipt.BeforeUrl)
+        && SameLivePage(receipt.BeforeUrl, receipt.AfterUrl);
+
+    internal static bool TryReconcileDelayedLinkNavigation(
+        int expectedTabId,
+        BrowserActionReceipt receipt,
+        BrowserHelperStatus status)
+    {
+        if (!ShouldAwaitDelayedLinkNavigation("click", receipt)
+            || status?.TabId != expectedTabId
+            || string.IsNullOrWhiteSpace(status.ActiveUrl)
+            || SameLivePage(receipt.BeforeUrl, status.ActiveUrl))
+        {
+            return false;
+        }
+
+        receipt.AfterUrl = status.ActiveUrl;
+        receipt.Navigation = true;
+        receipt.NoVisibleChange = false;
+        receipt.TabId = expectedTabId;
+        receipt.WindowId = status.WindowId;
+        return true;
+    }
 
     internal static bool ShouldOpenDestinationInNewTab(
         bool currentPageIntent,
