@@ -1403,11 +1403,16 @@ public sealed class BrowserAutomationCoordinator : IDisposable
                         "Keeping the corrected browser destination");
                     continue;
                 }
-                if (TryGetExplicitConstraintConflict(
-                    runtime.Request,
-                    lastDecision.Action,
-                    groundedControl,
-                    out var constraintConflict))
+                if (TryGetDeclaredGoalTargetConflict(
+                        lastDecision.NextGoal,
+                        lastDecision.Action,
+                        groundedControl,
+                        out var constraintConflict)
+                    || TryGetExplicitConstraintConflict(
+                        runtime.Request,
+                        lastDecision.Action,
+                        groundedControl,
+                        out constraintConflict))
                 {
                     runtime.ConsecutiveRejectedStrategies++;
                     runtime.History.Add(
@@ -2004,20 +2009,7 @@ public sealed class BrowserAutomationCoordinator : IDisposable
 
         var live = FindMatchingControl(page, action);
         if (live == null)
-        {
-            var idControl = page.Controls.FirstOrDefault(control =>
-                string.Equals(control.Id, action.TargetId, StringComparison.Ordinal));
-            if (idControl != null
-                && Normalize(action.TargetName).Length > 0
-                && Normalize(ControlName(idControl)).Length > 0
-                && NameScore(
-                    Normalize(action.TargetName),
-                    Normalize(ControlName(idControl))) < 2)
-            {
-                action.TargetId = "";
-            }
             return null;
-        }
 
         action.TargetId = live.Id;
         if (!string.IsNullOrWhiteSpace(live.Role))
@@ -2109,6 +2101,45 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         }
 
         return false;
+    }
+
+    internal static bool TryGetDeclaredGoalTargetConflict(
+        string immediateGoal,
+        BrowserPlannerAction action,
+        BrowserControl control,
+        out string reason)
+    {
+        reason = "";
+        if (action?.Type is not ("click" or "select_option" or "check" or "uncheck"))
+            return false;
+
+        var quotedTargets = Regex.Matches(
+                immediateGoal ?? "",
+                @"(?<quote>['""])(?<value>[^'""]{2,80})\k<quote>")
+            .Select(match => NormalizeControlText(match.Groups["value"].Value))
+            .Where(value => value.Length > 1)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (quotedTargets.Length == 0)
+            return false;
+
+        var liveTarget = NormalizeControlText(string.Join(
+            " ",
+            action.TargetName,
+            action.Option,
+            control == null ? "" : ControlName(control),
+            control?.NearbyLabel));
+        if (liveTarget.Length == 0
+            || quotedTargets.Any(target =>
+                liveTarget.Contains(target, StringComparison.Ordinal)
+                || target.Contains(liveTarget, StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        reason =
+            $"The live target '{BrowserAutomationText.Truncate(liveTarget, 140)}' does not match the planner's declared target '{BrowserAutomationText.Truncate(quotedTargets[0], 80)}'.";
+        return true;
     }
 
     internal static bool TryGetAmbiguousExplicitDateTarget(
@@ -5568,26 +5599,9 @@ public sealed class BrowserAutomationCoordinator : IDisposable
         var byId = page.Controls.FirstOrDefault(control =>
             string.Equals(control.Id, action.TargetId, StringComparison.Ordinal));
         if (byId != null)
-        {
-            if (!string.IsNullOrWhiteSpace(action.TargetFieldId)
-                && !string.Equals(byId.FieldId, action.TargetFieldId, StringComparison.Ordinal))
-            {
-                return null;
-            }
-
-            var declaredName = Normalize(action.TargetName);
-            var liveName = Normalize(ControlName(byId));
-            if (declaredName.Length == 0
-                || liveName.Length == 0
-                || NameScore(declaredName, liveName) >= 2)
-            {
-                return byId;
-            }
-
-            // Renderer ids are volatile. Never let a recycled/stale id silently
-            // replace the planner's declared semantic target with another live
-            // control. Fall through to the existing unique name/role grounding.
-        }
+            return string.IsNullOrWhiteSpace(action.TargetFieldId)
+                || string.Equals(byId.FieldId, action.TargetFieldId, StringComparison.Ordinal)
+                    ? byId : null;
 
         var wanted = Normalize(action.TargetName);
         var candidates = page.Controls

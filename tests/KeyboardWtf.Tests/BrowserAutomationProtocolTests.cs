@@ -2669,67 +2669,82 @@ public sealed class BrowserAutomationProtocolTests
     }
 
     [Fact]
-    public void Grounded_action_identity_does_not_let_a_stale_id_override_the_declared_control_name()
+    public void Quoted_immediate_goal_rejects_an_unrelated_live_click_target()
     {
-        var wrong = new BrowserControl
+        var control = new BrowserControl
         {
-            Id = "volatile-control-1",
+            Id = "organization-filter",
             Role = "span",
             AccessibleName = "Student organization",
             Visible = true,
             Enabled = true,
         };
-        var prizeSort = new BrowserControl
-        {
-            Id = "volatile-control-2",
-            Role = "button",
-            AccessibleName = "Prize amount",
-            Visible = true,
-            Enabled = true,
-        };
-        var page = new BrowserPageSnapshot { Controls = [wrong, prizeSort] };
         var action = new BrowserPlannerAction
         {
             Type = "click",
-            TargetId = wrong.Id,
-            TargetRole = "button",
-            TargetName = "Prize amount",
+            TargetId = control.Id,
+            TargetRole = control.Role,
+            TargetName = control.AccessibleName,
         };
 
-        var control = BrowserAutomationCoordinator.GroundActionIdentity(page, action);
-
-        Assert.Same(prizeSort, control);
-        Assert.Equal(prizeSort.Id, action.TargetId);
-        Assert.Equal(prizeSort.AccessibleName, action.TargetName);
+        Assert.True(BrowserAutomationCoordinator.TryGetDeclaredGoalTargetConflict(
+            "Click on 'Prize amount' in the sort options.",
+            action,
+            control,
+            out var reason));
+        Assert.Contains("Prize amount", reason, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void Grounded_action_identity_rejects_a_stale_id_when_no_semantic_target_exists()
+    public void Quoted_immediate_goal_accepts_a_longer_live_card_name()
     {
-        var page = new BrowserPageSnapshot
+        var control = new BrowserControl
         {
-            Controls =
-            [
-                new BrowserControl
-                {
-                    Id = "volatile-control-1",
-                    Role = "span",
-                    AccessibleName = "Student organization",
-                    Visible = true,
-                    Enabled = true,
-                },
-            ],
+            Id = "hackathon-card",
+            Role = "link",
+            AccessibleName = "Neighborhood Hacks upcoming online $9,650 in prizes",
+            Visible = true,
+            Enabled = true,
         };
         var action = new BrowserPlannerAction
         {
             Type = "click",
-            TargetId = "volatile-control-1",
-            TargetRole = "button",
-            TargetName = "Prize amount",
+            TargetId = control.Id,
+            TargetRole = control.Role,
+            TargetName = control.AccessibleName,
         };
 
-        Assert.Null(BrowserAutomationCoordinator.GroundActionIdentity(page, action));
-        Assert.Empty(action.TargetId);
+        Assert.False(BrowserAutomationCoordinator.TryGetDeclaredGoalTargetConflict(
+            "Open the first hackathon in the sorted list ('Neighborhood Hacks').",
+            action,
+            control,
+            out _));
+    }
+
+    [Fact]
+    public void Unquoted_immediate_goal_does_not_create_a_new_target_grammar()
+    {
+        var control = new BrowserControl
+        {
+            Id = "result",
+            Role = "link",
+            AccessibleName = "Example result",
+            Visible = true,
+            Enabled = true,
+        };
+        var action = new BrowserPlannerAction
+        {
+            Type = "click",
+            TargetId = control.Id,
+            TargetRole = control.Role,
+            TargetName = control.AccessibleName,
+        };
+
+        Assert.False(BrowserAutomationCoordinator.TryGetDeclaredGoalTargetConflict(
+            "Open the first matching result.",
+            action,
+            control,
+            out _));
     }
 
     [Theory]
