@@ -1,8 +1,8 @@
 # Recovery progress
 
-- Checkpoint: installed/source private `2f8793e782fadbb3f25c477459068476ec4f33ee` plus dirty P10 new-turn selection-cache invalidation. Public 1.4.17 untouched.
-- Current problem: P10 fresh selected-context ownership; P02 installed replay is passing so far but remains open until the corrected P10 candidate completes.
-- Proven root cause: `5d6d101` attached async scheduling to blocking Live results, causing broken/repeated continuation. Exact installed `2f8793e` removed repeats, then proved the pre-existing `9d0d98f` 90-second same-window fallback can label the prior selection current after a transient fresh-capture failure (fixture 111 chars, app returned prior 120).
-- Fix made: committed blocking responses plus same-turn output/echo guards remain; dirty source clears the automation selection fallback at every new user turn so a fresh failure cannot silently substitute an older selection. Browser deferred context, auth/billing/Helper/model remain unchanged.
-- Verification: corrected selection/adjacent matrix 234/234; full desktop 1,207/1,207. Exact `2f8793e` install hash matched package and user/Helper state was preserved. Installed analysis-only and first transform/copy passed with one action/no repeat >30s; second fresh-selection test exposed the cache defect. Rebuilt two-selection replay pending.
-- Remaining: selected-context blocker; P34 installed matrix; broader P10-P16 web/direct behavior; P21/P38; long real microphone P04/P08/P09/P20/P32/P37; P23/P43; bounded Gemini 3.5/3.8 Screen Analysis benchmark; P41/P42; final P25-P30/P44 audit/freeze/install/hash/human acceptance.
+- Checkpoint: installed/source private `d4cbd111ba0144abb87ea2d3483e40372f649f7d`; installer `D6900A1C...C556`, installed EXE `45B239B7...E4AD5`. Public 1.4.17 untouched.
+- Current problem: P34 final installed active-task guidance/direct-action matrix.
+- Proven root cause: P02/P10 closed: invalid async scheduling on blocking Live responses plus cross-turn reuse of the 90-second same-window selection fallback.
+- Fix made: plain blocking responses; same-turn selected-result/echo guards; new-turn invalidation of the local selection fallback. Auth/billing/Helper/model unchanged.
+- Verification: adjacent 234/234; full desktop 1,207/1,207. Exact install preserved user/Helper hashes. Two distinct selected-copy results executed once; fresh 111-character selection replaced stale 120; analysis-only used current content without mutation; clipboard restored; account reserved zero.
+- Remaining: P34 installed matrix; broader P11-P16 web/direct behavior; P21/P38; long real microphone P04/P08/P09/P20/P32/P37; P23/P43; bounded Gemini 3.5/3.8 Screen Analysis benchmark; P41/P42; final P25-P30/P44 audit/freeze/install/hash/human acceptance.

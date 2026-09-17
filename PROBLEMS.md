@@ -13,12 +13,12 @@ Touches: Paid account refresh; Live startup transport.
 Protect: 2.37–3s happy path, microphone readiness, reliable connection.
 
 ## P02 — Exactly-once completion and action ownership
-Status: OPEN
+Status: PHYSICALLY VERIFIED
 Expected: One logical request may execute several actions but produces one coherent completion and no repeated mutation.
-Latest evidence: Exact installed `c52b9df` captured the fresh second selection and copied the correct result, then repeated the identical successful `copy_text` mutation six times about 4–5 seconds apart until Jarvis was stopped. Earlier exact-installed `8492daa` multi-target evidence remains valid but does not cover this provider continuation shape.
+Latest evidence: Exact installed `d4cbd11` performed one first-selection copy and one distinct second-selection copy; each produced one immutable action receipt, and neither repeated across 20/25-second observations beyond the former 4–5 second cadence. Analysis-only produced no mutation.
 Root cause: Post-1.4.17 commit `5d6d101` added WHEN_IDLE/SILENT scheduling metadata to every blocking Live function response. Production rewrites the desktop setup to Gemini 2.5 native audio, which supports both blocking and explicitly NON_BLOCKING calls; these declarations have no NON_BLOCKING behavior, so the plain tool response is the blocking continuation and scheduling does not belong on it. The developer 3.1 route is synchronous-only. The mixed contract deferred ownership and permitted repeated/downstream effects.
-Fix: Dirty source restores the plain synchronous function-response shape and removes nested scheduling data while retaining the existing serialized dispatcher, cancellation and duplicate guard. Rebuild/install verification pending.
-Evidence: Installed action history/logs and `installed-c52b9df-r1`; isolated developer-provider selected-context control with the plain response emitted one capture and one copy; Google Live tool documentation limits scheduling to NON_BLOCKING declarations. Focused protocol/routing tests 58/58 and full desktop tests 1,206/1,206; exact installed replay pending.
+Fix: `2f8793e` restores the plain synchronous function-response shape and removes nested scheduling data while retaining the existing serialized dispatcher, cancellation and duplicate guard.
+Evidence: Failure `installed-c52b9df-r1`; corrected `installed-2f8793e-r1`/`installed-d4cbd11-r1`/`r2`; isolated plain-response developer control; Google Live tool documentation; focused protocol/routing 58/58, adjacent matrix 234/234 and full desktop 1,207/1,207.
 Touches: Transcript pre-routing; tool dispatch/result publication; action dedupe.
 Protect: Clarification/barge-in and multi-action batching.
 
@@ -93,12 +93,12 @@ Touches: AudioRecorderService, VoiceCaptureService, WebSettingsService.
 Protect: Audio quality, VAD and barge-in.
 
 ## P10 — Browser context and intent ownership
-Status: INVESTIGATING
+Status: PHYSICALLY VERIFIED
 Expected: Context-now/action-later waits; fresh selection replaces stale; selected-text reasoning stays conversational.
-Latest evidence: Exact installed `2f8793e` freshly captured/analyzed the first 120-character selection, preserved the clipboard, then produced one correct transformed copy with no repeat beyond 30 seconds. After the fixture foregrounded a different 111-character selection, the next request captured the prior 120 characters and transformed the wrong source.
+Latest evidence: Exact installed `d4cbd11` captured the distinct 111-character second selection, copied the correct 110-character polished sentence in 3.56 seconds, and the clipboard matched the immutable action payload exactly. A later analysis-only turn answered from that selection without mutation and preserved the clipboard; the fixture restored the original eight-format clipboard snapshot exactly.
 Root cause: Post-1.4.17 async scheduling (`5d6d101`) broke blocking result continuation and exposed instruction/repeated-output failures. Independently, the pre-existing `9d0d98f` 90-second same-window selection fallback could promote an earlier selection to `current_selection` after transient fresh-capture failure. Fixture timestamps/hashes plus the installed 120-vs-111 capture prove this fallback path; `7a2a21e` deferred Browser context was a separate guarded hazard.
-Fix: `5bc9bc4`/`c52b9df` bind direct output to same-turn selected context and reject instruction echoes; `2f8793e` restores blocking Live responses. Dirty source now invalidates the automation selection fallback on every new non-empty user turn, retaining only same-turn retry value. Existing Browser source-identity/deferred-context guards remain.
-Evidence: Browser failure `5d631d...` and corrected task `d14cb8...`; selected-context `installed-c52b9df-r1` and `installed-2f8793e-r1`. Corrected selection/adjacent matrix 234/234 and full desktop 1,207/1,207; rebuild, two-selection installed replay and clipboard restoration proof pending.
+Fix: `5bc9bc4`/`c52b9df` bind direct output to same-turn selected context and reject instruction echoes; `2f8793e` restores blocking Live responses; `d4cbd11` invalidates the automation selection fallback on every new non-empty user turn, retaining only same-turn retry value. Existing Browser source-identity/deferred-context guards remain.
+Evidence: Browser failure/correction `5d631d...`/`d14cb8...`; selected failures `installed-c52b9df-r1`/`installed-2f8793e-r1`; corrected `installed-d4cbd11-r1`/`r2`, including local speaker capture/offline transcript. Adjacent 234/234 and full desktop 1,207/1,207; signed-in account settled with zero reserved credit.
 Touches: Command routing; selected context; Browser coordinator.
 Protect: Direct actions and selected-text reasoning.
 
