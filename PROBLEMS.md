@@ -103,12 +103,12 @@ Touches: Command routing; selected context; Browser coordinator.
 Protect: Direct actions and selected-text reasoning.
 
 ## P11 — Browser page/task ownership
-Status: OPEN
+Status: PHYSICALLY VERIFIED
 Expected: Explicit current-page handoff resumes the same task and invalidates stale page actions/results.
-Latest evidence: Real isolated Selenium→TestPages task `81b15ff4...` adopted the explicitly selected new page on the same task, wrote only there, completed, and rejected terminal guidance; old page remained untouched.
-Root cause: Task remained pinned to an obsolete tab generation.
-Fix: Explicit re-grounding advances page generation and rejects older work.
-Evidence: Human acceptance plus regression tests.
+Latest evidence: Exact installed `78131ad`/production Store Helper task `f504d492...` paused on source tab `1674775824`, an unrelated direct action opened target tab `1674775833` once while the task stayed paused, and the explicit correction adopted that target on the same task. It wrote only `P11-HANDOFF-78131AD` there, left the source and every other field unchanged, did not submit, reached truthful `Completed`, and rejected later terminal guidance without mutation. Jarvis was stopped, reservations settled to zero, the original Chrome tab was restored, and microphone input remained muted at level 0.
+Root cause: Explicit re-grounding already fixed the obsolete-tab generation problem. The remaining installed replay exposed a post-1.4.17 interaction with P12 hardening: the corrected-task wrapper retains compatible earlier context plus the authoritative latest correction, while the verifier counted the old and latest clauses as two simultaneous field mutations even when both resolved to the same live field. That produced a false `Partial` after the correct handoff/write; it did not affect uncorrected tasks or non-Browser selected/clipboard/direct-tool paths.
+Fix: Keep the existing same-task tab adoption/generation owner. At the existing terminal form-verification boundary only, structured corrected requests map mutation clauses to distinct live field identities, deduplicate old/latest clauses that resolve to the same current field, and discard obsolete old-page clauses when the latest correction resolves on the final page. Compatible earlier live-field obligations remain required, and unmatched latest clauses remain obligations.
+Evidence: Earlier isolated Selenium→TestPages task `81b15ff4...`; exact installed production task `f504d492...`; pre-fix focused regression failed `Only 1 of 2...`, corrected focused Browser/routing/form gate 596/596 and full desktop 1,210/1,210. Installed target/source DOM and adoption/action receipts were inspected directly.
 Touches: Browser coordinator/runtime generation.
 Protect: Never adopt unrelated foreground tabs automatically.
 
