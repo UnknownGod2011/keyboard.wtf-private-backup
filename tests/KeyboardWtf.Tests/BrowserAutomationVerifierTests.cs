@@ -510,6 +510,122 @@ public sealed class BrowserAutomationVerifierTests
         Assert.Contains("1 of 2", duplicateCheck.Error);
     }
 
+    [Fact]
+    public void Authoritative_same_task_correction_replaces_the_superseded_form_obligation()
+    {
+        var request = BrowserAutomationCoordinator.BuildCorrectedTaskRequest(
+            "Use Browser Automation to set Text input to my project reference. "
+            + "Ask me for the reference because it has not been provided. Leave all other fields unchanged. Do not submit.",
+            "Browser Automation is on the wrong page. I am on the correct page now; continue here. "
+            + "Set Username to Boundary Handoff instead. Leave all other fields unchanged. Do not submit.");
+        var result = _verifier.VerifyTerminal(
+            request,
+            new BrowserPlannerDecision
+            {
+                Done = true,
+                ResultSummary = "The Username field has been set to Boundary Handoff.",
+                CompletionChecks =
+                [
+                    FinalCheck("username", "textbox", "Username", "type", "Boundary Handoff"),
+                ],
+            },
+            new BrowserPageSnapshot
+            {
+                TabId = 43,
+                Url = "https://example.test/correct-form",
+                Controls = [Field("username", "textbox", "Username", "Boundary Handoff")],
+            },
+            [
+                Changed(
+                    "type",
+                    "username",
+                    "textbox",
+                    "Username",
+                    "Boundary Handoff",
+                    valueMatches: true),
+            ]);
+
+        Assert.True(result.Verified, result.Error);
+    }
+
+    [Fact]
+    public void Authoritative_same_field_value_correction_is_one_final_obligation()
+    {
+        var request = BrowserAutomationCoordinator.BuildCorrectedTaskRequest(
+            "Use Browser Automation to set the Display name field to my project reference. "
+            + "Ask me for the reference because it has not been provided.",
+            "Set Display name to P11-HANDOFF-0918 instead. Leave every other field unchanged and do not submit.");
+        var result = _verifier.VerifyTerminal(
+            request,
+            new BrowserPlannerDecision
+            {
+                Done = true,
+                ResultSummary = "Display name was corrected.",
+                CompletionChecks =
+                [
+                    FinalCheck("name", "textbox", "Display name", "type", "P11-HANDOFF-0918"),
+                ],
+            },
+            new BrowserPageSnapshot
+            {
+                TabId = 62,
+                Url = "https://example.test/correct-form",
+                Controls = [Field("name", "textbox", "Display name", "P11-HANDOFF-0918")],
+            },
+            [
+                Changed(
+                    "type",
+                    "name",
+                    "textbox",
+                    "Display name",
+                    "P11-HANDOFF-0918",
+                    valueMatches: true),
+            ]);
+
+        Assert.True(result.Verified, result.Error);
+    }
+
+    [Fact]
+    public void Additive_same_task_correction_keeps_compatible_form_obligations()
+    {
+        var request = BrowserAutomationCoordinator.BuildCorrectedTaskRequest(
+            "Set Display name to Boundary User.",
+            "Also set Topic to Browser automation.");
+        var result = _verifier.VerifyTerminal(
+            request,
+            new BrowserPlannerDecision
+            {
+                Done = true,
+                ResultSummary = "Only Topic was set.",
+                CompletionChecks =
+                [
+                    FinalCheck("topic", "combobox", "Topic", "select_option", "Browser automation"),
+                ],
+            },
+            new BrowserPageSnapshot
+            {
+                Url = "https://example.test/form",
+                Controls =
+                [
+                    Field("name", "textbox", "Display name", ""),
+                    Field("topic", "combobox", "Topic", "Browser automation"),
+                ],
+            },
+            [
+                Changed(
+                    "select_option",
+                    "topic",
+                    "combobox",
+                    "Topic",
+                    "Browser automation",
+                    valueMatches: true,
+                    selectedChanged: true),
+            ]);
+
+        Assert.False(result.Verified);
+        Assert.Contains("1 of 2", result.Error);
+    }
+
     [Theory]
     [InlineData("Open https://example.test/form and fill Text input with Delta.", 1)]
     [InlineData("Set Name to Ada, then set Email to ada@example.test.", 2)]

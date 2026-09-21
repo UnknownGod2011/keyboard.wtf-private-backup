@@ -160,7 +160,9 @@ public sealed class BrowserAutomationVerifier
         }
 
         var requestedMutationSteps = CountRequestedMutationSteps(text);
-        var requestedFormMutationSteps = CountRequestedFormMutationSteps(text);
+        var requestedFormMutationSteps = CountRequestedFormMutationSteps(
+            request,
+            page);
         var destinationEditorTransfer = Regex.IsMatch(
                 text,
                 @"\b(paste|insert|type|write|place|put)\b")
@@ -392,17 +394,123 @@ public sealed class BrowserAutomationVerifier
     internal static int CountRequestedFormMutationSteps(string request)
     {
         var text = IntentText(request);
+        return RequestedFormMutationClauses(text).Length;
+    }
+
+    private static int CountRequestedFormMutationSteps(
+        string request,
+        BrowserPageSnapshot page)
+    {
+        var text = IntentText(request);
+        var rawCount = RequestedFormMutationClauses(text).Length;
+        const string earlierMarker =
+            "earlier task objective (retain only details compatible with the correction):";
+        const string latestMarker =
+            "latest explicit user correction (authoritative):";
+        var latestIndex = text.IndexOf(latestMarker, StringComparison.Ordinal);
+        var earlierIndex = text.IndexOf(earlierMarker, StringComparison.Ordinal);
+        if (page?.Controls == null
+            || earlierIndex < 0
+            || latestIndex <= earlierIndex)
+        {
+            return rawCount;
+        }
+
+        var earlier = text[(earlierIndex + earlierMarker.Length)..latestIndex];
+        var latest = text[(latestIndex + latestMarker.Length)..];
+        var latestClauses = RequestedFormMutationClauses(latest);
+        if (latestClauses.Length == 0)
+            return rawCount;
+
+        var liveFields = page.Controls
+            .Where(control => !string.IsNullOrWhiteSpace(control.FieldId)
+                && !string.IsNullOrWhiteSpace(
+                    FirstNonEmpty(
+                        control.FieldLabel,
+                        control.NearbyLabel,
+                        control.AccessibleName)))
+            .GroupBy(control => control.FieldId, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToArray();
+        var latestTargets = MapMutationClausesToLiveFields(
+            latestClauses,
+            liveFields);
+        if (latestTargets.Matched.Count == 0)
+            return rawCount;
+
+        var earlierTargets = MapMutationClausesToLiveFields(
+            RequestedFormMutationClauses(earlier),
+            liveFields);
+        earlierTargets.Matched.UnionWith(latestTargets.Matched);
+
+        // The coordinator's structured correction wrapper makes the latest
+        // correction authoritative. Count compatible earlier fields that are
+        // still present on the final live page, but do not make an obsolete
+        // field from the old page a second completion obligation. Unmatched
+        // latest clauses remain obligations so this cannot hide a new field.
+        return earlierTargets.Matched.Count + latestTargets.Unmatched;
+    }
+
+    private static string[] RequestedFormMutationClauses(string text)
+    {
         const string mutation =
             @"(?:fill|type|paste|set|replace|choose|select|check|uncheck|clear|enter|place|put)";
         return Regex.Split(
                 text,
                 $@"[.;!?]+|,\s*|\bthen\b|\band\b(?=\s+{mutation}\b)",
                 RegexOptions.IgnoreCase)
-            .Count(clause => Regex.IsMatch(
+            .Where(clause => Regex.IsMatch(
                 clause,
                 $@"\b{mutation}\b",
-                RegexOptions.IgnoreCase));
+                RegexOptions.IgnoreCase))
+            .ToArray();
     }
+
+    private static (HashSet<string> Matched, int Unmatched)
+        MapMutationClausesToLiveFields(
+            IEnumerable<string> clauses,
+            IReadOnlyList<BrowserControl> fields)
+    {
+        var matched = new HashSet<string>(StringComparer.Ordinal);
+        var unmatched = 0;
+        foreach (var clause in clauses)
+        {
+            var normalizedClause = NormalizeFieldReference(clause);
+            var field = fields
+                .Select(control => new
+                {
+                    Control = control,
+                    Label = NormalizeFieldReference(
+                        FirstNonEmpty(
+                            control.FieldLabel,
+                            control.NearbyLabel,
+                            control.AccessibleName)),
+                })
+                .Where(candidate => candidate.Label.Length >= 2
+                    && $" {normalizedClause} ".Contains(
+                        $" {candidate.Label} ",
+                        StringComparison.Ordinal))
+                .OrderByDescending(candidate => candidate.Label.Length)
+                .FirstOrDefault();
+            if (field == null)
+                unmatched++;
+            else
+                matched.Add(field.Control.FieldId);
+        }
+        return (matched, unmatched);
+    }
+
+    private static string NormalizeFieldReference(string value) =>
+        Regex.Replace(
+            Regex.Replace(
+                (value ?? "").ToLowerInvariant(),
+                @"[^\p{L}\p{N}]+",
+                " "),
+            @"\s+",
+            " ").Trim();
+
+    private static string FirstNonEmpty(params string[] values) =>
+        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "";
 
     internal static bool RequestsGroundedInformation(string request)
     {
