@@ -302,6 +302,7 @@ public sealed class BrowserActionReceipt
     public bool NativeInputUsed { get; set; }
     public int? WindowId { get; set; }
     public int? TabId { get; set; }
+    public int TabCount { get; set; }
     public long GraphVersion { get; set; }
     public string DomEpoch { get; set; } = "";
     public BrowserRectangle TargetBounds { get; set; } = new();

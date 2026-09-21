@@ -134,6 +134,31 @@ public sealed class JarvisShortcutTests
     }
 
     [Theory]
+    [InlineData("close the last 3 Chrome tabs", 3)]
+    [InlineData("Please close my last three browser tabs.", 3)]
+    [InlineData("close last nine tabs", 9)]
+    public void Rightmost_multi_tab_close_is_a_bounded_whole_command(
+        string request,
+        int expectedCount)
+    {
+        Assert.True(JarvisAutomationService.TryGetRightmostBrowserTabCloseCount(
+            request,
+            out var count));
+        Assert.Equal(expectedCount, count);
+    }
+
+    [Theory]
+    [InlineData("close the last tab")]
+    [InlineData("close some tabs")]
+    [InlineData("write this and close the last 3 tabs")]
+    [InlineData("close the last 10 tabs")]
+    public void Ambiguous_or_composite_tab_close_does_not_enter_the_fixed_set_owner(
+        string request) =>
+        Assert.False(JarvisAutomationService.TryGetRightmostBrowserTabCloseCount(
+            request,
+            out _));
+
+    [Theory]
     [InlineData("Switch to the second-to-last tab.", true)]
     [InlineData("Please refresh.", true)]
     [InlineData("Write this text and then switch to the second tab.", false)]

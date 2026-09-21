@@ -1048,6 +1048,181 @@ public sealed class JarvisAutomationService : IDisposable
         TryGetBrowserTabSelection(request, out _, out _)
         || BrowserShortcutForAction(request) != null;
 
+    internal static bool TryGetRightmostBrowserTabCloseCount(
+        string request,
+        out int count)
+    {
+        count = 0;
+        var normalized = NormalizePhraseText(request);
+        if (normalized.StartsWith("please ", StringComparison.Ordinal))
+            normalized = normalized["please ".Length..];
+        var match = Regex.Match(
+            normalized,
+            @"^close\s+(?:(?:the|my)\s+)?last\s+(?<count>[2-9]|two|three|four|five|six|seven|eight|nine)\s+(?:(?:chrome|browser)\s+)?tabs$",
+            RegexOptions.IgnoreCase);
+        if (!match.Success)
+            return false;
+        count = match.Groups["count"].Value.ToLowerInvariant() switch
+        {
+            "two" => 2,
+            "three" => 3,
+            "four" => 4,
+            "five" => 5,
+            "six" => 6,
+            "seven" => 7,
+            "eight" => 8,
+            "nine" => 9,
+            var number when int.TryParse(number, out var parsed) => parsed,
+            _ => 0,
+        };
+        return count is >= 2 and <= 9;
+    }
+
+    internal async Task<Dictionary<string, object>> CloseRightmostBrowserTabsAsync(
+        int count,
+        CancellationToken token)
+    {
+        if (count is < 2 or > 9)
+            return Result(false, "Choose between two and nine rightmost Chrome tabs.", supported: false);
+        var helper = _browserHelper;
+        var initial = helper?.Status;
+        if (helper == null || initial?.Connected != true
+            || !initial.CommandAuthoritySupported
+            || !string.Equals(initial.ServiceWorkerVersion, BrowserHelperProtocol.Version, StringComparison.Ordinal)
+            || initial.WindowId is not int windowId
+            || string.IsNullOrWhiteSpace(initial.SessionId))
+        {
+            return Result(
+                false,
+                string.IsNullOrWhiteSpace(initial?.LastError)
+                    ? "The Chrome Helper cannot resolve an exact tab set. No tab was closed."
+                    : $"{initial.LastError} No tab was closed.",
+                supported: false);
+        }
+
+        var sessionId = initial.SessionId;
+        var targets = new List<BrowserActionReceipt>(count);
+        for (var fromEnd = count; fromEnd >= 1; fromEnd--)
+        {
+            token.ThrowIfCancellationRequested();
+            BrowserActionReceipt target;
+            try
+            {
+                target = await helper.ActivateExistingTabAsync(
+                    windowId,
+                    $"from_end:{fromEnd}",
+                    token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                return Result(
+                    false,
+                    $"Chrome could not resolve all {count} requested tabs ({ex.Message}). No tab was closed.",
+                    supported: false);
+            }
+            if (!target.Ok
+                || target.WindowId != windowId
+                || target.TabId is not int tabId
+                || target.TabCount < count
+                || targets.Any(existing => existing.TabId == tabId))
+            {
+                return Result(
+                    false,
+                    $"Chrome did not return {count} distinct rightmost tab IDs. No tab was closed.",
+                    supported: false,
+                    needsClarification: true);
+            }
+            targets.Add(target);
+        }
+
+        var beforeClose = helper.Status;
+        if (!beforeClose.Connected
+            || beforeClose.WindowId != windowId
+            || !string.Equals(beforeClose.SessionId, sessionId, StringComparison.Ordinal))
+        {
+            return Result(
+                false,
+                "The Chrome Helper session changed while resolving the requested tab set. No tab was closed.",
+                supported: false);
+        }
+
+        var results = new List<object>(count);
+        var closed = 0;
+        var alreadyClosed = 0;
+        foreach (var target in targets.AsEnumerable().Reverse())
+        {
+            token.ThrowIfCancellationRequested();
+            var current = helper.Status;
+            if (!current.Connected
+                || current.WindowId != windowId
+                || !string.Equals(current.SessionId, sessionId, StringComparison.Ordinal))
+            {
+                results.Add(new { tab_id = target.TabId, ok = false, already_closed = false,
+                    error = "The Chrome Helper session changed before this exact tab could be closed." });
+                break;
+            }
+
+            BrowserActionReceipt receipt;
+            try
+            {
+                receipt = await helper.ExecuteAsync(new BrowserActionRequest
+                {
+                    TaskId = "direct-close-rightmost-" + Guid.NewGuid().ToString("N"),
+                    Type = "close_direct_tab",
+                    TabId = target.TabId,
+                    WindowId = windowId,
+                    ExpectedSessionId = sessionId,
+                }, token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                receipt = new BrowserActionReceipt { Error = ex.Message };
+            }
+            if (receipt.Ok
+                && (receipt.TabId != target.TabId
+                    || receipt.WindowId != windowId
+                    || !string.Equals(receipt.SessionId, sessionId, StringComparison.Ordinal)))
+            {
+                receipt = new BrowserActionReceipt
+                {
+                    Error = "Chrome's close receipt did not match the exact resolved tab."
+                };
+            }
+            if (receipt.Ok)
+            {
+                if (receipt.AlreadyClosed) alreadyClosed++; else closed++;
+            }
+            results.Add(new
+            {
+                tab_id = target.TabId,
+                ok = receipt.Ok,
+                already_closed = receipt.AlreadyClosed,
+                error = receipt.Error,
+            });
+            if (!receipt.Ok)
+                break;
+        }
+
+        var completed = closed + alreadyClosed == targets.Count;
+        return Logged(
+            "browser_action",
+            $"close exact rightmost {count} tab set",
+            completed,
+            completed
+                ? $"Closed {closed} requested Chrome tab(s); {alreadyClosed} were already closed."
+                : $"Closed {closed} requested Chrome tab(s); {alreadyClosed} were already closed; the remaining exact tab set was not changed after a verification failure.",
+            extras: new()
+            {
+                ["closed_count"] = closed,
+                ["already_closed_count"] = alreadyClosed,
+                ["target_count"] = targets.Count,
+                ["resolved_before_mutation"] = true,
+                ["action_results"] = results.ToArray(),
+            });
+    }
+
     internal static bool TryGetBrowserTabSelection(
         string request,
         out string selection,

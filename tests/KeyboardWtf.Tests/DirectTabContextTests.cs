@@ -77,6 +77,91 @@ public sealed class DirectTabContextTests : IDisposable
     }
 
     [Fact]
+    public async Task Rightmost_multi_tab_close_resolves_the_complete_set_before_exact_closes()
+    {
+        var closing = _automation.CloseRightmostBrowserTabsAsync(3, CancellationToken.None);
+        foreach (var expected in new[]
+                 {
+                     (Selection: "from_end:3", Tab: 21),
+                     (Selection: "from_end:2", Tab: 22),
+                     (Selection: "from_end:1", Tab: 23),
+                 })
+        {
+            var command = await NextCommand(closing);
+            Assert.Equal("activate_existing_tab", command.GetProperty("type").GetString());
+            Assert.Equal(expected.Selection, command.GetProperty("text").GetString());
+            ReplySelection(command, expected.Tab, 4);
+        }
+        foreach (var expectedTab in new[] { 23, 22, 21 })
+        {
+            var command = await NextCommand(closing);
+            Assert.Equal("close_direct_tab", command.GetProperty("type").GetString());
+            Assert.Equal(expectedTab, command.GetProperty("tabId").GetInt32());
+            Assert.Equal(7, command.GetProperty("windowId").GetInt32());
+            Assert.Equal("test-session", command.GetProperty("expectedSessionId").GetString());
+            Reply(command, expectedTab);
+        }
+        var result = await closing;
+        Assert.Equal(true, result["ok"]);
+        Assert.Equal(3, result["closed_count"]);
+        Assert.Equal(3, result["target_count"]);
+        Assert.Equal(true, result["resolved_before_mutation"]);
+        AssertNoCommand();
+    }
+
+    [Fact]
+    public async Task Duplicate_rightmost_tab_resolution_fails_before_any_close()
+    {
+        var closing = _automation.CloseRightmostBrowserTabsAsync(3, CancellationToken.None);
+        var command = await NextCommand(closing);
+        ReplySelection(command, 21, 4);
+        command = await NextCommand(closing);
+        ReplySelection(command, 21, 4);
+        var result = await closing;
+        Assert.Equal(false, result["ok"]);
+        Assert.Contains("No tab was closed", result["message"].ToString());
+        AssertNoCommand();
+    }
+
+    [Fact]
+    public async Task Whole_turn_rightmost_close_owns_the_selected_direct_tool_once()
+    {
+        var commands = new CommandRegistry(
+            null,
+            null,
+            null,
+            _settings,
+            null,
+            automation: _automation);
+        commands.ObserveJarvisTranscript(
+            "Close the last 3 Chrome tabs.",
+            CancellationToken.None);
+        var closing = Task.Run(async () => await commands.ExecuteJarvisToolAsync(
+            "browser_action",
+            JsonSerializer.SerializeToElement(new { action = "close tab" }),
+            CancellationToken.None));
+        foreach (var expected in new[]
+                 {
+                     (Selection: "from_end:3", Tab: 31),
+                     (Selection: "from_end:2", Tab: 32),
+                     (Selection: "from_end:1", Tab: 33),
+                 })
+        {
+            var command = await NextCommand(closing);
+            Assert.Equal(expected.Selection, command.GetProperty("text").GetString());
+            ReplySelection(command, expected.Tab, 4);
+        }
+        foreach (var expectedTab in new[] { 33, 32, 31 })
+            Reply(await NextCommand(closing), expectedTab);
+
+        var result = await closing;
+        Assert.Equal(true, result["ok"]);
+        Assert.Equal(3, result["closed_count"]);
+        Assert.Equal(3, result["target_count"]);
+        AssertNoCommand();
+    }
+
+    [Fact]
     public async Task Mixed_known_unknown_references_reject_the_entire_set_before_any_mutation()
     {
         var known = await Open(11);
@@ -229,6 +314,9 @@ public sealed class DirectTabContextTests : IDisposable
     private void Reply(JsonElement command, int tab, bool alreadyClosed = false) =>
         Process("command_result", command, new { ok = true, tabId = tab, windowId = 7, sessionId = "test-session", alreadyClosed });
 
+    private void ReplySelection(JsonElement command, int tab, int tabCount) =>
+        Process("command_result", command, new { ok = true, tabId = tab, windowId = 7, tabCount });
+
     private void AssertNoCommand() => Assert.Equal(JsonValueKind.Null, Process("poll").GetProperty("command").ValueKind);
 
     private JsonElement Process(string type, JsonElement command = default, object result = null)
@@ -241,7 +329,7 @@ public sealed class DirectTabContextTests : IDisposable
             {
                 extensionId = "gojdebdikepkpapmnggeljneamjdigbh", serviceWorkerVersion = "2.1.21", contentScriptVersion = "2.1.21",
                 activeTabFresh = true, commandChannelReady = true, commandAuthoritySupported = true,
-                activeUrl = "https://example.org/", sessionId = "test-session",
+                activeUrl = "https://example.org/", sessionId = "test-session", windowId = 7, tabId = 10,
             },
         });
         var method = typeof(BrowserHelperBridge).GetMethod("ProcessMessage", BindingFlags.Instance | BindingFlags.NonPublic)!;

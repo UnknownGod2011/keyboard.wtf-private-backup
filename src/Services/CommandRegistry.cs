@@ -573,6 +573,43 @@ public sealed class CommandRegistry
             return true;
         }
 
+        // A bounded "last N tabs" request names one stable positional set,
+        // not N blind Ctrl+W presses. Resolve the complete rightmost set to
+        // Helper tab IDs first, then close only those session-bound IDs.
+        if (_automation != null
+            && JarvisAutomationService.TryGetRightmostBrowserTabCloseCount(
+                text,
+                out var rightmostTabCount))
+        {
+            Dictionary<string, object> closeResult;
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+                timeout.CancelAfter(TimeSpan.FromSeconds(25));
+                closeResult = _automation.CloseRightmostBrowserTabsAsync(
+                        rightmostTabCount,
+                        timeout.Token)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warning(ex, "Exact rightmost-tab close pre-route failed");
+                closeResult = ToolResult(
+                    false,
+                    ex is OperationCanceledException
+                        ? "Chrome did not confirm the requested exact tab set in time."
+                        : ex.Message,
+                    supported: false);
+            }
+            token.ThrowIfCancellationRequested();
+            RecordAuthoritativePreRoute(userTurn, "browser_action", closeResult);
+            AppLog.Info(
+                $"Exact rightmost-tab close pre-route: count={rightmostTabCount} "
+                + $"ok={ToolSucceeded(closeResult)}");
+            return true;
+        }
+
         if (_browserAutomation != null
             && JarvisAutomationService.TryGetBrowserTabSelection(
                 text,
