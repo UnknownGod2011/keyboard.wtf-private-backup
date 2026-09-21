@@ -123,12 +123,12 @@ Touches: Helper metadata; planner/executor/verification.
 Protect: Do not submit test forms.
 
 ## P13 — NeedsUserAction bridge
-Status: FIXED
+Status: PHYSICALLY VERIFIED
 Expected: Ask only for genuinely missing required data; relevant natural answer resumes the same task; optional skip works; unrelated talk is isolated.
-Latest evidence: Real TestPages task `07f29f79...` asked once, accepted optional skip on the same task, completed with default text unchanged and zero writes/submits. Cross-site handoff and subsequent cancellation also passed.
+Latest evidence: Exact installed `78131ad`/production Store Helper task `61d712aa...` began with Display name visibly pre-seeded to `Existing placeholder`, still asked for the genuinely missing replacement project reference, accepted the natural answer `P13-RESUME-78131AD` on the same task, replaced only that field, reached truthful `Completed`, and did not submit. P34 installed task `5ddfd01c...` supplies the adjacent optional-skip and unrelated-direct-turn isolation proof without extra production turns. Jarvis was stopped, reservations settled to zero, the original Chrome tab was restored, and microphone input remained muted at level 0.
 Root cause: `973ef70` equated nonempty with the requested answer; exact optional-label matching also incorrectly required printed trailing punctuation.
 Fix: Suppress only explicit current-plan expected states proved by the existing verifier; normalize trailing label punctuation while retaining unique-field/protected-step checks. Preserve authorized unchanged-field skip.
-Evidence: Both failing real traces preserved in `dist/verification/p13-*`; 342 focused cases pass, including failing→passing default-value and punctuation tests. `output/playwright/browser-real-guidance` proves corrected isolated source/Helper flow; final installed/Store replay pending.
+Evidence: Both failing real traces preserved in `dist/verification/p13-*`; 342 focused cases pass, including failing→passing default-value and punctuation tests. `output/playwright/browser-real-guidance` proves corrected isolated source/Helper flow; exact installed production task `61d712aa...` proves nonempty-current-value intervention plus same-task natural resume, while P34 installed evidence proves skip/isolation.
 Touches: Jarvis/Browser intervention bridge.
 Protect: Normal conversation while paused.
 
